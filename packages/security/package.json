@@ -1,0 +1,35 @@
+{
+  "name": "@montr/security",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "montr-audit-verify": "./dist/audit-verify-cli.js"
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "eslint src",
+    "test": "vitest run --passWithNoTests",
+    "audit:verify": "tsc -b && node dist/audit-verify-cli.js",
+    "sbom": "bash scripts/sbom.sh",
+    "self-scan": "bash scripts/self-scan.sh",
+    "clean": "rm -rf dist .tsbuildinfo"
+  },
+  "dependencies": {
+    "@montr/contracts": "workspace:*"
+  }
+}

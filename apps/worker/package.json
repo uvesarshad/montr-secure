@@ -25,6 +25,7 @@
     "@montr/config": "workspace:*",
     "@montr/contracts": "workspace:*",
     "@montr/orchestrator": "workspace:*",
+    "@montr/security": "workspace:*",
     "@montr/telemetry": "workspace:*"
   }
 }

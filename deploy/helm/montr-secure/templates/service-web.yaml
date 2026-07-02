@@ -6,11 +6,12 @@ metadata:
     {{- include "montr.labels" . | nindent 4 }}
     app.kubernetes.io/component: web
 spec:
-  type: ClusterIP
+  type: {{ .Values.web.service.type }}
   selector:
     {{- include "montr.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: web
   ports:
     - name: http
-      port: {{ .Values.web.port }}
+      port: {{ .Values.web.service.port }}
       targetPort: http
+      protocol: TCP

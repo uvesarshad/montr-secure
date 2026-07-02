@@ -1,0 +1,56 @@
+# Montr Secure — Docker build-context ignore (canonical source).
+#
+# The compose build context is the REPO ROOT (`context: ../..`). Docker/BuildKit
+# selects the ignore file that matches the Dockerfile being built:
+#   1. deploy/docker/Dockerfile.<svc>.dockerignore  (per-service, this file's
+#      siblings — kept byte-identical to this canonical copy), else
+#   2. the repo-root .dockerignore                   (fallback).
+# These deploy-scoped files are a SUPERSET of the repo-root .dockerignore, so a
+# build never regresses to a fat context. All patterns are relative to the
+# context root (the repo root).
+
+# --- Dependencies & build output (reinstalled/recompiled inside the image) ---
+**/node_modules
+**/dist
+**/build
+**/.next
+**/.turbo
+**/*.tsbuildinfo
+
+# --- Test & coverage artifacts (prod images never ship tests) ---
+**/coverage
+**/.vitest
+tests
+
+# --- VCS / CI / editor / git hooks ---
+.git
+.gitignore
+.github
+.husky
+.vscode
+.idea
+
+# --- Secrets & local env — NEVER copy into an image (golden rule #1) ---
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+secrets
+
+# --- Docs, corpus, sample repos, sibling deploy trees (not needed to compile) ---
+docs
+corpus
+packages/fixtures/sample-repos
+deploy/helm
+deploy/airgap
+
+# Markdown: drop everything except the repo-root README.
+**/*.md
+!README.md
+
+# --- OS / logs / scratch ---
+.DS_Store
+**/*.log
+tmp
+.cache

@@ -1,0 +1,13 @@
+{
+  "$comment": "Committed regression baseline for the golden-corpus gate (WS-P, build-plan §4.7). The scorer (`pnpm --filter @montr/qa qa:corpus`) exits non-zero when a scan's confirmed findings fall below these thresholds. `fpRateMax` is the headline metric (PRD §15/§19: false-positive rate < 5%). Tighten (never loosen) as accuracy improves.",
+  "fpRateMax": 0.05,
+  "precisionMin": 0.9,
+  "recallMin": 0.9,
+  "minReposScored": 4,
+  "perCategory": {
+    "sql_injection": { "recallMin": 1, "fpRateMax": 0 },
+    "xss": { "recallMin": 1, "fpRateMax": 0 },
+    "idor": { "recallMin": 1, "fpRateMax": 0 },
+    "broken_access_control": { "recallMin": 1, "fpRateMax": 0 }
+  }
+}

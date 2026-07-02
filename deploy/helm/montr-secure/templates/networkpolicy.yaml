@@ -1,7 +1,14 @@
 {{- if .Values.networkPolicy.enabled }}
-# ⛔ Default-deny egress. Only DNS, internal service traffic, and the client's
-# LLM endpoint are permitted (§14, golden rule #1). Scope `llmEndpoint.cidr` to
-# the real endpoint (or internal proxy) in production.
+{{- /*
+⛔ DEFAULT-DENY EGRESS (§14, golden rule #1). Applies to every pod in the
+release (api/worker/web/postgres/redis). The ONLY egress permitted is:
+  - DNS (so Services resolve),
+  - intra-namespace traffic (postgres/redis/api/web talk to each other),
+  - the client's LLM endpoint (scope networkPolicy.llmEndpoint.cidr!),
+  - any operator-supplied networkPolicy.extraEgress (e.g. an external managed
+    DB/Redis when the bundled datastores are disabled).
+Everything else is denied — no client source can leave except inside the LLM call.
+*/ -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -15,23 +22,55 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # DNS resolution
+    {{- if .Values.networkPolicy.dns.enabled }}
+    # DNS resolution.
     - to: []
       ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
           port: 53
-    # internal service traffic (same namespace: postgres, redis, api/web)
+    {{- end }}
+    # Intra-namespace service traffic (postgres, redis, api, web).
     - to:
         - podSelector: {}
-    {{- if .Values.networkPolicy.defaultDenyEgress }}
-    # client LLM endpoint (the only permitted external egress)
+    # ⛔ Client LLM endpoint — the only permitted external egress.
     - to:
         - ipBlock:
             cidr: {{ .Values.networkPolicy.llmEndpoint.cidr | quote }}
+            {{- with .Values.networkPolicy.llmEndpoint.except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.networkPolicy.llmEndpoint.port }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # Operator-supplied extra egress (internal proxy / external datastores).
+    {{- toYaml . | nindent 4 }}
     {{- end }}
+{{- if .Values.networkPolicy.ingress.enabled }}
+---
+# Optional restrictive ingress to the app pods (same namespace + listed ones).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "montr.fullname" . }}-ingress
+  labels:
+    {{- include "montr.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "montr.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- range .Values.networkPolicy.ingress.fromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+{{- end }}
 {{- end }}

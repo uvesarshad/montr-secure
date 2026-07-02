@@ -1,0 +1,34 @@
+{
+  "name": "@montr/qa",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "montr-qa": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "eslint src",
+    "test": "vitest run --passWithNoTests",
+    "qa:corpus": "tsc -b && node dist/cli.js",
+    "qa:variance": "tsc -b && node dist/cli.js --variance",
+    "clean": "rm -rf dist .tsbuildinfo"
+  },
+  "dependencies": {
+    "@montr/contracts": "workspace:*",
+    "@montr/fixtures": "workspace:*",
+    "fast-glob": "^3.3.3"
+  }
+}

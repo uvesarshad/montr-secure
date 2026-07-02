@@ -1,76 +1,327 @@
-# Montr Secure Helm values.
+# =============================================================================
+# Montr Secure — Helm values.
+#
 # HARDENED, SAFETY-FIRST DEFAULTS (§11): auto-fix OFF, DAST OFF, budget hard-halt
-# ON, telemetry OFF, default-deny egress. Install on a clean cluster with only a
-# client LLM key configured.
+# ON, telemetry OFF, DEFAULT-DENY EGRESS. Goal: install on a clean cluster with
+# only a client LLM key configured.
+#
+# Quick start (bundled Postgres/Redis, only the LLM key required):
+#   helm install montr ./deploy/helm/montr-secure \
+#     --set-file secrets.llmApiKey=./llm.key \
+#     --set networkPolicy.llmEndpoint.cidr=<LLM_IP/32>
+# Production: disable bundled datastores, point at managed Postgres/Redis, and
+# supply secrets via an existing Secret or the Vault/CSI option (see `secrets`).
+# =============================================================================
 
 nameOverride: ""
 fullnameOverride: ""
 
+# --- Container images -------------------------------------------------------
+# Per-component image = "<registry>/<repository>-<component>:<tag>".
+# tag falls back to .Chart.AppVersion. Override per component via <comp>.image.
 image:
   registry: ghcr.io
   repository: montr/secure
-  tag: "0.0.0"
+  tag: "" # "" -> Chart.appVersion
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
+# --- ServiceAccounts (least-privilege; one per component, no token, no RBAC) --
 serviceAccount:
   create: true
-  name: ""
+  name: "" # only used when create=false (shared SA)
+  annotations: {} # e.g. IRSA / GCP Workload Identity bindings
 
+# --- Pod & container hardening (applied to api/worker/web) -------------------
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]
+
+podAnnotations: {}
+
+# --- API service ------------------------------------------------------------
 api:
   replicaCount: 2
   port: 3001
+  image: {} # {registry, repository, tag} overrides
+  service:
+    type: ClusterIP
+    port: 3001
+  probes:
+    enabled: true
+    path: /health
   resources:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { cpu: "1", memory: 512Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 80
+  pdb:
+    enabled: true
+    minAvailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
 
+# --- Worker (BullMQ host: orchestrator + pipeline layers) -------------------
 worker:
   replicaCount: 2
+  image: {}
+  # Writable scratch (emptyDir) for sandboxed repo checkouts (root FS is RO).
+  workspaceSizeLimit: 5Gi
+  probes:
+    enabled: true
   resources:
     requests: { cpu: 250m, memory: 512Mi }
     limits: { cpu: "2", memory: 2Gi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 80
+  pdb:
+    enabled: true
+    minAvailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
 
+# --- Web (Next.js operator console) -----------------------------------------
 web:
   replicaCount: 1
   port: 3000
+  image: {}
+  service:
+    type: ClusterIP
+    port: 3000
+  probes:
+    enabled: true
+    path: /
   resources:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { cpu: 500m, memory: 512Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 75
+  pdb:
+    enabled: false # single replica by default
+    minAvailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# =============================================================================
+# Datastores. Bundled by default so a clean install works with only the LLM key.
+# ⛔ PRODUCTION: set enabled=false and point at managed Postgres/Redis
+# (secrets.databaseUrl + redis.externalUrl). The bundled instances are a
+# single-replica starter tier, not an HA database.
+# =============================================================================
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  port: 5432
+  auth:
+    username: montr
+    database: montr
+    # Leave empty to auto-generate (persisted across upgrades via Secret lookup).
+    password: ""
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "2", memory: 1Gi }
 
 redis:
-  url: "redis://redis:6379"
+  enabled: true
+  image: redis:7-alpine
+  port: 6379
+  # Used only when enabled=false (external Redis).
+  externalUrl: ""
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
 
-llm:
-  provider: anthropic
-  endpoint: ""
-  # Recommended matrix (DECIDE-3). Confirmation floor = Sonnet-5-class.
-  modelMatrix:
-    triage: claude-haiku-4-5-20251001
-    default: claude-sonnet-5
-    confirmation: claude-opus-4-8
-
-# Non-secret policy toggles surfaced via a ConfigMap.
-config:
-  autoFixEnabled: false
-  dastEnabled: false
-  budgetEnforcement: hard_halt
-  telemetryEnabled: false
-
-# Secrets. In production provide these via a pre-created Secret or --set-file and
-# set create=false. When create=true the chart renders a Secret from these values.
+# =============================================================================
+# Secrets. ⛔ The LLM key is the only secret required for a bundled-datastore
+# install. Precedence: an `existingSecret` (BYO) OR the CSI provider OR a
+# chart-managed Secret rendered from the values below.
+# =============================================================================
 secrets:
   create: true
+  # Use a pre-created Secret instead of chart-managed values. It must contain:
+  #   MONTR_LLM_API_KEY, MONTR_FIELD_ENCRYPTION_KEY_REF, DATABASE_URL
+  #   (+ POSTGRES_PASSWORD if bundled postgres is enabled).
   existingSecret: ""
+  # Prefer `--set-file secrets.llmApiKey=./llm.key` over inlining.
   llmApiKey: ""
   fieldEncryptionKey: ""
+  # External DB connection string. Ignored when postgres.enabled=true (the chart
+  # composes DATABASE_URL from postgres.auth + the generated password).
   databaseUrl: ""
+  # ---- Vault / Secrets Store CSI driver option -----------------------------
+  # When enabled, the chart renders a SecretProviderClass and mounts secrets
+  # from Vault (or another CSI provider) instead of a k8s Secret. See README.
+  csi:
+    enabled: false
+    provider: vault # secrets-store.csi.k8s.io provider name
+    # Mount path inside the pods; the app reads these files via MONTR_SECRETS_DIR.
+    mountPath: /mnt/montr-secrets
+    parameters:
+      roleName: montr-secure
+      vaultAddress: "https://vault.internal:8200"
+    # objects[] maps a Vault secret to a file name the loader understands
+    # (llm-api-key, field-encryption-key). See loader.ts SECRET_FILE_MAP.
+    objects:
+      - objectName: llm-api-key
+        secretPath: secret/data/montr/llm
+        secretKey: api-key
+      - objectName: field-encryption-key
+        secretPath: secret/data/montr/crypto
+        secretKey: field-key
 
-# ⛔ NetworkPolicy: default-deny egress; allow only DNS, the client LLM endpoint,
-# and internal service traffic (§14, golden rule #1).
+# =============================================================================
+# Ingress (optional). Route the web console (and optionally the API) externally.
+# =============================================================================
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: montr.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: web # component: web | api
+          port: 3000
+        # - path: /api
+        #   pathType: Prefix
+        #   service: api
+        #   port: 3001
+  tls: []
+  # - secretName: montr-tls
+  #   hosts: [montr.example.com]
+
+# =============================================================================
+# ⛔ NetworkPolicy: DEFAULT-DENY EGRESS. Only DNS, intra-namespace service
+# traffic (api/worker/web/postgres/redis), and the client LLM endpoint are
+# permitted (§14, golden rule #1).
+# =============================================================================
 networkPolicy:
   enabled: true
-  defaultDenyEgress: true
-  # MUST be scoped to the client's LLM endpoint (or internal proxy) in production.
+  dns:
+    enabled: true
   llmEndpoint:
+    # ⛔ MUST be scoped to the client's LLM endpoint (or internal proxy) in
+    # production. 0.0.0.0/0 allows any host on `port` — acceptable only until
+    # the real CIDR is known.
     cidr: "0.0.0.0/0"
     port: 443
+    # Optionally carve internal ranges out of a broad LLM CIDR so the egress
+    # rule cannot reach in-cluster/private services (leave empty for an
+    # INTERNAL LLM proxy on a private range).
+    except: []
+    # - 10.0.0.0/8
+    # - 172.16.0.0/12
+    # - 192.168.0.0/16
+  # Extra egress rules (e.g. an internal LLM proxy, or EXTERNAL managed
+  # Postgres/Redis when the bundled datastores are disabled).
+  extraEgress: []
+  # - to:
+  #     - ipBlock: { cidr: 10.20.0.0/16 }
+  #   ports:
+  #     - { protocol: TCP, port: 5432 }
+  # Optional restrictive ingress to api/web (off by default so a fresh install
+  # is reachable). When enabled, only same-namespace + listed namespaces pass.
+  ingress:
+    enabled: false
+    fromNamespaces: []
+    # - kube-system
+
+# =============================================================================
+# Full MontrConfig (@montr/config). Rendered to /etc/montr/config.json and
+# mounted read-only; MONTR_CONFIG_FILE points the loader at it. This is the
+# single source of truth for ALL non-secret config. Secrets (LLM key, field
+# encryption key, DB URL) come from the Secret/CSI above.
+#
+# Optional fields (endpoints, budget ceilings) are left COMMENTED so they are
+# omitted from the rendered JSON (empty strings would fail URL validation).
+# Locked safety fields (autoFix.prOnly, dast.productionBlocked,
+# dast.killSwitchEnabled, security.egressPolicy) are omitted and enforced by the
+# schema so they cannot be weakened from values.
+# =============================================================================
+montrConfig:
+  clientId: default
+  llm:
+    provider: anthropic # anthropic | bedrock | vertex | azure
+    # endpoint: https://llm-proxy.internal:443   # internal/air-gapped proxy
+    modelMatrix:
+      triage: claude-haiku-4-5-20251001
+      default: claude-sonnet-5
+      confirmation: claude-opus-4-8
+    keyTierGuard: warn # warn | block | off
+    enforceModelFloor: true
+  budget:
+    enforcement: hard_halt # hard_halt | warn
+    requireEstimateApproval: true
+    warnThresholdPct: 0.8
+    # maxUsdPerScan: 25
+    # maxTokensPerScan: 5000000
+  autoFix:
+    enabled: false
+    allowedRiskClasses:
+      - auto-eligible
+    humanRequiredCategoriesAlways:
+      - broken_access_control
+      - broken_authentication
+      - weak_crypto
+      - idor
+      - csrf
+  dast:
+    enabled: false
+    allowlist: []
+    requireApprover: true
+    scope:
+      maxRequestsPerScan: 500
+      maxConcurrentRequests: 2
+      maxRequestsPerSecond: 5
+      maxMutatingRequests: 0
+  retention:
+    scanDays: 90
+    appMapDays: 30
+    auditDays: 3650
+    auditImmutable: true
+  rbac:
+    approverRequiredForGate: true
+    approverRequiredForDast: true
+    sessionTtlMinutes: 60
+  telemetry:
+    enabled: false
+    anonymized: true
+    # endpoint: https://otel-collector.internal:4318
+  security:
+    allowedEgressHosts: []

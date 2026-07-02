@@ -22,9 +22,14 @@
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.109.1",
+    "@aws-sdk/client-bedrock-runtime": "^3.1078.0",
+    "@google-cloud/vertexai": "^1.12.0",
     "@montr/config": "workspace:*",
     "@montr/contracts": "workspace:*",
     "@montr/cost-meter": "workspace:*",
-    "@montr/telemetry": "workspace:*"
+    "@montr/security": "workspace:*",
+    "@montr/telemetry": "workspace:*",
+    "openai": "^6.45.0"
   }
 }

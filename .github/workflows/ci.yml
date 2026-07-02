@@ -1,15 +1,39 @@
+# =============================================================================
+# Montr Secure — CI (build-plan §3.7 / §4.7 / §4.8).
+#
+# Pipeline: install → lint → typecheck → test → build, plus:
+#   - golden-corpus  : precision/recall/FP-rate regression gate (@montr/qa), non-zero on regression.
+#   - self-scan      : dogfood Semgrep SAST + Gitleaks secrets on our OWN source.
+#   - docker         : compose config validate + image build.
+#   - helm           : lint (strict) + template (permutations) + kubeconform.
+#   - supply-chain   : syft SBOM + cosign signing (guarded/best-effort).
+#
+# Node 20 LTS throughout. Least-privilege default token; jobs opt into more.
+# =============================================================================
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default (read-only). Jobs that need more elevate locally.
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # install → lint → typecheck → test → build (all packages).
+  # ---------------------------------------------------------------------------
   build:
     name: install → lint → typecheck → test → build
     runs-on: ubuntu-latest
@@ -18,7 +42,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Lint
@@ -36,22 +60,87 @@ jobs:
         env:
           DATABASE_URL: postgresql://montr:montr@localhost:5432/montr?schema=public
 
-  self-scan:
-    name: self-scan (dogfood) — placeholder
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Self-scan (wired in Wave 1/2 by WS-N)
-        run: echo "self-scan (dogfood, section 14) is wired in Wave 1/2 by WS-N - placeholder"
-
+  # ---------------------------------------------------------------------------
+  # Golden-corpus regression gate (§4.7). Blocks the release on any regression
+  # of precision / recall / FP-rate vs the committed corpus/baseline.json.
+  # ---------------------------------------------------------------------------
   golden-corpus:
-    name: golden-corpus gate — placeholder
+    name: golden-corpus regression gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Precision/recall gate (wired by WS-P)
-        run: echo "golden-corpus precision/recall gate (section 15) is wired by WS-P - placeholder"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `qa:corpus` builds @montr/qa (+contracts+fixtures), loads the golden corpus
+      # and scores confirmed findings vs ground truth, exiting NON-ZERO on any
+      # regression (0 OK · 1 REGRESSION · 2 USAGE · 3 CORPUS_ERROR · 4 RUNTIME).
+      # Today it self-checks with a perfect scanner (wiring smoke test); at
+      # integration the real Layer-3 output is scored via `-- --findings scan.json`.
+      - name: Precision/recall/FP-rate gate (non-zero on regression)
+        run: pnpm --filter @montr/qa qa:corpus
 
+  # ---------------------------------------------------------------------------
+  # Self-scan / dogfood (§4.8, §14, §19 DoD "scans itself clean"). Montr Secure
+  # runs its OWN detection tech (Semgrep SAST + Gitleaks secrets) against its own
+  # source. Intentionally-vulnerable corpus/fixtures are EXCLUDED (they plant
+  # vulns on purpose). Informational today (uploads SARIF); flips to a blocking
+  # gate once WS-N wires the real @montr pipeline self-scan (add a `selfscan`
+  # script — the hook below runs it automatically).
+  # ---------------------------------------------------------------------------
+  self-scan:
+    name: self-scan (dogfood — Semgrep + Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep SAST (best-effort, informational)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check semgrep \
+            || { echo "semgrep unavailable — skipping (best-effort)"; exit 0; }
+          # No --error yet (informational); tighten to blocking once the tree is
+          # verified clean. Metrics off (§10: no vendor telemetry).
+          semgrep scan --metrics=off \
+            --config p/owasp-top-ten --config p/typescript --config p/react \
+            --config p/javascript --config p/secrets \
+            --exclude packages/fixtures/sample-repos --exclude corpus/repos \
+            --sarif --output semgrep.sarif \
+            || echo "semgrep reported findings/errors (see artifact; best-effort)"
+      - name: Gitleaks secret scan (best-effort, redacted)
+        continue-on-error: true
+        run: |
+          # --redact so no secret body is ever printed (golden rule #1 / §14).
+          # Allowlist scopes out planted/example secrets (.github/gitleaks.toml).
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest \
+            detect --no-git --source /repo \
+            --config /repo/.github/gitleaks.toml \
+            --redact --report-format sarif --report-path /repo/gitleaks.sarif \
+            || echo "gitleaks reported findings or is unavailable (see artifact; best-effort)"
+      - name: Montr self-scan hook (guarded — runs once WS-N ships a scanner)
+        continue-on-error: true
+        run: |
+          if pnpm run 2>/dev/null | grep -qw selfscan; then
+            echo "Running montr self-scan (dogfood)…"
+            pnpm run selfscan
+          else
+            echo "No 'selfscan' script yet — pipeline not integrated; dogfood is informational."
+          fi
+      - name: Upload self-scan SARIF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-scan-sarif
+          path: |
+            semgrep.sarif
+            gitleaks.sarif
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Docker: validate compose is well-formed, then build the images.
+  # ---------------------------------------------------------------------------
   docker:
     name: docker build (compose images)
     runs-on: ubuntu-latest
@@ -65,13 +154,138 @@ jobs:
       - name: Build images
         run: docker compose -f deploy/docker/docker-compose.yml build
 
+  # ---------------------------------------------------------------------------
+  # Helm: lint (strict) + template (default + key permutations) + kubeconform
+  # schema validation of the rendered manifests.
+  # ---------------------------------------------------------------------------
   helm:
-    name: helm lint + template
+    name: helm lint + template + kubeconform
     runs-on: ubuntu-latest
+    env:
+      CHART: deploy/helm/montr-secure
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
-      - name: helm lint
-        run: helm lint deploy/helm/montr-secure
-      - name: helm template
-        run: helm template montr deploy/helm/montr-secure > /dev/null
+      - name: helm lint (strict)
+        run: helm lint --strict "$CHART"
+      - name: helm template (default + permutations render clean)
+        run: |
+          set -euo pipefail
+          helm template montr "$CHART" > /dev/null
+          # Vault/CSI secret provider path.
+          helm template montr "$CHART" --set secrets.csi.enabled=true > /dev/null
+          # External managed datastores (bundled Postgres/Redis disabled).
+          helm template montr "$CHART" \
+            --set postgres.enabled=false --set redis.enabled=false \
+            --set secrets.databaseUrl='postgresql://u:p@db:5432/montr?schema=public' \
+            --set redis.externalUrl='redis://redis:6379' > /dev/null
+          # Autoscaling + Ingress + restrictive NetworkPolicy ingress.
+          helm template montr "$CHART" \
+            --set api.autoscaling.enabled=true --set worker.autoscaling.enabled=true \
+            --set ingress.enabled=true --set networkPolicy.ingress.enabled=true > /dev/null
+      - name: Validate rendered manifests (kubeconform, best-effort)
+        continue-on-error: true
+        run: |
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz kubeconform || { echo "kubeconform unavailable — skipping (best-effort)"; exit 0; }
+          helm template montr "$CHART" \
+            | ./kubeconform -strict -summary -kubernetes-version 1.28.0 -ignore-missing-schemas
+
+  # ---------------------------------------------------------------------------
+  # Supply chain (§4.8): syft SBOM + cosign signing. Guarded / best-effort so a
+  # missing tool, absent OIDC token (fork PRs), or missing registry credentials
+  # NEVER breaks CI. Release image signing runs on version tags only.
+  # ---------------------------------------------------------------------------
+  supply-chain:
+    name: SBOM (syft) + sign (cosign) — best-effort
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push release images to GHCR (tags only)
+      id-token: write # cosign keyless (OIDC); absent on fork PRs → sign self-skips
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- SBOM of the workspace (dependency inventory), every run ----
+      - name: Generate SBOM (syft)
+        id: sbom
+        continue-on-error: true
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: montr-secure.spdx.json
+          output-file: montr-secure.spdx.json
+          upload-artifact: true
+
+      - name: Install cosign
+        continue-on-error: true
+        uses: sigstore/cosign-installer@v3
+
+      # ---- Keyless-sign the SBOM (main/tags only; needs OIDC) ----
+      - name: Keyless-sign SBOM (best-effort)
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          COSIGN_YES: "true"
+        run: |
+          if ! command -v cosign >/dev/null 2>&1; then echo "cosign not installed — skipping"; exit 0; fi
+          if [ ! -f montr-secure.spdx.json ]; then echo "no SBOM to sign — skipping"; exit 0; fi
+          cosign sign-blob --yes montr-secure.spdx.json \
+            --output-signature montr-secure.spdx.json.sig \
+            --output-certificate montr-secure.spdx.json.pem \
+            || echo "keyless signing unavailable (no OIDC?) — skipping (best-effort)"
+
+      - name: Upload SBOM signature (best-effort)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-signature
+          path: |
+            montr-secure.spdx.json.sig
+            montr-secure.spdx.json.pem
+          if-no-files-found: ignore
+
+      # ---- Signed RELEASE images + SBOM attestation (version tags only) ----
+      - name: Set up Buildx
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, push, cosign-sign & attest release images (keyless)
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        env:
+          COSIGN_YES: "true"
+        run: |
+          command -v cosign >/dev/null 2>&1 || { echo "cosign missing — skipping release signing"; exit 0; }
+          command -v syft >/dev/null 2>&1 || echo "syft missing — image SBOMs will be skipped"
+          for comp in api worker web; do
+            repo="ghcr.io/${GITHUB_REPOSITORY}-${comp}"
+            tag="${GITHUB_REF_NAME}"
+            echo "::group::${comp} → ${repo}:${tag}"
+            if docker buildx build --push \
+                 -f "deploy/docker/Dockerfile.${comp}" \
+                 -t "${repo}:${tag}" \
+                 --metadata-file "/tmp/meta-${comp}.json" .; then
+              digest="$(jq -r '."containerimage.digest"' "/tmp/meta-${comp}.json")"
+              cosign sign --yes "${repo}@${digest}" || echo "sign ${comp} skipped (best-effort)"
+              if command -v syft >/dev/null 2>&1; then
+                syft "${repo}@${digest}" -o spdx-json="sbom-${comp}.spdx.json" \
+                  && cosign attest --yes --type spdxjson \
+                       --predicate "sbom-${comp}.spdx.json" "${repo}@${digest}" \
+                  || echo "attest ${comp} skipped (best-effort)"
+              fi
+            else
+              echo "build/push ${comp} failed — skipping (best-effort)"
+            fi
+            echo "::endgroup::"
+          done

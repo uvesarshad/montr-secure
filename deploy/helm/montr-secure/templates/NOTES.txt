@@ -1,0 +1,47 @@
+Montr Secure {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Components:
+  api    : {{ include "montr.fullname" . }}-api    (port {{ .Values.api.service.port }})
+  worker : {{ include "montr.fullname" . }}-worker
+  web    : {{ include "montr.fullname" . }}-web    (port {{ .Values.web.service.port }})
+  postgres bundled: {{ .Values.postgres.enabled }}
+  redis    bundled: {{ .Values.redis.enabled }}
+
+Reach the operator console:
+{{- if .Values.ingress.enabled }}
+  Ingress is enabled. Hosts:
+  {{- range .Values.ingress.hosts }}
+    http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+  {{- end }}
+{{- else }}
+  Port-forward (no Ingress configured):
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "montr.fullname" . }}-web {{ .Values.web.service.port }}:{{ .Values.web.service.port }}
+    open http://127.0.0.1:{{ .Values.web.service.port }}
+{{- end }}
+
+⛔ SAFETY CHECKLIST — verify before running a scan:
+  1. LLM key present:
+       kubectl -n {{ .Release.Namespace }} get secret {{ include "montr.secretName" . }} -o jsonpath='{.data.MONTR_LLM_API_KEY}' | base64 -d | head -c4
+     (Set it with:  helm upgrade ... --set-file secrets.llmApiKey=./llm.key)
+{{- if .Values.networkPolicy.enabled }}
+  2. Default-deny egress NetworkPolicy is ACTIVE.
+{{- if eq .Values.networkPolicy.llmEndpoint.cidr "0.0.0.0/0" }}
+     ⚠  networkPolicy.llmEndpoint.cidr is still 0.0.0.0/0 — SCOPE IT to the real
+        LLM endpoint (or internal proxy) so egress is truly restricted:
+          --set networkPolicy.llmEndpoint.cidr=<LLM_IP>/32
+{{- else }}
+     LLM egress scoped to {{ .Values.networkPolicy.llmEndpoint.cidr }}:{{ .Values.networkPolicy.llmEndpoint.port }}.
+{{- end }}
+{{- else }}
+  2. ⚠  networkPolicy.enabled=false — egress is NOT restricted. Enable it (and a
+        CNI that enforces NetworkPolicy) to guarantee no client-code egress.
+{{- end }}
+  3. Hardened defaults in effect: auto-fix={{ .Values.montrConfig.autoFix.enabled }},
+     DAST={{ .Values.montrConfig.dast.enabled }}, budget={{ .Values.montrConfig.budget.enforcement }},
+     telemetry={{ .Values.montrConfig.telemetry.enabled }}.
+{{- if .Values.postgres.enabled }}
+  4. Bundled Postgres is a single-replica STARTER tier. For production set
+     postgres.enabled=false and point at a managed/HA database.
+{{- end }}
+
+Run database migrations (owned by @montr/state-store, WS-C) before first scan.

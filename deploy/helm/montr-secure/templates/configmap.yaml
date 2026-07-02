@@ -5,13 +5,10 @@ metadata:
   labels:
     {{- include "montr.labels" . | nindent 4 }}
 data:
-  MONTR_LLM_PROVIDER: {{ .Values.llm.provider | quote }}
-  MONTR_LLM_ENDPOINT: {{ .Values.llm.endpoint | quote }}
-  MONTR_MODEL_TRIAGE: {{ .Values.llm.modelMatrix.triage | quote }}
-  MONTR_MODEL_DEFAULT: {{ .Values.llm.modelMatrix.default | quote }}
-  MONTR_MODEL_CONFIRMATION: {{ .Values.llm.modelMatrix.confirmation | quote }}
-  MONTR_AUTOFIX_ENABLED: {{ .Values.config.autoFixEnabled | quote }}
-  MONTR_DAST_ENABLED: {{ .Values.config.dastEnabled | quote }}
-  MONTR_BUDGET_ENFORCEMENT: {{ .Values.config.budgetEnforcement | quote }}
-  MONTR_TELEMETRY_ENABLED: {{ .Values.config.telemetryEnabled | quote }}
-  REDIS_URL: {{ .Values.redis.url | quote }}
+  # Infra endpoints + pointer to the mounted MontrConfig JSON. All other config
+  # lives in the -appconfig ConfigMap (config.json) and secrets in the Secret/CSI.
+  REDIS_URL: {{ include "montr.redisUrl" . | quote }}
+  MONTR_CONFIG_FILE: "/etc/montr/config.json"
+  {{- if .Values.secrets.csi.enabled }}
+  MONTR_SECRETS_DIR: {{ .Values.secrets.csi.mountPath | quote }}
+  {{- end }}

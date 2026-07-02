@@ -1,0 +1,36 @@
+# =============================================================================
+# Gitleaks config for the CI self-scan (dogfood) job — see .github/workflows/ci.yml.
+#
+# Montr Secure dogfoods its OWN secret-detection tech (gitleaks, per §0 stack
+# table) against its own tree. The corpus/fixtures repos PLANT secrets on purpose
+# (e.g. `hardcoded_secret`, corpus/README.md), and several *.example.* files carry
+# placeholder credentials — none of those are real leaks, so they are allowlisted.
+# A hit OUTSIDE these paths is a genuine committed secret worth blocking on.
+#
+# The scan runs with `--redact` so no secret body is ever printed (golden rule #1
+# / §14: secrets never logged).
+# =============================================================================
+
+title = "montr-secure self-scan (dogfood)"
+
+# Inherit gitleaks' built-in ruleset.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentionally-vulnerable corpus/fixtures + example/placeholder files."
+# File paths (regex) that must never count as a real leak.
+paths = [
+  '''packages/fixtures/sample-repos/.*''',
+  '''corpus/repos/.*''',
+  '''corpus/README\.md''',
+  '''.*\.example\..*''',
+  '''deploy/docker/\.env\.example''',
+  '''deploy/docker/config\.example\.json''',
+  '''pnpm-lock\.yaml''',
+]
+# Placeholder / documentation secrets that appear in committed examples.
+regexes = [
+  '''change-me-in-prod''',
+  '''postgresql://montr:montr@''',
+]

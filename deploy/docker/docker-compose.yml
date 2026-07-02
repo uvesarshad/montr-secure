@@ -1,6 +1,31 @@
+# Montr Secure — single-host docker-compose stack.
+# One-command bring-up: `cp .env.example .env && docker compose up --build`.
+#
+# HARDENED DEFAULTS (§11 / golden rules): non-root distroless app images,
+# read-only root filesystems (writes go to tmpfs/named volumes only), all Linux
+# capabilities dropped, no privilege escalation, resource caps, healthchecks,
+# and dependency ordering. The ONLY intended outbound call at runtime is the
+# client's LLM endpoint (golden rule #1); everything else is intra-stack.
 name: montr-secure
 
+# ---------------------------------------------------------------------------
+# Reusable hardening anchors for the application tier (api/worker/web).
+# ---------------------------------------------------------------------------
+x-app-hardening: &app-hardening
+  restart: unless-stopped
+  read_only: true # root FS is immutable; only tmpfs/named volumes are writable
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  user: "65532:65532" # distroless "nonroot" uid:gid (explicit, matches image)
+  networks:
+    - montr
+
 services:
+  # -------------------------------------------------------------------------
+  # Postgres 16 — pipeline/app state (dogfoods the target stack).
+  # -------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -15,13 +40,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 1G }
+        reservations: { cpus: "0.25", memory: 256M }
     networks:
       - montr
 
+  # -------------------------------------------------------------------------
+  # Redis 7 — BullMQ broker (durable, AOF on).
+  # -------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
     volumes:
       - redisdata:/data
     healthcheck:
@@ -29,63 +64,159 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+        reservations: { cpus: "0.1", memory: 128M }
     networks:
       - montr
 
-  api:
+  # -------------------------------------------------------------------------
+  # migrate — one-shot Prisma migration runner (runs to completion, then exits).
+  # Owned by WS-C (@montr/state-store). Enabled via the `migrate` profile so it
+  # does not run on every `up` unless requested:
+  #   docker compose --profile migrate run --rm migrate
+  # api/worker will `depends_on` service_completed_successfully once WS-C ships
+  # `prisma migrate deploy` in the image. Left in a profile so the default
+  # bring-up never blocks on a step the state-store owner has not wired yet.
+  # -------------------------------------------------------------------------
+  migrate:
+    profiles: ["migrate"]
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - .env
+    # Placeholder command; WS-C replaces with the prisma migrate entrypoint.
+    command: ["dist/index.js", "--migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - montr
+
+  # -------------------------------------------------------------------------
+  # api — Fastify HTTP API + RBAC + OpenAPI.
+  # -------------------------------------------------------------------------
+  api:
+    <<: *app-hardening
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    env_file:
+      - .env
+    # Uncomment to load the full MontrConfig (retention/rbac/nested budget/DAST
+    # scope) from a JSON file: `cp config.example.json config.json` first.
+    # environment:
+    #   MONTR_CONFIG_FILE: /etc/montr/config.json
+    # volumes:
+    #   - ./config.json:/etc/montr/config.json:ro
     ports:
       - "3001:3001"
+    tmpfs:
+      - /tmp:mode=1777,size=64m
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/nodejs/bin/node", "-e", "process.exit(0)"]
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3
-    networks:
-      - montr
+      start_period: 25s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+        reservations: { cpus: "0.1", memory: 128M }
 
+  # -------------------------------------------------------------------------
+  # worker — BullMQ worker host (orchestrator + pipeline layers).
+  # -------------------------------------------------------------------------
   worker:
+    <<: *app-hardening
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.worker
-    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      MONTR_WORKSPACE_DIR: /workspace
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    volumes:
+      # Writable scratch for repo checkouts / sandboxed analysis (root FS is RO).
+      - workspacedata:/workspace
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      - montr
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+        reservations: { cpus: "0.25", memory: 512M }
 
+  # -------------------------------------------------------------------------
+  # web — Next.js operator console + report UI.
+  # -------------------------------------------------------------------------
   web:
+    <<: *app-hardening
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.web
-    restart: unless-stopped
     env_file:
       - .env
     ports:
       - "3000:3000"
+    tmpfs:
+      # /tmp plus the Next.js ISR cache path (needed once WS-K ships standalone).
+      - /tmp:mode=1777,size=64m
     depends_on:
-      - api
-    networks:
-      - montr
+      # service_started (not _healthy) so the console can boot and retry the API
+      # rather than block indefinitely; switch to service_healthy in production.
+      api:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+        reservations: { cpus: "0.1", memory: 128M }
 
 volumes:
   pgdata:
   redisdata:
+  workspacedata:
 
 networks:
   montr:

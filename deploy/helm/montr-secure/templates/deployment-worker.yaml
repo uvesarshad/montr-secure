@@ -6,7 +6,9 @@ metadata:
     {{- include "montr.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker
 spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
   replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "montr.selectorLabels" . | nindent 6 }}
@@ -16,33 +18,100 @@ spec:
       labels:
         {{- include "montr.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
+      annotations:
+        checksum/config: {{ include "montr.configJson" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
-      serviceAccountName: {{ include "montr.serviceAccountName" . }}
+      serviceAccountName: {{ include "montr.serviceAccountName" (dict "ctx" . "component" "worker") }}
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        fsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
+        {{- include "montr.podSecurityContext" . | nindent 8 }}
       containers:
         - name: worker
-          image: {{ include "montr.image" . }}
+          image: {{ include "montr.image" (dict "ctx" . "component" "worker") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["dist/index.js"]
+          env:
+            - name: MONTR_WORKSPACE_DIR
+              value: /workspace
           envFrom:
             - configMapRef:
                 name: {{ include "montr.fullname" . }}-config
             - secretRef:
                 name: {{ include "montr.secretName" . }}
+          {{- if .Values.worker.probes.enabled }}
+          readinessProbe:
+            exec:
+              command:
+                - /nodejs/bin/node
+                - -e
+                - "const u=new URL(process.env.REDIS_URL);const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - /nodejs/bin/node
+                - -e
+                - "const u=new URL(process.env.REDIS_URL);const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"
+            initialDelaySeconds: 25
+            periodSeconds: 30
+            timeoutSeconds: 5
+          {{- end }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+            {{- include "montr.containerSecurityContext" . | nindent 12 }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: appconfig
+              mountPath: /etc/montr/config.json
+              subPath: config.json
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: workspace
+              mountPath: /workspace
+            {{- if .Values.secrets.csi.enabled }}
+            - name: montr-secrets
+              mountPath: {{ .Values.secrets.csi.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: appconfig
+          configMap:
+            name: {{ include "montr.fullname" . }}-appconfig
+        - name: tmp
+          emptyDir: {}
+        - name: workspace
+          emptyDir:
+            sizeLimit: {{ .Values.worker.workspaceSizeLimit }}
+        {{- if .Values.secrets.csi.enabled }}
+        - name: montr-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "montr.fullname" . }}-spc
+        {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
