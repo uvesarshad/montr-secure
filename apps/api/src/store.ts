@@ -1,0 +1,293 @@
+/**
+ * The persistence surface the HTTP API needs.
+ *
+ * Scan / finding / audit repository shapes MIRROR the @montr/state-store (WS-C)
+ * contracts but are declared locally (structural typing) so the API build is not
+ * coupled to that package while it is in flight. Users, reports and DAST targets
+ * are not yet on the shared StateStore, so the API owns those interfaces too.
+ * `apiStoreFromStateStore` documents the integration path — the real StateStore
+ * is structurally assignable to `StateStoreLike`.
+ */
+import {
+  AuditEventSchema,
+  type AuditEvent,
+  type AuditEventInput,
+  type ConfirmedFinding,
+  type Report,
+  type Scan,
+  type UnconfirmedFinding,
+} from "@montr/contracts";
+import type { AuditListOptions, AuditLogClient } from "@montr/telemetry";
+import { computeAuditHash } from "./audit-hash.js";
+import { InMemoryUserStore, type UserRecord, type UserStore } from "./auth/users.js";
+
+/** Mirrors @montr/state-store's `ScanRepository` (client-scoped). */
+export interface ScanRepository {
+  create(clientId: string, entity: Scan): Promise<Scan>;
+  get(clientId: string, id: string): Promise<Scan | null>;
+  list(clientId: string, filter?: Record<string, unknown>): Promise<Scan[]>;
+  update(clientId: string, scan: Scan): Promise<Scan>;
+}
+
+/** Mirrors @montr/state-store's `FindingRepository<T>` (client-scoped). */
+export interface FindingRepository<T> {
+  create(clientId: string, entity: T): Promise<T>;
+  get(clientId: string, id: string): Promise<T | null>;
+  list(clientId: string, filter?: Record<string, unknown>): Promise<T[]>;
+  bulkCreate(clientId: string, findings: T[]): Promise<T[]>;
+  listByScan(clientId: string, scanId: string): Promise<T[]>;
+}
+
+/** The subset of @montr/state-store's `StateStore` the API composes from. */
+export interface StateStoreLike {
+  scans: ScanRepository;
+  confirmed: FindingRepository<ConfirmedFinding>;
+  unconfirmed: FindingRepository<UnconfirmedFinding>;
+  audit: AuditLogClient;
+}
+
+/** A client-authorized live-DAST target (mirrors the Prisma `DastTarget` model). */
+export interface DastTarget {
+  id: string;
+  clientId: string;
+  url: string;
+  enabled: boolean;
+  scopeContract: Record<string, unknown>;
+  approvedById?: string;
+  approvedAt?: string;
+  createdAt: string;
+}
+
+export interface DastTargetStore {
+  create(target: DastTarget): Promise<DastTarget>;
+  get(clientId: string, id: string): Promise<DastTarget | null>;
+  findByUrl(clientId: string, url: string): Promise<DastTarget | null>;
+  list(clientId: string): Promise<DastTarget[]>;
+  update(clientId: string, target: DastTarget): Promise<DastTarget>;
+}
+
+/** Report retrieval (report generation lives in WS-J/@montr/report). */
+export interface ReportStore {
+  getByScan(clientId: string, scanId: string): Promise<Report | null>;
+  save(report: Report): Promise<Report>;
+}
+
+/** Everything the API routes read/write. */
+export interface ApiStore {
+  users: UserStore;
+  scans: ScanRepository;
+  confirmed: FindingRepository<ConfirmedFinding>;
+  unconfirmed: FindingRepository<UnconfirmedFinding>;
+  reports: ReportStore;
+  dastTargets: DastTargetStore;
+  audit: AuditLogClient;
+}
+
+export interface Clock {
+  now(): Date;
+}
+
+export type IdGen = (prefix?: string) => string;
+
+/* --------------------------------------------------------------------------- *
+ * In-memory implementations (dev + unit tests). Never for production use.
+ * --------------------------------------------------------------------------- */
+
+class InMemoryScanRepo implements ScanRepository {
+  private readonly rows = new Map<string, Scan>();
+  private key(clientId: string, id: string) {
+    return `${clientId}:${id}`;
+  }
+  async create(clientId: string, entity: Scan): Promise<Scan> {
+    this.rows.set(this.key(clientId, entity.id), { ...entity });
+    return { ...entity };
+  }
+  async get(clientId: string, id: string): Promise<Scan | null> {
+    const r = this.rows.get(this.key(clientId, id));
+    return r ? { ...r } : null;
+  }
+  async list(clientId: string): Promise<Scan[]> {
+    const out: Scan[] = [];
+    for (const r of this.rows.values()) if (r.clientId === clientId) out.push({ ...r });
+    return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async update(clientId: string, scan: Scan): Promise<Scan> {
+    this.rows.set(this.key(clientId, scan.id), { ...scan });
+    return { ...scan };
+  }
+}
+
+class InMemoryFindingRepo<
+  T extends { id: string; clientId: string; scanId: string },
+> implements FindingRepository<T> {
+  private readonly rows = new Map<string, T>();
+  private key(clientId: string, id: string) {
+    return `${clientId}:${id}`;
+  }
+  async create(clientId: string, entity: T): Promise<T> {
+    this.rows.set(this.key(clientId, entity.id), { ...entity });
+    return { ...entity };
+  }
+  async get(clientId: string, id: string): Promise<T | null> {
+    const r = this.rows.get(this.key(clientId, id));
+    return r ? { ...r } : null;
+  }
+  async list(clientId: string): Promise<T[]> {
+    const out: T[] = [];
+    for (const r of this.rows.values()) if (r.clientId === clientId) out.push({ ...r });
+    return out;
+  }
+  async bulkCreate(clientId: string, findings: T[]): Promise<T[]> {
+    return Promise.all(findings.map((f) => this.create(clientId, f)));
+  }
+  async listByScan(clientId: string, scanId: string): Promise<T[]> {
+    return (await this.list(clientId)).filter((f) => f.scanId === scanId);
+  }
+}
+
+class InMemoryReportStore implements ReportStore {
+  private readonly rows = new Map<string, Report>();
+  private key(clientId: string, scanId: string) {
+    return `${clientId}:${scanId}`;
+  }
+  async getByScan(clientId: string, scanId: string): Promise<Report | null> {
+    const r = this.rows.get(this.key(clientId, scanId));
+    return r ? { ...r } : null;
+  }
+  async save(report: Report): Promise<Report> {
+    this.rows.set(this.key(report.clientId, report.scanId), { ...report });
+    return { ...report };
+  }
+}
+
+class InMemoryDastTargetStore implements DastTargetStore {
+  private readonly rows = new Map<string, DastTarget>();
+  private key(clientId: string, id: string) {
+    return `${clientId}:${id}`;
+  }
+  async create(target: DastTarget): Promise<DastTarget> {
+    this.rows.set(this.key(target.clientId, target.id), { ...target });
+    return { ...target };
+  }
+  async get(clientId: string, id: string): Promise<DastTarget | null> {
+    const r = this.rows.get(this.key(clientId, id));
+    return r ? { ...r } : null;
+  }
+  async findByUrl(clientId: string, url: string): Promise<DastTarget | null> {
+    for (const r of this.rows.values()) {
+      if (r.clientId === clientId && r.url === url) return { ...r };
+    }
+    return null;
+  }
+  async list(clientId: string): Promise<DastTarget[]> {
+    const out: DastTarget[] = [];
+    for (const r of this.rows.values()) if (r.clientId === clientId) out.push({ ...r });
+    return out;
+  }
+  async update(clientId: string, target: DastTarget): Promise<DastTarget> {
+    this.rows.set(this.key(clientId, target.id), { ...target });
+    return { ...target };
+  }
+}
+
+/**
+ * Append-only, hash-chained audit log kept in memory for dev/tests. Reuses the
+ * REAL `computeAuditHash` from @montr/state-store so the chain is genuinely
+ * tamper-evident (§8.5) even without Postgres.
+ */
+export class InMemoryAuditLogClient implements AuditLogClient {
+  private readonly byClient = new Map<string, AuditEvent[]>();
+
+  constructor(
+    private readonly clock: Clock,
+    private readonly idgen: IdGen,
+  ) {}
+
+  async append(input: AuditEventInput): Promise<AuditEvent> {
+    const list = this.byClient.get(input.clientId) ?? [];
+    const prevHash = list.length > 0 ? (list[list.length - 1] as AuditEvent).hash : "";
+    const sequence = list.length + 1;
+    const withoutHash = {
+      id: this.idgen("audit"),
+      clientId: input.clientId,
+      sequence,
+      ...(input.scanId ? { scanId: input.scanId } : {}),
+      actor: input.actor,
+      action: input.action,
+      ...(input.targetType ? { targetType: input.targetType } : {}),
+      ...(input.targetId ? { targetId: input.targetId } : {}),
+      summary: input.summary,
+      metadata: input.metadata ?? {},
+      prevHash,
+      at: this.clock.now().toISOString(),
+    };
+    const hash = computeAuditHash(prevHash, withoutHash);
+    const event = AuditEventSchema.parse({ ...withoutHash, hash });
+    list.push(event);
+    this.byClient.set(input.clientId, list);
+    return event;
+  }
+
+  async list(clientId: string, opts?: AuditListOptions): Promise<AuditEvent[]> {
+    let list = [...(this.byClient.get(clientId) ?? [])];
+    if (opts?.scanId) list = list.filter((e) => e.scanId === opts.scanId);
+    if (opts?.fromSequence !== undefined) {
+      list = list.filter((e) => e.sequence >= (opts.fromSequence as number));
+    }
+    if (opts?.limit !== undefined) list = list.slice(0, opts.limit);
+    return list;
+  }
+
+  async verifyChain(clientId: string): Promise<boolean> {
+    let prev = "";
+    for (const e of this.byClient.get(clientId) ?? []) {
+      if (e.prevHash !== prev) return false;
+      const { hash, ...rest } = e;
+      if (computeAuditHash(prev, rest) !== hash) return false;
+      prev = hash;
+    }
+    return true;
+  }
+}
+
+export interface InMemoryApiStoreOptions {
+  clock?: Clock;
+  idgen?: IdGen;
+}
+
+/** Fully in-memory ApiStore for local dev and unit tests. */
+export function createInMemoryApiStore(opts: InMemoryApiStoreOptions = {}): ApiStore {
+  const clock: Clock = opts.clock ?? { now: () => new Date() };
+  const idgen: IdGen = opts.idgen ?? ((prefix = "id") => `${prefix}_${crypto.randomUUID()}`);
+  return {
+    users: new InMemoryUserStore(),
+    scans: new InMemoryScanRepo(),
+    confirmed: new InMemoryFindingRepo<ConfirmedFinding>(),
+    unconfirmed: new InMemoryFindingRepo<UnconfirmedFinding>(),
+    reports: new InMemoryReportStore(),
+    dastTargets: new InMemoryDastTargetStore(),
+    audit: new InMemoryAuditLogClient(clock, idgen),
+  };
+}
+
+/**
+ * Compose a production ApiStore from the shared StateStore (scans/findings/audit)
+ * plus the API-owned stores for users/reports/DAST targets. Used at integration
+ * once @montr/state-store surfaces the extra repositories.
+ */
+export function apiStoreFromStateStore(
+  state: StateStoreLike,
+  extras: { users: UserStore; reports: ReportStore; dastTargets: DastTargetStore },
+): ApiStore {
+  return {
+    users: extras.users,
+    scans: state.scans,
+    confirmed: state.confirmed,
+    unconfirmed: state.unconfirmed,
+    reports: extras.reports,
+    dastTargets: extras.dastTargets,
+    audit: state.audit,
+  };
+}
+
+export type { UserRecord };

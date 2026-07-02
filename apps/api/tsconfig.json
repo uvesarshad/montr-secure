@@ -20,6 +20,9 @@
       "path": "../../packages/orchestrator"
     },
     {
+      "path": "../../packages/security"
+    },
+    {
       "path": "../../packages/telemetry"
     }
   ]

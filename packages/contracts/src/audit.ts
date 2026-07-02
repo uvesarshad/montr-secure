@@ -53,6 +53,7 @@ export const AuditActionSchema = z.enum([
   "budget.exceeded",
   "config.changed",
   "auth.login",
+  "auth.logout",
   "auth.role_changed",
   "export.generated",
 ]);

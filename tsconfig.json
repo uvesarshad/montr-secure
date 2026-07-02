@@ -44,6 +44,12 @@
       "path": "packages/fixtures"
     },
     {
+      "path": "packages/qa"
+    },
+    {
+      "path": "packages/security"
+    },
+    {
       "path": "apps/api"
     },
     {

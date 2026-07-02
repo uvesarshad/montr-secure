@@ -24,6 +24,10 @@
   "dependencies": {
     "@montr/contracts": "workspace:*",
     "@montr/state-store": "workspace:*",
-    "@montr/telemetry": "workspace:*"
+    "@montr/telemetry": "workspace:*",
+    "@gitbeaker/rest": "^43.8.0",
+    "@octokit/rest": "^22.0.1",
+    "puppeteer-core": "^24.43.1",
+    "simple-git": "^3.36.0"
   }
 }

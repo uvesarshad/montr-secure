@@ -25,7 +25,10 @@
     "@montr/config": "workspace:*",
     "@montr/contracts": "workspace:*",
     "@montr/llm-gateway": "workspace:*",
+    "@montr/security": "workspace:*",
     "@montr/state-store": "workspace:*",
-    "@montr/telemetry": "workspace:*"
+    "@montr/telemetry": "workspace:*",
+    "playwright-core": "^1.61.1",
+    "undici": "^7.28.0"
   }
 }

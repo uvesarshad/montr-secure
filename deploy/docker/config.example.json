@@ -1,0 +1,62 @@
+{
+  "clientId": "default",
+  "llm": {
+    "provider": "anthropic",
+    "modelMatrix": {
+      "triage": "claude-haiku-4-5-20251001",
+      "default": "claude-sonnet-5",
+      "confirmation": "claude-opus-4-8"
+    },
+    "keyTierGuard": "warn",
+    "enforceModelFloor": true
+  },
+  "budget": {
+    "enforcement": "hard_halt",
+    "requireEstimateApproval": true,
+    "warnThresholdPct": 0.8
+  },
+  "autoFix": {
+    "enabled": false,
+    "prOnly": true,
+    "allowedRiskClasses": ["auto-eligible"],
+    "humanRequiredCategoriesAlways": [
+      "broken_access_control",
+      "broken_authentication",
+      "weak_crypto",
+      "idor",
+      "csrf"
+    ]
+  },
+  "dast": {
+    "enabled": false,
+    "allowlist": [],
+    "productionBlocked": true,
+    "scope": {
+      "maxRequestsPerScan": 500,
+      "maxConcurrentRequests": 2,
+      "maxRequestsPerSecond": 5,
+      "maxMutatingRequests": 0
+    },
+    "killSwitchEnabled": true,
+    "requireApprover": true
+  },
+  "retention": {
+    "scanDays": 90,
+    "appMapDays": 30,
+    "auditDays": 3650,
+    "auditImmutable": true
+  },
+  "rbac": {
+    "approverRequiredForGate": true,
+    "approverRequiredForDast": true,
+    "sessionTtlMinutes": 60
+  },
+  "telemetry": {
+    "enabled": false,
+    "anonymized": true
+  },
+  "security": {
+    "egressPolicy": "default-deny",
+    "allowedEgressHosts": []
+  }
+}

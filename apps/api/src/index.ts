@@ -1,16 +1,75 @@
 /**
- * apps/api — Fastify HTTP API + RBAC + OpenAPI. Wave 0 stub; WS-L/WS-D build it.
+ * apps/api — Fastify HTTP API + AuthN/RBAC + OpenAPI (WS-L, build-plan §4.4).
+ *
  * All request/response shapes come from @montr/contracts; every mutating action
- * binds to an audit event.
+ * binds to an audit event (actor + role); the approver role is a HARD requirement
+ * for the human fix gate and for DAST authorization; passwords use node:crypto
+ * scrypt with a constant-time compare; cookie auth is CSRF-protected; helmet,
+ * CORS (locked down) and rate-limits harden the surface.
  */
-import { NotImplementedError } from "@montr/contracts";
-import type { MontrConfig } from "@montr/config";
 
-export interface ApiServer {
-  listen(port: number): Promise<void>;
-  close(): Promise<void>;
-}
+// Server assembly
+export {
+  buildServer,
+  createApiServer,
+  createInMemoryDeps,
+  type ApiServer,
+  type InMemoryDepsOverrides,
+} from "./server.js";
 
-export function createApiServer(_config: MontrConfig): ApiServer {
-  throw new NotImplementedError("createApiServer — WS-L/WS-D");
-}
+// Dependency-injection + request types
+export type {
+  ApiServerDeps,
+  ResolvedDeps,
+  AuthenticatedUser,
+  AuthMethod,
+  SessionClaims,
+} from "./types.js";
+
+// Persistence surface
+export {
+  createInMemoryApiStore,
+  apiStoreFromStateStore,
+  InMemoryAuditLogClient,
+  type ApiStore,
+  type ReportStore,
+  type DastTargetStore,
+  type DastTarget,
+  type Clock,
+  type IdGen,
+  type UserRecord,
+  type InMemoryApiStoreOptions,
+} from "./store.js";
+
+// Users + auth primitives
+export {
+  InMemoryUserStore,
+  toPublicUser,
+  EmailSchema,
+  PasswordSchema,
+  type UserStore,
+  type PublicUser,
+} from "./auth/users.js";
+export {
+  hashPassword,
+  verifyPassword,
+  DEFAULT_SCRYPT_PARAMS,
+  type ScryptParams,
+} from "./auth/password.js";
+export {
+  issueCsrfToken,
+  verifyCsrfToken,
+  safeEqual,
+  CSRF_HEADER,
+  CSRF_COOKIE,
+} from "./auth/csrf.js";
+export { SESSION_COOKIE } from "./auth/session.js";
+
+// Orchestrator stub (dev/tests until WS-D wiring)
+export { createStubOrchestrator, type StubOrchestratorDeps } from "./stub-orchestrator.js";
+
+// DAST allowlist helper (also enforced at the route layer)
+export { isAllowlisted } from "./routes/dast.js";
+
+// Errors
+export { HttpError, montrErrorStatus } from "./errors.js";

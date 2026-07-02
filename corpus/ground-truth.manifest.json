@@ -1,0 +1,66 @@
+{
+  "version": "1.0.0",
+  "repos": [
+    {
+      "name": "vulnerable-nextjs-owasp",
+      "kind": "vulnerable",
+      "path": "repos/vulnerable-nextjs-owasp",
+      "expectedFindings": [
+        {
+          "id": "gt_ssrf",
+          "category": "ssrf",
+          "cwe": ["CWE-918"],
+          "owasp": "A10:2021",
+          "file": "app/api/fetch/route.ts",
+          "line": 10,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "User-supplied `url` is fetched server-side with no allowlist (SSRF)."
+        },
+        {
+          "id": "gt_idor",
+          "category": "idor",
+          "cwe": ["CWE-639"],
+          "owasp": "A01:2021",
+          "file": "app/api/orders/[id]/route.ts",
+          "line": 14,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Order fetched by id with no ownership check; access-control fix is human-required."
+        },
+        {
+          "id": "gt_bac",
+          "category": "broken_access_control",
+          "cwe": ["CWE-284"],
+          "owasp": "A01:2021",
+          "file": "app/api/admin/route.ts",
+          "line": 14,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Admin endpoint authenticated but never checks role; access-control fix is human-required."
+        },
+        {
+          "id": "gt_cookie",
+          "category": "insecure_cookie",
+          "cwe": ["CWE-614"],
+          "owasp": "A05:2021",
+          "file": "app/api/login/route.ts",
+          "line": 10,
+          "severity": "medium",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "Session cookie set without Secure/HttpOnly/SameSite flags."
+        }
+      ]
+    },
+    {
+      "name": "clean-nextjs-owasp",
+      "kind": "clean",
+      "path": "repos/clean-nextjs-owasp",
+      "expectedFindings": []
+    }
+  ]
+}

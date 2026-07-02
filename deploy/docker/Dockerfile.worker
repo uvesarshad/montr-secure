@@ -1,21 +1,49 @@
 # syntax=docker/dockerfile:1.7
-# Montr Secure — BullMQ worker host. Multi-stage, distroless, non-root.
+# Montr Secure — BullMQ worker host (runs the orchestrator + layer agents).
+# Multi-stage, DISTROLESS, non-root. The worker checks out repos into a
+# writable /workspace volume (tmpfs/emptyDir) so the root FS can stay read-only.
+#
+# Build context is the REPO ROOT (docker-compose.yml sets `context: ../..`).
 
-FROM node:20-bookworm-slim AS base
-ENV PNPM_HOME=/pnpm
-ENV PATH=$PNPM_HOME:$PATH
+ARG NODE_VERSION=20-bookworm-slim
+ARG DISTROLESS=gcr.io/distroless/nodejs20-debian12:nonroot
+
+# ---------------------------------------------------------------------------
+# base
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION} AS base
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    CI=true
 RUN corepack enable
 WORKDIR /repo
 
+# ---------------------------------------------------------------------------
+# build
+# ---------------------------------------------------------------------------
 FROM base AS build
 COPY . .
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile
 RUN pnpm exec tsc -b
 RUN pnpm --filter @montr/worker deploy --prod --legacy /app
 
-FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM ${DISTROLESS} AS runtime
+LABEL org.opencontainers.image.title="montr-secure-worker" \
+      org.opencontainers.image.description="Montr Secure worker (BullMQ + pipeline layers)" \
+      org.opencontainers.image.source="https://github.com/montr/secure" \
+      org.opencontainers.image.licenses="Proprietary"
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    MONTR_WORKSPACE_DIR=/workspace \
+    REDIS_URL=redis://redis:6379
 COPY --from=build --chown=nonroot:nonroot /app /app
 USER nonroot
+# The worker has no HTTP port; liveness = it can reach Redis (its job broker).
+# Uses only Node built-ins (net/URL) so it works on distroless.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/nodejs/bin/node", "-e", "const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',function(){s.end();process.exit(0)});s.on('error',function(){process.exit(1)});s.on('timeout',function(){process.exit(1)})"]
 CMD ["dist/index.js"]

@@ -25,6 +25,10 @@
     "@montr/contracts": "workspace:*",
     "@montr/llm-gateway": "workspace:*",
     "@montr/state-store": "workspace:*",
-    "@montr/telemetry": "workspace:*"
+    "@montr/telemetry": "workspace:*",
+    "diff": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^8.0.0"
   }
 }

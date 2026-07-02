@@ -1,26 +1,57 @@
 # syntax=docker/dockerfile:1.7
-# Montr Secure — API service. Multi-stage, distroless, non-root.
-# Per-service Dockerfile template (worker/web are the same shape).
+# Montr Secure — API service (Fastify HTTP API + RBAC + OpenAPI).
+# Multi-stage, DISTROLESS, non-root, read-only-root-filesystem friendly
+# (the process only ever writes to /tmp, mounted as tmpfs at runtime).
+#
+# Build context is the REPO ROOT (docker-compose.yml sets `context: ../..`);
+# the repo-root .dockerignore (and deploy/docker/Dockerfile.api.dockerignore)
+# keep the context lean — no node_modules/dist/.git/.env.
 
-FROM node:20-bookworm-slim AS base
-ENV PNPM_HOME=/pnpm
-ENV PATH=$PNPM_HOME:$PATH
+ARG NODE_VERSION=20-bookworm-slim
+# The distroless `:nonroot` tag runs as uid/gid 65532 by default and ships no
+# shell and no package manager — minimal attack surface.
+ARG DISTROLESS=gcr.io/distroless/nodejs20-debian12:nonroot
+
+# ---------------------------------------------------------------------------
+# base — pnpm via corepack on a pinned Node toolchain.
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION} AS base
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    CI=true
 RUN corepack enable
 WORKDIR /repo
 
+# ---------------------------------------------------------------------------
+# build — install workspace deps, typecheck + compile, prune to a prod deploy.
+# ---------------------------------------------------------------------------
 FROM base AS build
 COPY . .
-RUN pnpm install --frozen-lockfile
+# BuildKit cache mount keeps the pnpm content-addressable store warm between builds.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile
 RUN pnpm exec tsc -b
-# Produce a pruned, prod-only deployment of the api app + its workspace deps.
+# Produce a self-contained, prod-only deployment of @montr/api at /app:
+# its compiled dist/ plus resolved workspace + external deps under node_modules/.
 RUN pnpm --filter @montr/api deploy --prod --legacy /app
 
-# Distroless runtime: no shell, no package manager, runs as the `nonroot` user.
-FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+# ---------------------------------------------------------------------------
+# runtime — distroless: no shell, no package manager, non-root.
+# ---------------------------------------------------------------------------
+FROM ${DISTROLESS} AS runtime
+LABEL org.opencontainers.image.title="montr-secure-api" \
+      org.opencontainers.image.description="Montr Secure API (Fastify + RBAC + OpenAPI)" \
+      org.opencontainers.image.source="https://github.com/montr/secure" \
+      org.opencontainers.image.licenses="Proprietary"
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    PORT=3001
 COPY --from=build --chown=nonroot:nonroot /app /app
 USER nonroot
 EXPOSE 3001
-# distroless nodejs image entrypoint is `node`.
+# HEALTHCHECK runs the distroless node binary directly (no shell in the image).
+# Targets the API /health route (implemented by WS-L); global fetch() is Node 20+.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
+    CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"]
+# distroless nodejs ENTRYPOINT is `node`; CMD is the script path (relative to WORKDIR).
 CMD ["dist/index.js"]

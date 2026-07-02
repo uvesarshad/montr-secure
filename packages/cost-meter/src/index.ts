@@ -1,62 +1,34 @@
 /**
- * @montr/cost-meter — pre-scan estimate, live metering, post-scan actuals, and
- * hard-halt budget enforcement (§8.4, DECIDE-4).
- *
- * Wave 0: `priceUsageUsd` is real (deterministic pricing from the reference
- * rate card). The CostMeter accumulator/estimator is a typed stub (WS-B).
+ * @montr/cost-meter — cost is a first-class output (golden rule #8): pre-scan
+ * estimate (from App-Map size × scan mode), live per-call metering, post-scan
+ * actuals, cost-per-scan / cost-per-finding rollups, estimate-vs-actual variance
+ * (±15% target), and a HARD-HALT budget ceiling (DECIDE-4). Deterministic and
+ * offline — no network, no ambient clock unless one is injected.
  */
-import {
-  MODEL_COST_RATES,
-  NotImplementedError,
-  type BudgetPolicy,
-  type CostActual,
-  type CostEstimate,
-  type LayerId,
-  type ScanMode,
-  type TokenUsage,
-} from "@montr/contracts";
+export {
+  priceUsageUsd,
+  findModelRate,
+  normalizeModelId,
+  addUsage,
+  zeroUsage,
+  roundUsd,
+} from "./pricing.js";
 
-/** Deterministic USD price for a token usage against a model's reference rate. */
-export function priceUsageUsd(usage: TokenUsage, modelId: string): number {
-  const rate = MODEL_COST_RATES.find((r) => r.modelId === modelId);
-  if (!rate) return 0;
-  return (
-    (usage.inputTokens / 1_000_000) * rate.inputPerMillionUsd +
-    (usage.outputTokens / 1_000_000) * rate.outputPerMillionUsd
-  );
-}
+export { estimateScanCost, type EstimateInput, type EstimateOptions } from "./estimate.js";
 
-export interface EstimateInput {
-  scanId: string;
-  mode: ScanMode;
-  routeCount: number;
-  sinkCount: number;
-  fileCount: number;
-}
+export {
+  createCostMeter,
+  type CostMeter,
+  type CostMeterOptions,
+  type MeterEntry,
+  type BudgetCheck,
+} from "./meter.js";
 
-export interface MeterEntry {
-  modelId: string;
-  usage: TokenUsage;
-  layer?: LayerId;
-}
-
-export interface BudgetCheck {
-  withinBudget: boolean;
-  exceeded: boolean;
-  warn: boolean;
-  spentUsd: number;
-  spentTokens: number;
-}
-
-/** Live cost accumulator + estimator + budget guard for a single scan. */
-export interface CostMeter {
-  estimate(input: EstimateInput): CostEstimate;
-  record(entry: MeterEntry): void;
-  actual(): CostActual;
-  /** ⛔ Budget ceiling check — drives the hard halt (DECIDE-4). */
-  checkBudget(policy: BudgetPolicy): BudgetCheck;
-}
-
-export function createCostMeter(_scanId: string): CostMeter {
-  throw new NotImplementedError("createCostMeter — WS-B");
-}
+export {
+  buildCostRollup,
+  computeVariancePct,
+  costPerFindingUsd,
+  enforceBudget,
+  isWithinVarianceTarget,
+  VARIANCE_TARGET_PCT,
+} from "./variance.js";

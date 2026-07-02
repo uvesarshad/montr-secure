@@ -2,12 +2,21 @@ apiVersion: v2
 name: montr-secure
 description: Montr Secure — on-prem AI security orchestration platform (BYO-key, hardened defaults).
 type: application
-version: 0.0.0
+# Chart version (SemVer). Bumped independently of the app.
+version: 0.1.0
+# Application version; used as the default image tag when image.tag is empty.
 appVersion: "0.0.0"
+kubeVersion: ">=1.25.0-0"
 keywords:
   - security
   - sast
   - dast
   - sca
+  - appsec
+home: https://github.com/montr/secure
+sources:
+  - https://github.com/montr/secure
 maintainers:
   - name: Montr AI Labs
+annotations:
+  category: Security

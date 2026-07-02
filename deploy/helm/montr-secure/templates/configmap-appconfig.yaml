@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "montr.fullname" . }}-appconfig
+  labels:
+    {{- include "montr.labels" . | nindent 4 }}
+data:
+  # Full @montr/config MontrConfig, mounted read-only at /etc/montr/config.json.
+  # Rendered from .Values.montrConfig; env vars (secrets, REDIS_URL) override it
+  # per the loader precedence (file < env < secret-files).
+  config.json: |-
+    {{- include "montr.configJson" . | nindent 4 }}

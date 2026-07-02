@@ -1,0 +1,90 @@
+import type { Category } from "@montr/contracts";
+
+/**
+ * QA-internal analytics shapes. NOTE: these are metrics/reporting types, NOT
+ * pipeline finding tiers or layer boundaries — those always come verbatim from
+ * @montr/contracts (golden rule #10). Ground-truth shapes are re-exported from
+ * @montr/fixtures (the single source of truth for the corpus labels).
+ */
+export type { GroundTruthFinding, GroundTruthRepo, GroundTruthManifest } from "@montr/fixtures";
+
+/** Raw confusion-matrix counts. */
+export interface ConfusionCounts {
+  truePositives: number;
+  falsePositives: number;
+  falseNegatives: number;
+}
+
+/** Per-category precision/recall/FP-rate breakdown. */
+export interface CategoryScore extends ConfusionCounts {
+  category: Category;
+  precision: number;
+  recall: number;
+  f1: number;
+  /** falsePositives / (truePositives + falsePositives) — the headline metric, per category. */
+  fpRate: number;
+}
+
+/** Classification of a single confirmed finding (or missed ground-truth finding). */
+export interface MatchOutcome {
+  kind: "true_positive" | "false_positive" | "false_negative";
+  category: Category;
+  /** Confirmed finding id (present for TP/FP). */
+  confirmedId?: string;
+  /** Ground-truth finding id (present for TP/FN, and FP when it over-confirmed a demoted case). */
+  groundTruthId?: string;
+  /** Repo-relative file + line — metadata only; never a code/secret body (golden rule #1). */
+  file?: string;
+  line?: number;
+  note?: string;
+}
+
+/** Per-repo confusion result. */
+export interface RepoScore extends ConfusionCounts {
+  repo: string;
+  kind: "vulnerable" | "clean";
+  /** Confirmations that matched a ground-truth finding flagged non-exploitable (should have stayed demoted). */
+  overConfirmed: number;
+  outcomes: MatchOutcome[];
+}
+
+/** Aggregate score across the whole corpus. */
+export interface CorpusScore extends ConfusionCounts {
+  precision: number;
+  recall: number;
+  f1: number;
+  /**
+   * Headline metric (PRD §15/§19, target < 0.05):
+   * falsePositives / (truePositives + falsePositives) == 1 - precision.
+   */
+  fpRate: number;
+  perCategory: CategoryScore[];
+  /** Total confirmations that over-confirmed a demoted (non-exploitable) ground-truth case. */
+  overConfirmed: number;
+  /** Number of manifest repos that were scored. */
+  reposScored: number;
+  /** Number of manifest repos that actually had scan results supplied. */
+  reposWithResults: number;
+  /** Result entries whose repo name was not in the manifest (could not be scored). */
+  unknownRepoResults: number;
+  perRepo: RepoScore[];
+}
+
+/** Options controlling how confirmed findings are matched to ground truth. */
+export interface ScoreOptions {
+  /**
+   * Max |confirmed.line - groundTruth.line| allowed for a location match.
+   * Default {@link DEFAULT_LINE_TOLERANCE}. A confirmed finding must also match
+   * on category and file.
+   */
+  lineTolerance?: number;
+}
+
+/** A scan's confirmed findings for one corpus repo. */
+export interface RepoScanResult {
+  /** Corpus repo name (must match a manifest repo). */
+  repo: string;
+  confirmed: import("@montr/contracts").ConfirmedFinding[];
+}
+
+export const DEFAULT_LINE_TOLERANCE = 3;
