@@ -1,0 +1,76 @@
+# Montr Secure Helm values.
+# HARDENED, SAFETY-FIRST DEFAULTS (§11): auto-fix OFF, DAST OFF, budget hard-halt
+# ON, telemetry OFF, default-deny egress. Install on a clean cluster with only a
+# client LLM key configured.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: ghcr.io
+  repository: montr/secure
+  tag: "0.0.0"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+
+api:
+  replicaCount: 2
+  port: 3001
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+worker:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "2", memory: 2Gi }
+
+web:
+  replicaCount: 1
+  port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+redis:
+  url: "redis://redis:6379"
+
+llm:
+  provider: anthropic
+  endpoint: ""
+  # Recommended matrix (DECIDE-3). Confirmation floor = Sonnet-5-class.
+  modelMatrix:
+    triage: claude-haiku-4-5-20251001
+    default: claude-sonnet-5
+    confirmation: claude-opus-4-8
+
+# Non-secret policy toggles surfaced via a ConfigMap.
+config:
+  autoFixEnabled: false
+  dastEnabled: false
+  budgetEnforcement: hard_halt
+  telemetryEnabled: false
+
+# Secrets. In production provide these via a pre-created Secret or --set-file and
+# set create=false. When create=true the chart renders a Secret from these values.
+secrets:
+  create: true
+  existingSecret: ""
+  llmApiKey: ""
+  fieldEncryptionKey: ""
+  databaseUrl: ""
+
+# ⛔ NetworkPolicy: default-deny egress; allow only DNS, the client LLM endpoint,
+# and internal service traffic (§14, golden rule #1).
+networkPolicy:
+  enabled: true
+  defaultDenyEgress: true
+  # MUST be scoped to the client's LLM endpoint (or internal proxy) in production.
+  llmEndpoint:
+    cidr: "0.0.0.0/0"
+    port: 443

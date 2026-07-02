@@ -1,0 +1,17 @@
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+.git
+.github
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+.DS_Store
+docs
+corpus
+packages/fixtures/sample-repos
+**/*.md
+!README.md

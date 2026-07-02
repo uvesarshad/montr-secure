@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+# Montr Secure — operator console (Next.js). Multi-stage, distroless, non-root.
+# NOTE: apps/web is a Wave-0 stub. WS-K converts it to a Next.js 14 app and
+# switches this to the Next standalone output (`.next/standalone`). Until then
+# this builds the placeholder package.
+
+FROM node:20-bookworm-slim AS base
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+WORKDIR /repo
+
+FROM base AS build
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm exec tsc -b
+RUN pnpm --filter @montr/web deploy --prod --legacy /app
+
+FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build --chown=nonroot:nonroot /app /app
+USER nonroot
+EXPOSE 3000
+CMD ["dist/index.js"]

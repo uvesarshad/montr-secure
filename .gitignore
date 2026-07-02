@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+.turbo/
+
+# Test / coverage
+coverage/
+.vitest/
+
+# Prisma generated client
+packages/state-store/src/generated/
+packages/state-store/prisma/*.db
+
+# Secrets & local config — NEVER commit (golden rule #1)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Misc
+tmp/
+.cache/

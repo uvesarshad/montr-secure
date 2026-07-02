@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7
+# Montr Secure — API service. Multi-stage, distroless, non-root.
+# Per-service Dockerfile template (worker/web are the same shape).
+
+FROM node:20-bookworm-slim AS base
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+WORKDIR /repo
+
+FROM base AS build
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm exec tsc -b
+# Produce a pruned, prod-only deployment of the api app + its workspace deps.
+RUN pnpm --filter @montr/api deploy --prod --legacy /app
+
+# Distroless runtime: no shell, no package manager, runs as the `nonroot` user.
+FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build --chown=nonroot:nonroot /app /app
+USER nonroot
+EXPOSE 3001
+# distroless nodejs image entrypoint is `node`.
+CMD ["dist/index.js"]

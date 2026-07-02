@@ -1,0 +1,10 @@
+**/dist/**
+**/node_modules/**
+**/.turbo/**
+**/coverage/**
+**/*.tsbuildinfo
+pnpm-lock.yaml
+packages/fixtures/sample-repos/**
+packages/state-store/prisma/migrations/**
+packages/state-store/prisma/schema.prisma
+deploy/helm/montr-secure/templates/**

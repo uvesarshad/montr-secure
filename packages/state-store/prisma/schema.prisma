@@ -1,0 +1,533 @@
+// Montr Secure — Prisma schema (build-plan §3.4, PRD §9).
+//
+// PER-CLIENT ISOLATION (§8.3): row-scoped multitenancy. Every table carries a
+//   `clientId` and is indexed by it; the @montr/state-store repositories scope
+//   EVERY query by clientId so per-client data is never shared. (Schema-per-
+//   client is the stricter alternative for high-isolation deployments — swap the
+//   datasource per tenant; the models are unchanged.)
+//
+// FIELD-LEVEL ENCRYPTION (§11): fields annotated `/// @encrypted` are encrypted
+//   at rest with AES-256-GCM using a key from KMS/Vault/k8s secret (the
+//   prisma-field-encryption extension convention, wired in @montr/state-store,
+//   WS-C). Applies to the client's LLM key + tokens. Secrets are never logged
+//   and never egressed except to their own provider (golden rule #1).
+//
+// DECIDE-2: AppMap is persisted per client with a rebuild-on-stale-commit
+//   policy (`AppMap.rebuildPolicy`, `AppMap.stale`).
+//
+// CONSISTENCY: enum values below mirror the @montr/contracts Zod enums exactly
+//   (via @map where a value is not a valid Prisma identifier, e.g. "auto-eligible").
+//   Nested value objects (scope, cost, proofArtifact, App Map sub-collections)
+//   are stored as validated Json whose shape is the corresponding Zod schema.
+//   AuditEvent.action is String because its values are dotted ("scan.created");
+//   the Zod AuditAction enum remains the source of truth.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// --------------------------------------------------------------------------- //
+// Enums (mirror @montr/contracts)
+// --------------------------------------------------------------------------- //
+
+enum Provider {
+  anthropic
+  bedrock
+  vertex
+  azure
+}
+
+enum ScanMode {
+  full
+  diff
+}
+
+enum ScanStatus {
+  queued
+  running
+  paused
+  completed
+  failed
+  cancelled
+  partial
+}
+
+enum GateState {
+  not_started
+  estimate_pending
+  estimate_approved
+  running
+  fix_gate_pending
+  auto_approved
+  approved
+  rejected
+  blocked
+}
+
+enum LayerId {
+  layer0
+  layer1
+  layer2
+  layer3
+  layer4
+  layer5
+}
+
+enum Severity {
+  info
+  low
+  medium
+  high
+  critical
+}
+
+enum Exposure {
+  public
+  authed
+}
+
+enum ProofType {
+  static
+  live
+}
+
+enum FindingStatus {
+  candidate
+  probable
+  confirmed
+  unconfirmed
+}
+
+enum RiskClass {
+  auto_eligible  @map("auto-eligible")
+  human_required @map("human-required")
+}
+
+enum FixStatus {
+  proposed
+  pr_open  @map("pr-open")
+  merged
+  rejected
+}
+
+enum VcsProvider {
+  github
+  gitlab
+}
+
+enum PullRequestStatus {
+  draft
+  open
+  merged
+  closed
+}
+
+enum Role {
+  operator
+  approver
+  viewer
+}
+
+enum AppMapRebuildPolicy {
+  rebuild_on_stale_commit
+  always_rebuild
+  never_rebuild
+}
+
+enum Category {
+  sql_injection
+  nosql_injection
+  command_injection
+  xss
+  ssrf
+  path_traversal
+  insecure_deserialization
+  hardcoded_secret
+  vulnerable_dependency
+  permissive_cors
+  missing_security_headers
+  insecure_cookie
+  weak_crypto
+  broken_access_control
+  broken_authentication
+  open_redirect
+  xxe
+  csrf
+  sensitive_data_exposure
+  insufficient_logging
+  idor
+  mass_assignment
+  rate_limit_missing
+  other
+}
+
+// --------------------------------------------------------------------------- //
+// Tenancy & identity
+// --------------------------------------------------------------------------- //
+
+model Client {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  users         User[]
+  scans         Scan[]
+  appMaps       AppMap[]
+  auditEvents   AuditEvent[]
+  dastTargets   DastTarget[]
+  llmCredential LlmCredential?
+}
+
+model User {
+  id           String   @id @default(cuid())
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id])
+  email        String
+  passwordHash String // argon2 hash (one-way; not reversible)
+  role         Role     @default(viewer)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  operatedScans       Scan[]       @relation("ScanOperator")
+  approvedScans       Scan[]       @relation("ScanApprover")
+  approvedDastTargets DastTarget[] @relation("DastApprover")
+
+  @@unique([clientId, email])
+  @@index([clientId])
+}
+
+/// BYO-key LLM credential. Secrets are field-encrypted at rest (§11).
+model LlmCredential {
+  id           String   @id @default(cuid())
+  clientId     String   @unique
+  client       Client   @relation(fields: [clientId], references: [id])
+  provider     Provider
+  endpoint     String?
+  /// @encrypted — AES-256-GCM (KMS/Vault key). Never egressed except to its provider.
+  apiKey       String
+  /// @encrypted
+  refreshToken String?
+  keyTier      String   @default("unknown")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// --------------------------------------------------------------------------- //
+// App Map (PRD §9, DECIDE-2)
+// --------------------------------------------------------------------------- //
+
+model AppMap {
+  id                String              @id @default(cuid())
+  clientId          String
+  client            Client              @relation(fields: [clientId], references: [id])
+  repo              String
+  branch            String
+  commitSha         String
+  languages         Json // Language[]
+  frameworks        Json // Framework[]
+  entrypoints       Json // Entrypoint[]
+  dataStores        Json // DataStore[]
+  ormModels         Json // OrmModel[] (Prisma DMMF-derived)
+  thirdPartyCalls   Json // ThirdPartyCall[]
+  envSecretSurfaces Json // EnvSecretSurface[]
+  stale             Boolean             @default(false)
+  rebuildPolicy     AppMapRebuildPolicy @default(rebuild_on_stale_commit)
+  createdAt         DateTime            @default(now())
+
+  routes       Route[]
+  taintSources TaintSource[]
+  taintSinks   TaintSink[]
+  scans        Scan[]
+
+  @@unique([clientId, repo, commitSha])
+  @@index([clientId])
+}
+
+model Route {
+  id         String  @id @default(cuid())
+  appMapId   String
+  appMap     AppMap  @relation(fields: [appMapId], references: [id], onDelete: Cascade)
+  path       String
+  method     String // HttpMethod
+  authState  String // AuthState
+  isApiRoute Boolean @default(false)
+  authGate   String?
+  handler    Json? // SourceLocation
+
+  @@index([appMapId])
+}
+
+model TaintSource {
+  id          String  @id @default(cuid())
+  appMapId    String
+  appMap      AppMap  @relation(fields: [appMapId], references: [id], onDelete: Cascade)
+  kind        String // TaintSourceKind
+  location    Json // SourceLocation
+  description String?
+  routeId     String?
+
+  @@index([appMapId])
+}
+
+model TaintSink {
+  id          String  @id @default(cuid())
+  appMapId    String
+  appMap      AppMap  @relation(fields: [appMapId], references: [id], onDelete: Cascade)
+  kind        String // TaintSinkKind
+  location    Json // SourceLocation
+  description String?
+
+  @@index([appMapId])
+}
+
+// --------------------------------------------------------------------------- //
+// Scan lifecycle (PRD §9)
+// --------------------------------------------------------------------------- //
+
+model Scan {
+  id           String     @id @default(cuid())
+  clientId     String
+  client       Client     @relation(fields: [clientId], references: [id])
+  appMapId     String?
+  appMap       AppMap?    @relation(fields: [appMapId], references: [id])
+  repo         String
+  branch       String
+  commitSha    String?
+  mode         ScanMode
+  status       ScanStatus @default(queued)
+  gateState    GateState  @default(not_started)
+  operatorId   String
+  operator     User       @relation("ScanOperator", fields: [operatorId], references: [id])
+  approverId   String?
+  approver     User?      @relation("ScanApprover", fields: [approverId], references: [id])
+  scope        Json // ScanScope
+  budgetPolicy Json? // BudgetPolicy
+  costEstimate Json? // CostEstimate
+  costActual   Json? // CostActual
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime   @default(now())
+
+  candidates   CandidateFinding[]
+  probable     ProbableFinding[]
+  confirmed    ConfirmedFinding[]
+  fixes        Fix[]
+  pullRequests PullRequest[]
+  states       ScanState[]
+  report       Report?
+
+  @@index([clientId])
+  @@index([clientId, status])
+}
+
+/// Resumable pipeline state (§8.1) + resume-token checkpoint.
+model ScanState {
+  id              String     @id @default(cuid())
+  clientId        String
+  scanId          String
+  scan            Scan       @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  layer           LayerId
+  status          ScanStatus
+  completedLayers Json // LayerId[]
+  checkpoint      Json?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([clientId, scanId])
+}
+
+// --------------------------------------------------------------------------- //
+// Findings (PRD §9). Unconfirmed = a demoted ProbableFinding (status +
+// unconfirmedReason) — kept, never deleted.
+// --------------------------------------------------------------------------- //
+
+model CandidateFinding {
+  id              String        @id @default(cuid())
+  clientId        String
+  scanId          String
+  scan            Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  source          String // ToolSource
+  ruleId          String
+  category        Category
+  cwe             Json // CweId[]
+  file            String
+  line            Int
+  rawSeverity     Severity
+  evidenceSnippet String
+  status          FindingStatus @default(candidate)
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+
+  @@index([clientId, scanId])
+}
+
+model ProbableFinding {
+  id                     String        @id @default(cuid())
+  clientId               String
+  scanId                 String
+  scan                   Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  rootCauseId            String
+  category               Category
+  mergedCandidateIds     Json // Id[]
+  reachabilityHypothesis String
+  exploitHypothesis      String
+  exposure               Exposure
+  authGate               String?
+  routeId                String?
+  file                   String
+  line                   Int
+  reachabilityScore      Float
+  exposureScore          Float
+  impactScore            Float
+  rank                   Int
+  status                 FindingStatus @default(probable)
+  unconfirmedReason      String? // set when demoted to the unconfirmed appendix
+  createdAt              DateTime      @default(now())
+
+  @@index([clientId, scanId])
+}
+
+model ConfirmedFinding {
+  id            String        @id @default(cuid())
+  clientId      String
+  scanId        String
+  scan          Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  probableId    String?
+  title         String
+  category      Category
+  cwe           Json // CweId[]
+  owasp         String? // OwaspId
+  severity      Severity
+  exposure      Exposure
+  file          String
+  line          Int
+  impact        String
+  proofType     ProofType
+  proofArtifact Json // ProofArtifact (static | live)
+  status        FindingStatus @default(confirmed)
+  createdAt     DateTime      @default(now())
+
+  fixes Fix[]
+
+  @@index([clientId, scanId])
+}
+
+// --------------------------------------------------------------------------- //
+// Fixes & PRs (PRD §9)
+// --------------------------------------------------------------------------- //
+
+model Fix {
+  id                 String           @id @default(cuid())
+  clientId           String
+  scanId             String
+  scan               Scan             @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  confirmedFindingId String
+  confirmedFinding   ConfirmedFinding @relation(fields: [confirmedFindingId], references: [id], onDelete: Cascade)
+  patch              String
+  rationale          String
+  proofOfFixTest     Json // ProofOfFixTest
+  riskClass          RiskClass
+  riskClassRationale String
+  status             FixStatus        @default(proposed)
+  pullRequestId      String?
+  pullRequest        PullRequest?     @relation(fields: [pullRequestId], references: [id])
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([clientId, scanId])
+}
+
+model PullRequest {
+  id          String            @id @default(cuid())
+  clientId    String
+  scanId      String
+  scan        Scan              @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  provider    VcsProvider
+  url         String?
+  number      Int?
+  branch      String
+  baseBranch  String            @default("main")
+  title       String
+  bodySummary String
+  fixIds      Json // Id[]
+  status      PullRequestStatus @default(open)
+  createdAt   DateTime          @default(now())
+
+  fixes Fix[]
+
+  @@index([clientId, scanId])
+}
+
+// --------------------------------------------------------------------------- //
+// Report, prompts, DAST, audit
+// --------------------------------------------------------------------------- //
+
+model Report {
+  id          String   @id @default(cuid())
+  clientId    String
+  scanId      String   @unique
+  scan        Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  generatedAt DateTime @default(now())
+  document    Json // full Report (§12)
+
+  @@index([clientId])
+}
+
+/// Prompt registry/versioning (§15) — feeds regression tuning. Global (clientId null) or per-client.
+model PromptVersion {
+  id        String   @id @default(cuid())
+  clientId  String?
+  name      String
+  version   Int
+  layer     LayerId?
+  template  String
+  createdAt DateTime @default(now())
+
+  @@unique([name, version])
+  @@index([clientId])
+}
+
+/// DAST allowlist + scope contract (§11). Nothing may be probed unless enabled + approved.
+model DastTarget {
+  id            String    @id @default(cuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id])
+  url           String
+  enabled       Boolean   @default(false)
+  scopeContract Json // DastScopeContract
+  approvedById  String?
+  approvedBy    User?     @relation("DastApprover", fields: [approvedById], references: [id])
+  approvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@unique([clientId, url])
+  @@index([clientId])
+}
+
+/// Append-only, hash-chained audit log (§8.5, §14). Never updated or deleted.
+model AuditEvent {
+  id         String   @id @default(cuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id])
+  sequence   Int // monotonic per client
+  scanId     String?
+  actorType  String // ActorType
+  actorId    String
+  actorRole  Role?
+  action     String // AuditAction (dotted; Zod enum is source of truth)
+  targetType String?
+  targetId   String?
+  summary    String
+  metadata   Json // scrubbed of code/secret bodies before write
+  prevHash   String
+  hash       String
+  at         DateTime @default(now())
+
+  @@unique([clientId, sequence])
+  @@index([clientId, scanId])
+}
