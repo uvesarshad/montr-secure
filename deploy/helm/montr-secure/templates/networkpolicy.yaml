@@ -1,0 +1,37 @@
+{{- if .Values.networkPolicy.enabled }}
+# ⛔ Default-deny egress. Only DNS, internal service traffic, and the client's
+# LLM endpoint are permitted (§14, golden rule #1). Scope `llmEndpoint.cidr` to
+# the real endpoint (or internal proxy) in production.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "montr.fullname" . }}-default-deny-egress
+  labels:
+    {{- include "montr.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "montr.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # internal service traffic (same namespace: postgres, redis, api/web)
+    - to:
+        - podSelector: {}
+    {{- if .Values.networkPolicy.defaultDenyEgress }}
+    # client LLM endpoint (the only permitted external egress)
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.llmEndpoint.cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.llmEndpoint.port }}
+    {{- end }}
+{{- end }}

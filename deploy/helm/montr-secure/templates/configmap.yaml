@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "montr.fullname" . }}-config
+  labels:
+    {{- include "montr.labels" . | nindent 4 }}
+data:
+  MONTR_LLM_PROVIDER: {{ .Values.llm.provider | quote }}
+  MONTR_LLM_ENDPOINT: {{ .Values.llm.endpoint | quote }}
+  MONTR_MODEL_TRIAGE: {{ .Values.llm.modelMatrix.triage | quote }}
+  MONTR_MODEL_DEFAULT: {{ .Values.llm.modelMatrix.default | quote }}
+  MONTR_MODEL_CONFIRMATION: {{ .Values.llm.modelMatrix.confirmation | quote }}
+  MONTR_AUTOFIX_ENABLED: {{ .Values.config.autoFixEnabled | quote }}
+  MONTR_DAST_ENABLED: {{ .Values.config.dastEnabled | quote }}
+  MONTR_BUDGET_ENFORCEMENT: {{ .Values.config.budgetEnforcement | quote }}
+  MONTR_TELEMETRY_ENABLED: {{ .Values.config.telemetryEnabled | quote }}
+  REDIS_URL: {{ .Values.redis.url | quote }}

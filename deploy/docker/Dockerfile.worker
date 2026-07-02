@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.7
+# Montr Secure — BullMQ worker host. Multi-stage, distroless, non-root.
+
+FROM node:20-bookworm-slim AS base
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+WORKDIR /repo
+
+FROM base AS build
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm exec tsc -b
+RUN pnpm --filter @montr/worker deploy --prod --legacy /app
+
+FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build --chown=nonroot:nonroot /app /app
+USER nonroot
+CMD ["dist/index.js"]
