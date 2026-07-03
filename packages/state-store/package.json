@@ -12,7 +12,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "prisma"
   ],
   "scripts": {
     "generate": "prisma generate",
@@ -26,9 +27,7 @@
   "dependencies": {
     "@montr/contracts": "workspace:*",
     "@montr/telemetry": "workspace:*",
-    "@prisma/client": "^5.20.0"
-  },
-  "devDependencies": {
+    "@prisma/client": "^5.20.0",
     "prisma": "^5.20.0"
   }
 }

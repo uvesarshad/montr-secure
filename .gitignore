@@ -22,7 +22,9 @@ packages/state-store/prisma/*.db
 !.env.example
 *.pem
 *.key
+*.crt
 secrets/
+deploy/docker/ca/
 
 # Editor / OS
 .DS_Store

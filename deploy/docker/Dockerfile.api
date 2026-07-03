@@ -33,7 +33,10 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 RUN pnpm exec tsc -b
 # Produce a self-contained, prod-only deployment of @montr/api at /app:
 # its compiled dist/ plus resolved workspace + external deps under node_modules/.
-RUN pnpm --filter @montr/api deploy --prod --legacy /app
+# The deploy prune re-runs @montr/state-store's postinstall (`prisma generate`) so
+# the generated client + engine land in /app. `prisma` is a runtime dependency and
+# the schema ships in the package `files`, so this works under --prod.
+RUN pnpm --filter @montr/api deploy --prod /app
 
 # ---------------------------------------------------------------------------
 # runtime — distroless: no shell, no package manager, non-root.
