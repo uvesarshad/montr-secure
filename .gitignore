@@ -36,3 +36,6 @@ pnpm-debug.log*
 # Misc
 tmp/
 .cache/
+
+# Local-only planning docs (not for GitHub)
+docs/plan/
