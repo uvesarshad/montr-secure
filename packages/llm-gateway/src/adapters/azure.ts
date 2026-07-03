@@ -2,6 +2,7 @@ import { ProviderNotConfiguredError, type LLMRequest, type LLMStreamEvent } from
 import type { MontrConfig } from "@montr/config";
 import { mapOpenAiFinishReason, toOpenAiMessages } from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
+import { type AdapterEgress } from "./egress.js";
 
 /**
  * Azure OpenAI adapter via the `openai` SDK's Azure support (`AzureOpenAI`).
@@ -57,6 +58,8 @@ export interface AzureAdapterOptions {
   config: MontrConfig;
   /** Injectable client (tests). Defaults to a real `AzureOpenAI` client. */
   client?: OpenAiClientLike;
+  /** ⛔ Egress guard asserted before every outbound request (golden rule #1). */
+  egress?: AdapterEgress;
 }
 
 export class AzureAdapter implements ProviderAdapter {
@@ -72,6 +75,16 @@ export class AzureAdapter implements ProviderAdapter {
     return this.client;
   }
 
+  /**
+   * ⛔ Assert the outbound Azure host is the configured endpoint before dispatch.
+   * Azure has no generic default host; when no endpoint is set, `getClient()`
+   * throws ProviderNotConfiguredError before any request is attempted.
+   */
+  private assertEgress(): void {
+    const endpoint = this.options.config.llm.endpoint;
+    if (endpoint) this.options.egress?.assert(endpoint);
+  }
+
   resolveModelId(modelId: string): string {
     return modelId;
   }
@@ -81,6 +94,7 @@ export class AzureAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): Promise<AdapterCompletion> {
+    this.assertEgress();
     const client = await this.getClient();
     const result = (await client.chat.completions.create(
       { ...buildBody(request, modelId), stream: false },
@@ -104,6 +118,7 @@ export class AzureAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): AsyncGenerator<LLMStreamEvent> {
+    this.assertEgress();
     const client = await this.getClient();
     const chunks = (await client.chat.completions.create(
       { ...buildBody(request, modelId), stream: true, stream_options: { include_usage: true } },

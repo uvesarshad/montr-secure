@@ -156,21 +156,49 @@ importers:
 
   apps/worker:
     dependencies:
+      '@montr/appmap':
+        specifier: workspace:*
+        version: link:../../packages/appmap
       '@montr/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@montr/confirm':
+        specifier: workspace:*
+        version: link:../../packages/confirm
       '@montr/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@montr/correlation':
+        specifier: workspace:*
+        version: link:../../packages/correlation
+      '@montr/cost-meter':
+        specifier: workspace:*
+        version: link:../../packages/cost-meter
+      '@montr/discovery':
+        specifier: workspace:*
+        version: link:../../packages/discovery
+      '@montr/fix':
+        specifier: workspace:*
+        version: link:../../packages/fix
       '@montr/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
+      '@montr/report':
+        specifier: workspace:*
+        version: link:../../packages/report
       '@montr/security':
         specifier: workspace:*
         version: link:../../packages/security
+      '@montr/state-store':
+        specifier: workspace:*
+        version: link:../../packages/state-store
       '@montr/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
+    devDependencies:
+      '@montr/fixtures':
+        specifier: workspace:*
+        version: link:../../packages/fixtures
 
   packages/appmap:
     dependencies:

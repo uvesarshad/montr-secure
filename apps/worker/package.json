@@ -22,10 +22,21 @@
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {
+    "@montr/appmap": "workspace:*",
     "@montr/config": "workspace:*",
+    "@montr/confirm": "workspace:*",
     "@montr/contracts": "workspace:*",
+    "@montr/correlation": "workspace:*",
+    "@montr/cost-meter": "workspace:*",
+    "@montr/discovery": "workspace:*",
+    "@montr/fix": "workspace:*",
     "@montr/orchestrator": "workspace:*",
+    "@montr/report": "workspace:*",
     "@montr/security": "workspace:*",
+    "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*"
+  },
+  "devDependencies": {
+    "@montr/fixtures": "workspace:*"
   }
 }

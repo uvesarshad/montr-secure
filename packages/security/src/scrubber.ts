@@ -53,6 +53,7 @@ export const SECRET_VALUE_MATCHERS: readonly SecretMatcher[] = [
   { name: "slack_token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
   { name: "anthropic_api_key", re: /\bsk-ant-[A-Za-z0-9_-]{16,}\b/ },
   { name: "openai_api_key", re: /\bsk-[A-Za-z0-9]{20,}\b/ },
+  { name: "stripe_secret_key", re: /\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b/ },
   { name: "google_api_key", re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { name: "jwt", re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/ },
   { name: "pem_private_key", re: /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/ },
@@ -357,6 +358,7 @@ export const ADVERSARIAL_LOG_THREATS: readonly unknown[] = [
   { info: "aws key AKIAIOSFODNN7EXAMPLE leaked" },
   { detail: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----" },
   { message: "ghp_0123456789ABCDEFGHIJKLMNOPQRSTUVwxyz" },
+  { context: 'config PAYMENTS_API_KEY = "sk_live_51H8xEXAMPLEhardcodedKeyDoNotUse0000"' }, // stripe key under an innocuous key
 ];
 
 /** A scrubber under test: takes an arbitrary value, returns a log-safe value. */

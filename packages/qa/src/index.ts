@@ -24,6 +24,7 @@ export * from "./synthetic.js";
 export * from "./baseline.js";
 export * from "./corpus.js";
 export * from "./runner.js";
+export * from "./real-mode.js";
 export * from "./model-variance.js";
 export * from "./layer-metrics.js";
 export * from "./findings-io.js";
@@ -37,7 +38,7 @@ import {
   type RegressionResult,
 } from "./baseline.js";
 import { loadCorpus, type LoadCorpusOptions, type LoadedCorpus } from "./corpus.js";
-import { perfectScanner, runCorpus, type CorpusRun } from "./runner.js";
+import { perfectScanner, runCorpus, type CorpusRun, type CorpusScanner } from "./runner.js";
 import type { ScoreOptions } from "./types.js";
 
 export interface QaSuiteResult {
@@ -50,16 +51,25 @@ export interface QaSuiteOptions {
   baseline?: Baseline;
   loadOptions?: LoadCorpusOptions;
   scoreOptions?: ScoreOptions;
+  /**
+   * REAL-MODE: inject the live Layer-0..3 pipeline as the scanner to grade a real
+   * scan against ground truth. Defaults to the synthetic {@link perfectScanner}
+   * self-check (the fallback that keeps the gate runnable before the pipeline is
+   * wired). See also {@link gradeCorpus} / {@link gradeScanResults}.
+   */
+  scanner?: CorpusScanner;
 }
 
 /**
- * Programmatic self-check: load the corpus, run the perfect scanner, and grade
- * against the baseline. Convenience wrapper around {@link loadCorpus} +
- * {@link runCorpus} + {@link evaluateBaseline}; the CLI is the CI entrypoint.
+ * Programmatic gate: load the corpus, run a scanner, and grade against the
+ * baseline. Defaults to the synthetic perfect scanner (self-check); pass
+ * `opts.scanner` (the real pipeline) for REAL mode. Convenience wrapper around
+ * {@link loadCorpus} + {@link runCorpus} + {@link evaluateBaseline}; the CLI is
+ * the CI entrypoint.
  */
 export async function runQaSuite(opts: QaSuiteOptions = {}): Promise<QaSuiteResult> {
   const corpus = await loadCorpus(opts.loadOptions);
-  const run = await runCorpus(corpus, perfectScanner, opts.scoreOptions);
+  const run = await runCorpus(corpus, opts.scanner ?? perfectScanner, opts.scoreOptions);
   const regression = evaluateBaseline(run.score, opts.baseline ?? DEFAULT_BASELINE);
   return { corpus, run, regression };
 }

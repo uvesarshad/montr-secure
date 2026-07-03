@@ -7,6 +7,10 @@ import {
   toAnthropicMessages,
 } from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
+import { resolveOutboundTarget, type AdapterEgress } from "./egress.js";
+
+/** Anthropic's default API host, contacted when no `llm.endpoint` is configured. */
+export const ANTHROPIC_DEFAULT_ENDPOINT = "https://api.anthropic.com";
 
 /**
  * Anthropic adapter (`@anthropic-ai/sdk`). Recommended matrix: Opus 4.8
@@ -146,6 +150,8 @@ export interface AnthropicAdapterOptions {
   config: MontrConfig;
   /** Injectable client (tests). Defaults to a real `@anthropic-ai/sdk` client. */
   client?: AnthropicClientLike;
+  /** ⛔ Egress guard asserted before every outbound request (golden rule #1). */
+  egress?: AdapterEgress;
 }
 
 export class AnthropicAdapter implements ProviderAdapter {
@@ -161,6 +167,13 @@ export class AnthropicAdapter implements ProviderAdapter {
     return this.client;
   }
 
+  /** ⛔ Assert the outbound LLM host is the configured endpoint before dispatch. */
+  private assertEgress(): void {
+    this.options.egress?.assert(
+      resolveOutboundTarget(this.options.config.llm.endpoint, ANTHROPIC_DEFAULT_ENDPOINT),
+    );
+  }
+
   resolveModelId(modelId: string): string {
     return modelId;
   }
@@ -170,6 +183,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): Promise<AdapterCompletion> {
+    this.assertEgress();
     const client = await this.getClient();
     const result = (await client.messages.create(
       { ...buildBody(request, modelId), stream: false },
@@ -183,6 +197,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): AsyncGenerator<LLMStreamEvent> {
+    this.assertEgress();
     const client = await this.getClient();
     const events = (await client.messages.create(
       { ...buildBody(request, modelId), stream: true },
