@@ -12,9 +12,10 @@ import { Layer1OutputSchema, type CandidateFinding, type Layer1Output } from "@m
 import { createNullLogger, type Logger } from "@montr/telemetry";
 
 import type { DetectorContext, DiscoveryDeps, RunDiscoveryInput } from "./types.js";
-import { detectSast, DEFAULT_SEMGREP_RULESETS } from "./detectors/sast.js";
+import { detectSast } from "./detectors/sast.js";
 import { detectSecretsAndConfig } from "./detectors/secrets.js";
 import { detectDependencies } from "./detectors/sca.js";
+import { selectCustomDetectors, selectSemgrepRulesets } from "./rulesets/registry.js";
 import { triageCandidates } from "./triage.js";
 import { persistCandidates, type AuditAppender, type CandidatePersister } from "./persist.js";
 import { dedupeById } from "./util/candidate.js";
@@ -89,13 +90,19 @@ export async function runDiscoveryDetailed(input: RunDiscoveryInput): Promise<Di
     };
   }
 
-  // Fan out the three deterministic detectors concurrently.
+  // Fan out the three deterministic detectors concurrently. Semgrep rulesets +
+  // extra secrets detectors are selected per stack from the ruleset registry
+  // (keyed on the App Map's detected languages); Phase-1 TS/JS apps get exactly
+  // the curated default set + base detectors.
   const [sast, secrets, sca] = await Promise.all([
     detectSast(ctx, {
       runner: deps.semgrep,
-      rulesets: deps.semgrepRulesets ?? [...DEFAULT_SEMGREP_RULESETS],
+      rulesets: deps.semgrepRulesets ?? selectSemgrepRulesets(input.appMap),
     }),
-    detectSecretsAndConfig(ctx, { runner: deps.gitleaks }),
+    detectSecretsAndConfig(ctx, {
+      runner: deps.gitleaks,
+      extraDetectors: selectCustomDetectors(input.appMap),
+    }),
     detectDependencies(ctx, {}),
   ]);
 
@@ -196,7 +203,20 @@ export {
   defaultGitleaksRunner,
   runCustomDetectors,
   type DetectSecretsOptions,
+  type FileDetector,
+  type RawFinding,
 } from "./detectors/secrets.js";
+
+// ⛔ Per-language ruleset registry (Layer 1 stack breadth — build-plan §7 Wave 4).
+// A new stack adds a ruleset under rulesets/<lang>/ and is appended to
+// LANGUAGE_RULESETS — the detectors + runDiscovery stay stack-agnostic.
+export {
+  LANGUAGE_RULESETS,
+  selectSemgrepRulesets,
+  selectCustomDetectors,
+  selectScaEcosystems,
+} from "./rulesets/registry.js";
+export type { LanguageRuleset } from "./rulesets/types.js";
 export {
   detectDependencies,
   resolveInstalledPackages,

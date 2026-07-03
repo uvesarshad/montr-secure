@@ -8,7 +8,7 @@
  */
 import type * as PrismaInternals from "@prisma/internals";
 import type { DataStore, DataStoreKind, OrmModel } from "@montr/contracts";
-import { readRepoFile } from "./workspace.js";
+import { readRepoFile } from "../../workspace.js";
 
 interface OrmField {
   name: string;

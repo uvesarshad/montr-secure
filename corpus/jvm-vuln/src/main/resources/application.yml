@@ -1,0 +1,21 @@
+# corpus: jvm-vuln — INTENTIONALLY INSECURE configuration. DO NOT DEPLOY.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/appdb
+    username: appuser
+    # A07:2021 — hard-coded datasource password (should be ${DB_PASSWORD}).
+    password: S3cr3tP@ssw0rd!
+  jpa:
+    hibernate:
+      ddl-auto: update
+
+app:
+  # A07:2021 — hard-coded third-party API key committed to source control.
+  api-key: sk_live_51H8xLcAbCdEfGhIjKlMnOpQrStUv
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # A05:2021 — every actuator endpoint exposed unauthenticated.
+        include: "*"

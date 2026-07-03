@@ -33,6 +33,8 @@ import {
   isDataFlowConfirmable,
   DATAFLOW_SINK_KINDS,
 } from "./taxonomy.js";
+import { resolveHeuristics } from "./heuristics/registry.js";
+import type { ResolvedHeuristics } from "./heuristics/types.js";
 import type { ConfirmDeps, ConfirmInput, StaticConfirmOutcome } from "./types.js";
 
 const defaultNow = (): string => new Date().toISOString();
@@ -106,7 +108,11 @@ function describeRoute(route: Route | undefined, exposure: Exposure): string {
 }
 
 /** Build the source → sink data-flow, carrying auth state at each hop. */
-function buildDataFlow(appMap: AppMap, finding: ProbableFinding): DataFlowResult {
+function buildDataFlow(
+  appMap: AppMap,
+  finding: ProbableFinding,
+  heuristics: ResolvedHeuristics,
+): DataFlowResult {
   const category = finding.category;
   const route = findRoute(appMap, finding);
   const entryAuthState: AuthState = route?.authState ?? "unknown";
@@ -137,8 +143,8 @@ function buildDataFlow(appMap: AppMap, finding: ProbableFinding): DataFlowResult
   }
 
   const source = findSource(appMap, finding, sink, route);
-  const param = extractParam(source?.description);
-  const assessment = assessSink(sink);
+  const param = extractParam(source?.description, heuristics);
+  const assessment = assessSink(sink, heuristics);
 
   const hops: DataFlowHop[] = [];
   if (source) {
@@ -347,7 +353,10 @@ export async function confirmStatic(
   input: ConfirmInput,
   deps: ConfirmDeps,
 ): Promise<StaticConfirmOutcome> {
-  const df = buildDataFlow(input.appMap, finding);
+  // Per-language confirmation heuristics (extras appended to the stack-agnostic
+  // base). Empty for Phase-1 TS/JS, so the assessment is unchanged there.
+  const heuristics = resolveHeuristics(input.appMap);
+  const df = buildDataFlow(input.appMap, finding, heuristics);
   if (!df.reachable) {
     return { kind: "unconfirmed", reason: df.reason, dataFlow: df.hops };
   }

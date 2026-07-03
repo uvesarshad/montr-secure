@@ -1,0 +1,78 @@
+{
+  "version": "1.0.0",
+  "repos": [
+    {
+      "name": "jvm-vuln",
+      "kind": "vulnerable",
+      "path": "jvm-vuln",
+      "expectedFindings": [
+        {
+          "id": "gt_jvm_sqli",
+          "category": "sql_injection",
+          "cwe": ["CWE-89"],
+          "owasp": "A03:2021",
+          "file": "src/main/java/com/example/vuln/web/UserController.java",
+          "line": 36,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "Tainted @RequestParam `q` is string-concatenated into raw JDBC SQL and run via Statement.executeQuery on a public route."
+        },
+        {
+          "id": "gt_jvm_cmdi",
+          "category": "command_injection",
+          "cwe": ["CWE-78"],
+          "owasp": "A03:2021",
+          "file": "src/main/java/com/example/vuln/web/NetworkController.java",
+          "line": 22,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "Tainted @RequestParam `host` is concatenated into Runtime.getRuntime().exec(...) with no allow-list on a public route (OS command injection)."
+        },
+        {
+          "id": "gt_jvm_deser",
+          "category": "insecure_deserialization",
+          "cwe": ["CWE-502"],
+          "owasp": "A08:2021",
+          "file": "src/main/java/com/example/vuln/web/ImportController.java",
+          "line": 23,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "Raw request bytes (HttpServletRequest.getInputStream) are fed to a native ObjectInputStream.readObject(), enabling gadget-chain RCE on a public route."
+        },
+        {
+          "id": "gt_jvm_bac",
+          "category": "broken_access_control",
+          "cwe": ["CWE-284"],
+          "owasp": "A01:2021",
+          "file": "src/main/java/com/example/vuln/web/AdminController.java",
+          "line": 29,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Destructive DELETE handler is gated only by @PreAuthorize(\"isAuthenticated()\") — any logged-in user can delete any order; access-control fix is human-required."
+        },
+        {
+          "id": "gt_jvm_secret",
+          "category": "hardcoded_secret",
+          "cwe": ["CWE-798"],
+          "owasp": "A07:2021",
+          "file": "src/main/resources/application.yml",
+          "line": 7,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Hard-coded spring.datasource.password committed to source control; rotation requires a human."
+        }
+      ]
+    },
+    {
+      "name": "jvm-clean",
+      "kind": "clean",
+      "path": "jvm-clean",
+      "expectedFindings": []
+    }
+  ]
+}

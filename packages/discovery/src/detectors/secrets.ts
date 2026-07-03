@@ -20,6 +20,14 @@ import { errMessage, isBinaryMissing } from "../util/text.js";
 
 export interface DetectSecretsOptions {
   runner?: GitleaksRunner;
+  /**
+   * Language-specific EXTRA custom detectors, run per file IN ADDITION to the
+   * always-on base set. Selected by the caller from the ruleset registry
+   * (`selectCustomDetectors(appMap)`); empty for the Phase-1 TS/JS path, so
+   * behavior is unchanged. Python/JVM agents author detectors under
+   * `rulesets/<lang>/`.
+   */
+  extraDetectors?: readonly FileDetector[];
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +102,9 @@ function candidatesFromGitleaks(
 // Custom detectors (deterministic, offline)
 // ---------------------------------------------------------------------------
 
-interface RawFinding {
+/** A raw detector hit (pre-{@link buildCandidate}). Exported so per-language
+ *  ruleset plugins can author {@link FileDetector}s under `rulesets/<lang>/`. */
+export interface RawFinding {
   source?: ToolSource;
   rule: string;
   category: Category;
@@ -366,8 +376,14 @@ function detectMissingHeadersInFile(file: RepoFile): RawFinding[] {
   ];
 }
 
-type FileDetector = (file: RepoFile) => RawFinding[];
+/** A per-file custom detector. Per-language ruleset plugins export these. */
+export type FileDetector = (file: RepoFile) => RawFinding[];
 
+/**
+ * Always-on base custom detectors. These are largely stack-agnostic (secret
+ * literals, wildcard CORS, weak crypto, insecure cookies) with a couple of
+ * Node/Next specifics; per-language plugins ADD to them via `extraDetectors`.
+ */
 const FILE_DETECTORS: readonly FileDetector[] = [
   detectSecretsInFile,
   detectCorsInFile,
@@ -377,9 +393,16 @@ const FILE_DETECTORS: readonly FileDetector[] = [
   detectMissingHeadersInFile,
 ];
 
-/** Run every custom detector across one file's content. Exposed for unit tests. */
-export function runCustomDetectors(file: RepoFile): RawFinding[] {
-  return FILE_DETECTORS.flatMap((d) => d(file));
+/**
+ * Run the base custom detectors (plus any language-specific `extra` ones) across
+ * one file's content. Exposed for unit tests. `extra` defaults to empty, so the
+ * single-arg call is unchanged.
+ */
+export function runCustomDetectors(
+  file: RepoFile,
+  extra: readonly FileDetector[] = [],
+): RawFinding[] {
+  return [...FILE_DETECTORS, ...extra].flatMap((d) => d(file));
 }
 
 // ---------------------------------------------------------------------------
@@ -412,11 +435,13 @@ export async function detectSecretsAndConfig(
     }
   }
 
-  // 2. Custom detectors over text files (always run — fully offline).
+  // 2. Custom detectors over text files (always run — fully offline). Base
+  // detectors + any language-specific extras selected from the ruleset registry.
+  const extraDetectors = opts.extraDetectors ?? [];
   const files = await readAll(ctx.files, (p) => isTextForSecrets(p));
   for (const file of files) {
     if (ctx.signal?.aborted) break;
-    for (const raw of runCustomDetectors(file)) {
+    for (const raw of runCustomDetectors(file, extraDetectors)) {
       out.push(
         buildCandidate(ctx, {
           source: raw.source ?? "custom",

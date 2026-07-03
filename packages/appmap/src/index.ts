@@ -32,16 +32,38 @@ export {
   isRemoteRepo,
 } from "./workspace.js";
 
-// Deterministic builders (exported for reuse + focused testing).
+// Shared deterministic file/detection helpers (exported for reuse + testing).
 export { collectFiles, detectLanguages, detectFrameworks, createProject } from "./sources.js";
 export type { FileInventory } from "./sources.js";
-export { scanRoutes } from "./routes.js";
-export type { RouteScanResult } from "./routes.js";
-export { scanPrisma } from "./prisma.js";
-export type { PrismaScanResult } from "./prisma.js";
-export { scanThirdPartyCalls, scanEnvSecretSurfaces } from "./surfaces.js";
-export { scanTaint } from "./taint.js";
-export type { TaintScanResult } from "./taint.js";
+
+// The TypeScript/JS App-Map builders now live behind the `typescript` language
+// plugin; re-exported here so the package surface is unchanged.
+export {
+  scanRoutes,
+  scanPrisma,
+  scanThirdPartyCalls,
+  scanEnvSecretSurfaces,
+  scanTaint,
+} from "./languages/typescript/index.js";
+export type {
+  RouteScanResult,
+  PrismaScanResult,
+  TaintScanResult,
+} from "./languages/typescript/index.js";
+
+// ⛔ Language-plugin architecture (Layer 0 stack breadth — build-plan §7 Wave 4).
+// A new stack adds an analyzer under languages/<lang>/ and is appended to
+// LANGUAGE_ANALYZERS — correlation/fix/report stay stack-agnostic.
+export {
+  buildDeterministicPieces,
+  mergeContributions,
+  LANGUAGE_ANALYZERS,
+} from "./languages/registry.js";
+export { typescriptAnalyzer } from "./languages/typescript/index.js";
+export { pythonAnalyzer } from "./languages/python/index.js";
+export { javaAnalyzer } from "./languages/java/index.js";
+export { emptyContribution } from "./languages/types.js";
+export type { LanguageAnalyzer, AnalyzerInput, AppMapContribution } from "./languages/types.js";
 export { computeDiffScope } from "./diff.js";
 export type { DiffScope } from "./diff.js";
 
