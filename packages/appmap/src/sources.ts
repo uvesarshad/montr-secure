@@ -12,6 +12,22 @@ import { Project, ts } from "ts-morph";
 import type { Framework, Language } from "@montr/contracts";
 import { readRepoFile } from "./workspace.js";
 
+/**
+ * Convert a ts-morph absolute file path to a repo-relative POSIX path.
+ *
+ * ts-morph's `getFilePath()` always returns forward slashes, but `workspace.dir`
+ * (from `fileURLToPath` / `path.resolve`) uses the platform separator — so on
+ * Windows a naive `abs.startsWith(dir)` fails and the absolute path leaks into
+ * `location.file`, breaking every App-Map ↔ candidate lookup. Normalizing both
+ * sides to POSIX before stripping the root makes this correct on every platform.
+ */
+export function toRepoRelative(abs: string, dir: string): string {
+  const a = abs.replace(/\\/g, "/");
+  const d = dir.replace(/\\/g, "/").replace(/\/+$/, "");
+  const rel = a.startsWith(d) ? a.slice(d.length) : a;
+  return rel.replace(/^\/+/, "").replace(/^\.\//, "");
+}
+
 const SOURCE_GLOBS = ["**/*.{ts,tsx,js,jsx,mjs,cjs}"];
 const IGNORE = [
   "**/node_modules/**",

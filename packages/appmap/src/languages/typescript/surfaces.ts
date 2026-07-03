@@ -10,6 +10,7 @@ import { SyntaxKind } from "ts-morph";
 import type { Project, SourceFile } from "ts-morph";
 import type { EnvSecretSurface, ThirdPartyCall, ThirdPartyCallKind } from "@montr/contracts";
 import { readRepoFile } from "../../workspace.js";
+import { toRepoRelative } from "../../sources.js";
 
 /** Import specifiers that are framework/runtime/ORM, not third-party integrations. */
 const NOT_THIRD_PARTY = [
@@ -48,11 +49,8 @@ const SECRET_VALUE_RE =
 
 const CONFIG_FILE_RE = /(^|\/)(config|constants|secrets|env|settings)\.(t|j)sx?$/i;
 
-function posix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 function relPath(abs: string, dir: string): string {
-  return posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+  return toRepoRelative(abs, dir);
 }
 
 function isThirdParty(spec: string): boolean {

@@ -11,17 +11,15 @@
 import { Node, SyntaxKind } from "ts-morph";
 import type { Project, SourceFile } from "ts-morph";
 import type { TaintSink, TaintSinkKind, TaintSource, TaintSourceKind } from "@montr/contracts";
+import { toRepoRelative } from "../../sources.js";
 
 export interface TaintScanResult {
   taintSources: TaintSource[];
   taintSinks: TaintSink[];
 }
 
-function posix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 function relPath(abs: string, dir: string): string {
-  return posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+  return toRepoRelative(abs, dir);
 }
 
 const REQ_PROP_KIND: Record<string, TaintSourceKind> = {

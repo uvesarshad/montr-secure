@@ -10,6 +10,7 @@
  */
 import type { Project, SourceFile } from "ts-morph";
 import type { Entrypoint, HttpMethod, Route, AuthState, SourceLocation } from "@montr/contracts";
+import { toRepoRelative } from "../../sources.js";
 
 const HTTP_METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
 const HTTP_METHOD_SET = new Set<string>(HTTP_METHODS);
@@ -120,8 +121,7 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
   };
 
   for (const sf of project.getSourceFiles()) {
-    const abs = sf.getFilePath();
-    const rel = posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+    const rel = toRepoRelative(sf.getFilePath(), dir);
     const root = stripRoot(rel);
     if (!root) continue;
     const filename = rel.split("/").pop() ?? "";

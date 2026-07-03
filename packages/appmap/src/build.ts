@@ -13,7 +13,7 @@ import type { AppMap, Layer0Output, ScanScope } from "@montr/contracts";
 import { createNullLogger } from "@montr/telemetry";
 import type { BuildAppMapDeps, BuildAppMapInput } from "./types.js";
 import { deriveContentSha, resolveWorkspace } from "./workspace.js";
-import { collectFiles, createProject } from "./sources.js";
+import { collectFiles, createProject, toRepoRelative } from "./sources.js";
 import { buildDeterministicPieces } from "./languages/registry.js";
 import { computeDiffScope } from "./diff.js";
 import { labelAuthBoundaries } from "./llm.js";
@@ -188,11 +188,5 @@ function finalize(
 
 /** Repo-relative source paths currently loaded in the project. */
 function filesFromProject(project: import("ts-morph").Project, dir: string): string[] {
-  return project.getSourceFiles().map((sf) => {
-    const abs = sf.getFilePath();
-    return (abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs).replace(
-      /\\/g,
-      "/",
-    );
-  });
+  return project.getSourceFiles().map((sf) => toRepoRelative(sf.getFilePath(), dir));
 }
