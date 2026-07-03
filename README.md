@@ -1,21 +1,62 @@
 # Montr Secure
 
-AI security orchestration platform — on-prem, bring-your-own LLM key, report-first
-with gated auto-fix. It consolidates SAST + SCA + secrets + DAST + red-team probing
-into one pipeline, **correlates** findings against a structural model of the app,
-**confirms** which issues are actually exploitable, and delivers a short,
-prioritized, exploit-validated report with merge-ready fixes.
+**AI Security Orchestration Platform — on-prem, bring-your-own-LLM-key, report-first with gated auto-fix.**
 
-> See `docs/plan/montr-secure-prd.md` (product) and
-> `docs/plan/montr-secure-build-plan.md` (build order). Read `CONTRIBUTING.md`
-> first — the 10 golden safety rules are non-negotiable.
+Montr Secure is not another scanner. It is an **orchestration layer** that runs every security
+discipline (SAST, SCA, secrets, DAST/red-team), **correlates** their findings against a structural
+model of the app, **confirms** which issues are actually exploitable, and delivers a short,
+prioritized, **exploit-validated** report with **merge-ready fixes** — optionally auto-applied under
+strict, gated conditions. It runs entirely inside the client's perimeter; the only outbound call is
+to the client's own LLM key.
 
-## Status
+## The pipeline (6 layers)
 
-**Wave 0 (foundation) complete.** Interfaces are frozen: `@montr/contracts`,
-`@montr/config`, the Prisma schema, queue/event contracts, the LLM gateway
-interface, `@montr/fixtures`, CI, and the deploy skeleton. Pipeline packages are
-typed stubs whose signatures match the contracts. Waves 1–5 fan out from here.
+```
+Repo/PR ─► L0 Intake & Scoping    App Map (routes, ORM models, taint sources/sinks) + cost estimate
+        ─► L1 Parallel Discovery  Semgrep + gitleaks + OSV/reachability → candidate findings (noisy, never surfaced)
+        ─► L2 Correlation         reachability × exposure × impact, dedup, demote-never-delete   ← the moat
+        ─► L3 Exploit Confirmation static data-flow proof (default) │ gated live DAST (premium)
+        ─► L4 Fix Generation      diff patch + proof-of-fix test + human-required safety classifier
+        ─► L5 Human Gate & Output report (confirmed-headline) │ PR-only auto-fix for auto-eligible
+```
+
+Cross-cutting: **Orchestrator** (resumable FSM + kill switch), **State Store** (Postgres, encrypted,
+append-only hash-chained audit log), **LLM Gateway** (BYO-key over Anthropic / Bedrock / Vertex /
+Azure OpenAI), **Cost Meter** (estimate → meter → hard-halt ceiling).
+
+## Supported stacks
+
+- **Node / Next.js / Prisma / Postgres** (deep — the wedge)
+- **Python** — Django / FastAPI / Flask
+- **JVM** — Spring / JAX-RS / JPA
+
+Correlation, fix-classification, and reporting are **stack-agnostic**; a new stack adds only a
+Layer-0 parser + Layer-1 rulesets + Layer-3 heuristics. This is machine- and runtime-verified
+(`tests/stack-agnostic.invariant.test.ts`).
+
+## Safety guarantees (non-negotiable — PRD §11)
+
+- **No code egress** — client source only leaves the perimeter inside a call to the client's own LLM
+  key; logs are metadata-only.
+- **Auth / session / crypto / access-control fixes are always `human-required`** — hard rule.
+- **DAST is allowlist-gated** — production blocked by policy, approver-authorized, kill-switch, rate
+  - blast-radius caps, egress-guarded.
+- **Budget hard-halt** — a ceiling breach stops the scan with a partial report; never a silent burn.
+- **Everything audit-logged** — append-only, hash-chained, tamper-evident, exportable for auditors.
+
+Hardened defaults: auto-fix **OFF** · DAST **OFF** · budget **hard-halt** · telemetry **OFF** ·
+egress **default-deny** (only the client LLM endpoint).
+
+## Quickstart (docker-compose)
+
+```bash
+cp deploy/docker/.env.example deploy/docker/.env && $EDITOR deploy/docker/.env   # set LLM provider + key
+docker compose -f deploy/docker/docker-compose.yml up -d                          # api + worker + web + postgres + redis
+open http://localhost:3000                                                        # operator console
+```
+
+See **[DEPLOY.md](./DEPLOY.md)** (compose / Helm / air-gapped install), **[RUNBOOK.md](./RUNBOOK.md)**
+(operations), and **[DOD.md](./DOD.md)** (Definition-of-Done evidence).
 
 ## Monorepo layout
 
@@ -23,42 +64,39 @@ typed stubs whose signatures match the contracts. Waves 1–5 fan out from here.
 packages/
   contracts/    Zod schemas, types, layer I/O, queue jobs, gateway interface, errors  (the spine)
   config/       config schema + loader (hardened, safety-first defaults)
-  telemetry/    logging + OTel wrappers + audit-log client interface
+  telemetry/    structured logging + content-aware scrubber + OTel + audit-log client
   llm-gateway/  provider-agnostic LLM gateway  (the ONLY place a provider SDK may live)
   cost-meter/   estimate / meter / budget hard-halt
-  state-store/  Prisma client, repos, encryption, resumable state, audit log
-  orchestrator/ FSM, BullMQ workers, gate state, kill switch
-  appmap/       Layer 0 — intake + App Map + cost estimate
+  state-store/  Prisma client, repos, field encryption, resumable state, hash-chained audit log
+  orchestrator/ resumable FSM, BullMQ workers, gate state, kill switch
+  appmap/       Layer 0 — App Map (TS/JS + Python + JVM plugins) + cost estimate
   discovery/    Layer 1 — SAST + secrets + SCA
   correlation/  Layer 2 — the moat
   confirm/      Layer 3 — static proof + gated live DAST
-  fix/          Layer 4 — patch + test + risk classifier
-  report/       Layer 5 — report model + exports + gated PR flow
-  fixtures/     shared deterministic fixtures + fake LLM adapter + sample repos
+  fix/          Layer 4 — patch + proof-of-fix test + risk classifier
+  report/       Layer 5 — report model + SARIF/SOC2/ISO/OWASP exports + gated PR flow
+  qa/           golden-corpus precision/recall/FP-rate scorer
+  security/     egress guard, log-scrubber verifier, audit hash-chain tamper CLI
+  fixtures/     deterministic fixtures + fake LLM adapter + sample repos
 apps/
-  api/          Fastify HTTP API + RBAC + OpenAPI
-  worker/       BullMQ worker host
-  web/          Next.js operator console + report UI
+  api/          Fastify HTTP API + RBAC (operator/approver/viewer) + OpenAPI
+  worker/       BullMQ worker host + in-process pipeline driver
+  web/          Next.js operator console + report UI + Phase-4 dashboards
 deploy/         Dockerfiles, docker-compose, Helm chart, air-gap tooling
-corpus/         golden test corpus (vuln + clean repos, ground truth)
+corpus/         golden test corpus — 8 vuln/clean repos across TS/JS + Python + JVM
 ```
 
-## Quickstart
+## Develop
 
 ```bash
-nvm use            # Node 20 (.nvmrc)
 pnpm install
-pnpm typecheck && pnpm build
-pnpm test
+pnpm -w typecheck && pnpm -w build && pnpm test   # 632 tests, fully offline
+pnpm e2e                                           # full scan of a vulnerable fixture repo → report
 ```
 
-## Locked tech choices
+pnpm + Turborepo · TypeScript strict · Node 20. Package boundaries and the 10 golden rules are in
+`docs/plan/montr-secure-build-plan.md` and `CONTRIBUTING.md`.
 
-pnpm + Turborepo · TypeScript strict · Zod (single source of truth) · Fastify ·
-BullMQ + Redis · Prisma + PostgreSQL 16 · custom LLM gateway (BYO-key) ·
-Next.js 14 · Vitest · distroless containers · GitHub Actions.
+## License
 
-## Safety posture (defaults)
-
-Auto-fix **OFF** · DAST **OFF** · budget **hard-halt** · telemetry **OFF** ·
-egress **default-deny** (only the client LLM endpoint). See `CONTRIBUTING.md`.
+Proprietary — Montr AI Labs.

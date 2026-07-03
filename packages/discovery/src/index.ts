@@ -16,6 +16,7 @@ import { detectSast } from "./detectors/sast.js";
 import { detectSecretsAndConfig } from "./detectors/secrets.js";
 import { detectDependencies } from "./detectors/sca.js";
 import { selectCustomDetectors, selectSemgrepRulesets } from "./rulesets/registry.js";
+import { loadCustomRules, type LoadedSemgrepRule } from "./custom-rules.js";
 import { triageCandidates } from "./triage.js";
 import { persistCandidates, type AuditAppender, type CandidatePersister } from "./persist.js";
 import { dedupeById } from "./util/candidate.js";
@@ -71,6 +72,35 @@ function makeContext(
 }
 
 /**
+ * Materialize enabled custom SEMGREP rule bodies to temporary `--config` files.
+ * Returns their paths plus a `cleanup` that removes the temp dir. When there are
+ * no semgrep custom rules this does ZERO filesystem work (fast no-op path), so a
+ * scan without custom rules is unaffected.
+ */
+async function writeSemgrepRuleFiles(
+  rules: readonly LoadedSemgrepRule[],
+): Promise<{ paths: string[]; cleanup: () => Promise<void> }> {
+  if (rules.length === 0) return { paths: [], cleanup: async () => undefined };
+  const os = await import("node:os");
+  const fs = await import("node:fs/promises");
+  const nodePath = await import("node:path");
+  const { randomUUID } = await import("node:crypto");
+  const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), "montr-custom-rules-"));
+  const paths: string[] = [];
+  for (const rule of rules) {
+    const file = nodePath.join(dir, `${rule.id}-${randomUUID()}.yaml`);
+    await fs.writeFile(file, rule.body, "utf8");
+    paths.push(file);
+  }
+  return {
+    paths,
+    cleanup: async () => {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    },
+  };
+}
+
+/**
  * Run Layer-1 discovery and return the contract output plus diagnostics.
  *
  * The three sub-detectors run CONCURRENTLY (the "three agents writing
@@ -90,21 +120,36 @@ export async function runDiscoveryDetailed(input: RunDiscoveryInput): Promise<Di
     };
   }
 
+  // ⛔ Phase-4 (§16): load ENABLED client custom rules to run ALONGSIDE the curated
+  // rulesets. Disabled drafts are skipped (fail-safe — they never feed a scan);
+  // enabled secret rules become extra detectors, enabled semgrep bodies are
+  // materialized to temp `--config` files (cleaned up as soon as SAST returns).
+  const loaded = loadCustomRules(input.customRules ?? []);
+  for (const s of loaded.skipped) {
+    if (s.reason !== "disabled")
+      ctx.warn("custom-rules", `skipped custom rule ${s.id}: ${s.reason}`);
+  }
+  const customSemgrep = await writeSemgrepRuleFiles(loaded.semgrepRules);
+
   // Fan out the three deterministic detectors concurrently. Semgrep rulesets +
   // extra secrets detectors are selected per stack from the ruleset registry
   // (keyed on the App Map's detected languages); Phase-1 TS/JS apps get exactly
-  // the curated default set + base detectors.
+  // the curated default set + base detectors. Enabled client custom rules append
+  // to both (their configs + detectors), never replacing the curated set.
   const [sast, secrets, sca] = await Promise.all([
     detectSast(ctx, {
       runner: deps.semgrep,
-      rulesets: deps.semgrepRulesets ?? selectSemgrepRulesets(input.appMap),
+      rulesets: [
+        ...(deps.semgrepRulesets ?? selectSemgrepRulesets(input.appMap)),
+        ...customSemgrep.paths,
+      ],
     }),
     detectSecretsAndConfig(ctx, {
       runner: deps.gitleaks,
-      extraDetectors: selectCustomDetectors(input.appMap),
+      extraDetectors: [...selectCustomDetectors(input.appMap), ...loaded.secretDetectors],
     }),
     detectDependencies(ctx, {}),
-  ]);
+  ]).finally(() => customSemgrep.cleanup());
 
   // Merge, dedupe (deterministic ids make cross-tool dupes collapse), scope-filter.
   let candidates: CandidateFinding[] = dedupeById([...sast, ...secrets, ...sca]).filter((c) =>
