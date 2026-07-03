@@ -8,6 +8,15 @@ import {
   type AnthropicStreamEventLike,
 } from "./anthropic.js";
 import { type AdapterCompletion, type ProviderAdapter } from "./types.js";
+import { type AdapterEgress } from "./egress.js";
+
+/** Resolve the Bedrock Runtime host that will be contacted (env-configured region). */
+function bedrockDefaultEndpoint(): string {
+  const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+  return region
+    ? `https://bedrock-runtime.${region}.amazonaws.com`
+    : "https://bedrock-runtime.amazonaws.com";
+}
 
 /**
  * AWS Bedrock adapter (`@aws-sdk/client-bedrock-runtime`). Uses the Bedrock
@@ -47,6 +56,8 @@ export interface BedrockAdapterOptions {
   config: MontrConfig;
   /** Injectable transport (tests). Defaults to a real Bedrock Runtime client. */
   transport?: BedrockTransport;
+  /** ⛔ Egress guard asserted before every outbound request (golden rule #1). */
+  egress?: AdapterEgress;
 }
 
 export class BedrockAdapter implements ProviderAdapter {
@@ -62,6 +73,11 @@ export class BedrockAdapter implements ProviderAdapter {
     return this.transport;
   }
 
+  /** ⛔ Assert the outbound Bedrock host is the configured endpoint before dispatch. */
+  private assertEgress(): void {
+    this.options.egress?.assert(this.options.config.llm.endpoint ?? bedrockDefaultEndpoint());
+  }
+
   /** First-party Claude ids get the `anthropic.` Bedrock prefix; others pass through. */
   resolveModelId(modelId: string): string {
     return modelId.includes(".") ? modelId : `anthropic.${modelId}`;
@@ -72,6 +88,7 @@ export class BedrockAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): Promise<AdapterCompletion> {
+    this.assertEgress();
     const transport = await this.getTransport();
     const msg = await transport.invoke(
       this.resolveModelId(modelId),
@@ -86,6 +103,7 @@ export class BedrockAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): AsyncGenerator<LLMStreamEvent> {
+    this.assertEgress();
     const transport = await this.getTransport();
     const events = transport.invokeStream(
       this.resolveModelId(modelId),

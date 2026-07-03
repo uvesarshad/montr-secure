@@ -7,6 +7,14 @@ import {
   type VertexContent,
 } from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
+import { type AdapterEgress } from "./egress.js";
+
+/** Resolve the Vertex AI host that will be contacted (env-configured location). */
+function vertexDefaultEndpoint(): string {
+  const location =
+    process.env.GOOGLE_CLOUD_LOCATION ?? process.env.VERTEX_LOCATION ?? "us-central1";
+  return `https://${location}-aiplatform.googleapis.com`;
+}
 
 /**
  * GCP Vertex AI adapter (`@google-cloud/vertexai`). Maps the unified request to
@@ -62,6 +70,8 @@ export interface VertexAdapterOptions {
   config: MontrConfig;
   /** Injectable transport (tests). Defaults to a real Vertex AI client. */
   transport?: VertexTransport;
+  /** ⛔ Egress guard asserted before every outbound request (golden rule #1). */
+  egress?: AdapterEgress;
 }
 
 export class VertexAdapter implements ProviderAdapter {
@@ -77,6 +87,11 @@ export class VertexAdapter implements ProviderAdapter {
     return this.transport;
   }
 
+  /** ⛔ Assert the outbound Vertex host is the configured endpoint before dispatch. */
+  private assertEgress(): void {
+    this.options.egress?.assert(this.options.config.llm.endpoint ?? vertexDefaultEndpoint());
+  }
+
   resolveModelId(modelId: string): string {
     return modelId;
   }
@@ -86,6 +101,7 @@ export class VertexAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): Promise<AdapterCompletion> {
+    this.assertEgress();
     const transport = await this.getTransport();
     const resp = await transport.generate(modelId, buildRequest(request), signal);
     const u = resp.usageMetadata;
@@ -105,6 +121,7 @@ export class VertexAdapter implements ProviderAdapter {
     modelId: string,
     signal?: AbortSignal,
   ): AsyncGenerator<LLMStreamEvent> {
+    this.assertEgress();
     const transport = await this.getTransport();
     const events = transport.generateStream(modelId, buildRequest(request), signal);
     let promptTokens = 0;

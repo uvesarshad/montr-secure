@@ -98,7 +98,15 @@ export class MontrLlmGateway implements LLMGateway {
       ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
       ...(opts.sleep ? { sleep: opts.sleep } : {}),
     };
-    this.adapter = opts.adapter ?? createAdapter(opts.config.llm.provider, opts.config);
+    // ⛔ Egress guard (golden rule #1): default-deny, LLM endpoint only. Compiled
+    // + validated here (throws on a non-default-deny policy or an unreachable LLM
+    // destination); provider-default warnings surface to the structured log. Built
+    // BEFORE the adapter so it can be threaded in for per-request egress asserts.
+    this.egress = createEgressGuard(opts.config, {
+      onWarning: (message) => this.logger.warn("egress.warning", { message }),
+    });
+    this.adapter =
+      opts.adapter ?? createAdapter(opts.config.llm.provider, opts.config, this.egress);
     this.descriptors = buildDescriptors(opts.config);
 
     // ⛔ Key-tier guard — may throw KeyTierRejectedError when policy is "block".
@@ -111,13 +119,6 @@ export class MontrLlmGateway implements LLMGateway {
 
     // Model floor (DECIDE-3) — warn once at construction (or throw when strict).
     assertModelFloor(opts.config, { strict: opts.strictModelFloor ?? false, logger: this.logger });
-
-    // ⛔ Egress guard (golden rule #1): default-deny, LLM endpoint only. Throws
-    // on a non-default-deny policy or an unreachable LLM destination; warnings
-    // (e.g. a broad provider-default suffix) surface to the structured log.
-    this.egress = createEgressGuard(opts.config, {
-      onWarning: (message) => this.logger.warn("egress.warning", { message }),
-    });
   }
 
   private get provider(): Provider {
@@ -128,7 +129,9 @@ export class MontrLlmGateway implements LLMGateway {
    * ⛔ Assert the outbound LLM destination is on the default-deny allowlist
    * before dispatching. When an explicit endpoint is configured, that is the
    * exact host the adapter will hit; otherwise the provider-default host was
-   * already validated as reachable at construction.
+   * already validated as reachable at construction. The concrete adapter also
+   * asserts the resolved outbound host (endpoint or provider default) via the
+   * threaded egress guard before EVERY request — this is the outer layer.
    */
   private assertEgress(): void {
     const endpoint = this.config.llm.endpoint;

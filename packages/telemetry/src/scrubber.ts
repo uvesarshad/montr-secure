@@ -44,6 +44,7 @@ const SECRET_VALUE_MATCHERS: readonly RegExp[] = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, // slack token
   /\bsk-ant-[A-Za-z0-9_-]{16,}\b/, // anthropic api key
   /\bsk-[A-Za-z0-9]{20,}\b/, // openai api key
+  /\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b/, // stripe secret key
   /\bAIza[0-9A-Za-z_-]{35}\b/, // google api key
   /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/, // jwt
   /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/, // pem private key

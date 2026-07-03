@@ -6,6 +6,7 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts", "src/testkit.ts"],
   "references": [
     {
       "path": "../../packages/contracts"
@@ -14,13 +15,37 @@
       "path": "../../packages/config"
     },
     {
+      "path": "../../packages/telemetry"
+    },
+    {
+      "path": "../../packages/cost-meter"
+    },
+    {
+      "path": "../../packages/state-store"
+    },
+    {
       "path": "../../packages/orchestrator"
     },
     {
       "path": "../../packages/security"
     },
     {
-      "path": "../../packages/telemetry"
+      "path": "../../packages/appmap"
+    },
+    {
+      "path": "../../packages/discovery"
+    },
+    {
+      "path": "../../packages/correlation"
+    },
+    {
+      "path": "../../packages/confirm"
+    },
+    {
+      "path": "../../packages/fix"
+    },
+    {
+      "path": "../../packages/report"
     }
   ]
 }

@@ -21,6 +21,8 @@ export default defineConfig({
       "@montr/confirm": src("./packages/confirm/src/index.ts"),
       "@montr/fix": src("./packages/fix/src/index.ts"),
       "@montr/report": src("./packages/report/src/index.ts"),
+      "@montr/qa": src("./packages/qa/src/index.ts"),
+      "@montr/security": src("./packages/security/src/index.ts"),
       "@montr/fixtures": src("./packages/fixtures/src/index.ts"),
     },
   },
