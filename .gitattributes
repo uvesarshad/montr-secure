@@ -1,0 +1,22 @@
+# Normalize line endings to LF for all text files, on every platform. Prettier is
+# configured `endOfLine: "lf"`, so this keeps `prettier --check` (the CI format
+# gate) deterministic regardless of a contributor's core.autocrlf (e.g. Windows).
+* text=auto eol=lf
+
+# Shell scripts must stay LF (they run on Linux hosts / in containers).
+*.sh text eol=lf
+
+# Lockfile: LF, and don't show a diff (huge, machine-generated).
+pnpm-lock.yaml text eol=lf -diff
+
+# Binary assets — never touch EOLs.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.gz binary
+*.zip binary
+*.pdf binary
+*.crt binary
+*.pem binary
