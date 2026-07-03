@@ -95,12 +95,21 @@ async function puppeteerRender(html: string, opts: PdfOptions): Promise<Uint8Arr
 }
 
 /**
+ * Render arbitrary finished HTML to PDF bytes via the same lazy/graceful
+ * puppeteer-core path. Shared by the main report PDF and the generic OWASP PDF so
+ * both honor the injected-`renderer` offline seam. Throws
+ * {@link PdfBrowserUnavailableError} when no browser is available.
+ */
+export async function htmlToPdf(html: string, opts: PdfOptions = {}): Promise<Uint8Array> {
+  const render = opts.renderer ?? ((h: string) => puppeteerRender(h, opts));
+  return render(html);
+}
+
+/**
  * Render a report to PDF bytes. Uses the injected `renderer` if present, else
  * puppeteer-core. Throws {@link PdfBrowserUnavailableError} when no browser is
  * available — callers treat PDF as best-effort.
  */
 export async function renderReportPdf(report: Report, opts: PdfOptions = {}): Promise<Uint8Array> {
-  const html = renderReportHtml(report);
-  const render = opts.renderer ?? ((h: string) => puppeteerRender(h, opts));
-  return render(html);
+  return htmlToPdf(renderReportHtml(report), opts);
 }

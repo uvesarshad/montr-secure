@@ -8,6 +8,7 @@ import type { Logger } from "@montr/telemetry";
 import type { Orchestrator } from "@montr/orchestrator";
 import type { Role } from "@montr/contracts";
 import type { ApiStore, Clock, IdGen } from "./store.js";
+import type { RegressionCorpusRecorder } from "./fp-corpus.js";
 
 /** How the current request authenticated. Drives CSRF enforcement. */
 export type AuthMethod = "cookie" | "bearer";
@@ -40,6 +41,12 @@ export interface ApiServerDeps {
   logger?: Logger;
   clock?: Clock;
   idgen?: IdGen;
+  /**
+   * §15 regression-corpus sink for false-positive feedback. Optional; defaults to
+   * a fail-safe no-op (the audit log remains authoritative). Production injects
+   * @montr/qa's `corpusRecorder(new FileRegressionCorpus(path))`.
+   */
+  regressionCorpus?: RegressionCorpusRecorder;
   /** Set Secure attribute on cookies (default true; disable only for http dev/tests). */
   cookieSecure?: boolean;
   /** Serve the Swagger UI at /docs (default true). */
@@ -72,6 +79,8 @@ export interface ResolvedDeps {
   sessionTtlMinutes: number;
   /** Per-route rate limit applied to authentication endpoints. */
   authRate: { max: number; timeWindow: string | number };
+  /** §15 regression-corpus sink (defaults to a fail-safe no-op). */
+  regressionCorpus: RegressionCorpusRecorder;
 }
 
 declare module "fastify" {

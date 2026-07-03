@@ -157,11 +157,18 @@ describe("@montr/report PDF export — lazy + graceful (§13)", () => {
 });
 
 describe("@montr/report export registry — Wave-3 extension point", () => {
-  it("throws NotImplementedError for compliance formats not yet registered", async () => {
-    await expect(generateExport(report, "soc2-evidence")).rejects.toBeInstanceOf(
+  it("implements the SOC 2 + ISO 27001 evidence formats (Wave 3); unknown formats still error", async () => {
+    // Wave 3 (WS-M): these compliance formats are now implemented and reachable
+    // via the frozen generateExport API (replaces the Wave-2 not-yet-implemented
+    // assertion). Deep evidence-package coverage lives in compliance.exports.test.ts.
+    const soc2 = await generateExport(report, "soc2-evidence");
+    expect(JSON.parse(soc2.content as string).framework).toBe("soc2");
+    const iso = await generateExport(report, "iso27001");
+    expect(JSON.parse(iso.content as string).framework).toBe("iso27001");
+    // A format with no registered exporter still fails cleanly (dispatcher path).
+    await expect(generateExport(report, "not-a-format" as never)).rejects.toBeInstanceOf(
       NotImplementedError,
     );
-    await expect(generateExport(report, "iso27001")).rejects.toBeInstanceOf(NotImplementedError);
   });
 
   it("registerExporter slots a new format in without touching the dispatcher", async () => {

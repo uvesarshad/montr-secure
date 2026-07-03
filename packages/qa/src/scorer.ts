@@ -5,6 +5,7 @@ import {
   type CategoryScore,
   type ConfusionCounts,
   type CorpusScore,
+  type FalsePositiveMarker,
   type MatchOutcome,
   type RepoScanResult,
   type RepoScore,
@@ -52,6 +53,21 @@ function locationMatches(
   );
 }
 
+/** Does a (category, file, line) marker match this location within tolerance? */
+function markerMatchesLoc(
+  marker: FalsePositiveMarker,
+  category: Category,
+  file: string,
+  line: number,
+  lineTolerance: number,
+): boolean {
+  return (
+    marker.category === category &&
+    marker.file === file &&
+    Math.abs(marker.line - line) <= lineTolerance
+  );
+}
+
 /** Score a single repo's confirmed findings against its ground truth. */
 export function scoreRepo(
   repo: GroundTruthRepo,
@@ -59,6 +75,7 @@ export function scoreRepo(
   opts: ScoreOptions = {},
 ): RepoScore {
   const tol = opts.lineTolerance ?? DEFAULT_LINE_TOLERANCE;
+  const fpMarkers = opts.falsePositives ?? [];
   const expectedConfirmed = repo.expectedFindings.filter((f) => f.exploitable);
   const expectedDemoted = repo.expectedFindings.filter((f) => !f.exploitable);
   const matched = new Set<string>();
@@ -67,7 +84,26 @@ export function scoreRepo(
   let falsePositives = 0;
   let overConfirmed = 0;
 
+  const isOperatorMarkedFp = (category: Category, file: string, line: number): boolean =>
+    fpMarkers.some((m) => markerMatchesLoc(m, category, file, line, tol));
+
   for (const finding of confirmed) {
+    // §15 FP loop: an operator override authoritatively overturns the
+    // confirmation — count it as a false positive regardless of ground truth
+    // (never let it match/consume an exploitable case).
+    if (isOperatorMarkedFp(finding.category, finding.location.file, finding.location.line)) {
+      falsePositives++;
+      outcomes.push({
+        kind: "false_positive",
+        category: finding.category,
+        confirmedId: finding.id,
+        file: finding.location.file,
+        line: finding.location.line,
+        note: "operator-marked false positive (regression corpus, §15)",
+      });
+      continue;
+    }
+
     const hit = expectedConfirmed.find(
       (g) => !matched.has(g.id) && locationMatches(finding, g, tol),
     );
@@ -105,6 +141,9 @@ export function scoreRepo(
   let falseNegatives = 0;
   for (const gt of expectedConfirmed) {
     if (matched.has(gt.id)) continue;
+    // If an operator marked this exact case a false positive, the human override
+    // says nothing exploitable is here — don't also penalize it as a miss.
+    if (isOperatorMarkedFp(gt.category, gt.file, gt.line)) continue;
     falseNegatives++;
     outcomes.push({
       kind: "false_negative",
@@ -209,5 +248,94 @@ export function scoreScanResults(
     reposWithResults,
     unknownRepoResults,
     perRepo,
+  };
+}
+
+/* --------------------------------------------------------------------------- *
+ * §15 False-positive feedback scoring (ground-truth-free).
+ *
+ * On a REAL client scan there is no golden ground truth — the operator IS the
+ * oracle. This treats every confirmed finding an operator marked as a false
+ * positive as an FP and the rest as accepted true positives, yielding the live
+ * precision + headline FP-rate the §15 loop drives toward < 5%.
+ * --------------------------------------------------------------------------- */
+
+/** Per-category live precision from operator feedback. */
+export interface CategoryFeedbackScore {
+  category: Category;
+  confirmed: number;
+  falsePositives: number;
+  truePositives: number;
+  precision: number;
+  fpRate: number;
+}
+
+/** Live precision / FP-rate of a confirmed set given operator FP feedback. */
+export interface FalsePositiveFeedbackScore {
+  /** Confirmed findings scored. */
+  confirmed: number;
+  /** Confirmed findings NOT marked FP (operator-accepted). */
+  truePositives: number;
+  /** Confirmed findings an operator marked as false positives. */
+  falsePositives: number;
+  /** truePositives / confirmed (1 when there are no confirmations). */
+  precision: number;
+  /** Headline metric: falsePositives / confirmed (0 when there are no confirmations). */
+  fpRate: number;
+  perCategory: CategoryFeedbackScore[];
+  /** Ids of the confirmed findings that were marked FP (metadata only). */
+  markedFindingIds: string[];
+}
+
+/**
+ * Score a confirmed-finding set against operator false-positive feedback. No
+ * ground truth required; a marked finding counts against precision and feeds the
+ * FP-rate metric (§15). Deterministic and pure.
+ */
+export function scoreFalsePositiveFeedback(
+  confirmed: readonly ConfirmedFinding[],
+  falsePositives: readonly FalsePositiveMarker[],
+  opts: ScoreOptions = {},
+): FalsePositiveFeedbackScore {
+  const tol = opts.lineTolerance ?? DEFAULT_LINE_TOLERANCE;
+  const isMarked = (f: ConfirmedFinding): boolean =>
+    falsePositives.some((m) =>
+      markerMatchesLoc(m, f.category, f.location.file, f.location.line, tol),
+    );
+
+  const perCat = new Map<Category, { confirmed: number; fp: number }>();
+  const markedFindingIds: string[] = [];
+  let fp = 0;
+
+  for (const f of confirmed) {
+    const cat = perCat.get(f.category) ?? { confirmed: 0, fp: 0 };
+    cat.confirmed++;
+    if (isMarked(f)) {
+      cat.fp++;
+      fp++;
+      markedFindingIds.push(f.id);
+    }
+    perCat.set(f.category, cat);
+  }
+
+  const total = confirmed.length;
+  const tp = total - fp;
+  return {
+    confirmed: total,
+    truePositives: tp,
+    falsePositives: fp,
+    precision: precisionOf(tp, fp),
+    fpRate: fpRateOf(tp, fp),
+    perCategory: [...perCat.entries()]
+      .map(([category, c]) => ({
+        category,
+        confirmed: c.confirmed,
+        falsePositives: c.fp,
+        truePositives: c.confirmed - c.fp,
+        precision: precisionOf(c.confirmed - c.fp, c.fp),
+        fpRate: fpRateOf(c.confirmed - c.fp, c.fp),
+      }))
+      .sort((a, b) => a.category.localeCompare(b.category)),
+    markedFindingIds,
   };
 }
