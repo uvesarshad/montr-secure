@@ -44,7 +44,8 @@ export const defaultSemgrepRunner: SemgrepRunner = async ({ repoRoot, rulesets, 
     const res = await execa("semgrep", args, {
       cwd: repoRoot,
       reject: false,
-      signal,
+      // execa v9 renamed the abort option `signal` → `cancelSignal`.
+      cancelSignal: signal,
       timeout: 300_000,
       maxBuffer: 64 * 1024 * 1024,
     });

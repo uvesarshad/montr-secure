@@ -233,7 +233,13 @@ class FindingRepo<
 
   async bulkCreate(clientId: string, findings: TContract[]): Promise<TContract[]> {
     if (findings.length === 0) return [];
-    await this.delegate.createMany({ data: findings.map((f) => this.toCreate(clientId, f)) });
+    // The pipeline is resumable, so a retried Layer-2/3 job may re-persist the same
+    // findings; skipDuplicates keeps bulkCreate idempotent (unique id) instead of
+    // failing the whole scan. (Probable + unconfirmed share the probableFinding table.)
+    await this.delegate.createMany({
+      data: findings.map((f) => this.toCreate(clientId, f)),
+      skipDuplicates: true,
+    });
     return findings.map((f) => ({ ...f, clientId }) as TContract);
   }
 

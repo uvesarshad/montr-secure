@@ -54,7 +54,8 @@ export const defaultGitleaksRunner: GitleaksRunner = async ({ repoRoot, signal }
         "--report-path",
         report,
       ],
-      { reject: false, signal, timeout: 300_000 },
+      // execa v9 renamed the abort option `signal` → `cancelSignal`.
+      { reject: false, cancelSignal: signal, timeout: 300_000 },
     );
     const raw = await fs.readFile(report, "utf8").catch(() => "");
     await fs.rm(report, { force: true }).catch(() => undefined);
