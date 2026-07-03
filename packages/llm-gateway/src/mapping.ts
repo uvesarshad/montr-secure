@@ -116,22 +116,89 @@ export function extractAnthropicToolCalls(
   return calls.length > 0 ? calls : undefined;
 }
 
-export interface VertexContent {
-  role: "user" | "model";
-  parts: Array<{ text: string }>;
+export interface VertexPart {
+  text?: string;
+  functionCall?: { name: string; args: Record<string, unknown> };
+  functionResponse?: { name: string; response: Record<string, unknown> };
 }
 
-/** Contents for Vertex (Gemini): user/model turns; system handled separately. */
+export interface VertexContent {
+  role: "user" | "model";
+  parts: VertexPart[];
+}
+
+/** Contents for Vertex (Gemini): user/model turns; tool calls + results as parts. */
 export function toVertexContents(request: LLMRequest): VertexContent[] {
   const out: VertexContent[] = [];
   for (const m of request.messages) {
     if (m.role === "system") continue;
+    if (m.role === "tool") {
+      out.push({
+        role: "user",
+        parts: [
+          {
+            functionResponse: {
+              name: m.name ?? "tool",
+              response: { result: contentToString(m.content) },
+            },
+          },
+        ],
+      });
+      continue;
+    }
+    if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
+      const parts: VertexPart[] = [];
+      const text = contentToString(m.content);
+      if (text) parts.push({ text });
+      for (const tc of m.toolCalls) {
+        parts.push({ functionCall: { name: tc.name, args: tc.arguments } });
+      }
+      out.push({ role: "model", parts });
+      continue;
+    }
     out.push({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: contentToString(m.content) }],
     });
   }
   return out;
+}
+
+export interface VertexToolDef {
+  functionDeclarations: Array<{
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  }>;
+}
+
+/** Vertex/Gemini function declarations from the unified request (undefined when none). */
+export function toVertexTools(request: LLMRequest): VertexToolDef[] | undefined {
+  if (!request.tools || request.tools.length === 0) return undefined;
+  return [
+    {
+      functionDeclarations: request.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      })),
+    },
+  ];
+}
+
+/** Extract `functionCall` parts from a Vertex response candidate. */
+export function extractVertexToolCalls(
+  parts: Array<{ functionCall?: { name?: string; args?: unknown } }> | undefined,
+): LLMToolCall[] | undefined {
+  if (!parts) return undefined;
+  const calls = parts
+    .filter((p) => p.functionCall)
+    .map((p, i) => ({
+      id: `call_${i}`,
+      name: p.functionCall?.name ?? "",
+      arguments: parseToolArgs(p.functionCall?.args),
+    }));
+  return calls.length > 0 ? calls : undefined;
 }
 
 export interface OpenAiToolCall {

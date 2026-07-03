@@ -5,8 +5,11 @@ import {
   createLlmGateway,
   OpenAiCompatibleAdapter,
   AnthropicAdapter,
+  VertexAdapter,
   type OpenAiClientLike,
   type AnthropicClientLike,
+  type VertexTransport,
+  type VertexGenerateRequest,
 } from "@montr/llm-gateway";
 import { LLMResponseSchema, type LLMRequest, type LLMToolDefinition } from "@montr/contracts";
 
@@ -144,5 +147,46 @@ describe("gateway tool-calling — Anthropic wire family", () => {
       .flatMap((m) => (Array.isArray(m.content) ? (m.content as Array<{ type: string }>) : []))
       .find((b) => b.type === "tool_result");
     expect(toolResult).toBeDefined();
+  });
+});
+
+describe("gateway tool-calling — Vertex/Gemini (native)", () => {
+  it("passes functionDeclarations + maps functionCall/functionResponse, surfaces tool_use", async () => {
+    let seen: VertexGenerateRequest | undefined;
+    const transport: VertexTransport = {
+      generate: (_model, req) => {
+        seen = req;
+        return Promise.resolve({
+          candidates: [
+            {
+              content: { parts: [{ functionCall: { name: "read_file", args: { path: "d.ts" } } }] },
+              finishReason: "STOP",
+            },
+          ],
+          usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6 },
+        });
+      },
+      // eslint-disable-next-line require-yield
+      generateStream: async function* () {
+        return;
+      },
+    };
+    const adapter = new VertexAdapter({ config: CONFIG, transport });
+    const gw = createLlmGateway({ config: CONFIG, adapter, logger: createNullLogger() });
+    const res = await gw.complete(toolRequest());
+
+    expect(res.stopReason).toBe("tool_use");
+    expect(res.toolCalls).toEqual([
+      { id: "call_0", name: "read_file", arguments: { path: "d.ts" } },
+    ]);
+
+    // functionDeclarations passed; functionCall (model) + functionResponse (tool) in contents.
+    expect(seen?.tools?.[0].functionDeclarations[0].name).toBe("read_file");
+    const modelFnCall = seen?.contents.find(
+      (c) => c.role === "model" && c.parts.some((p) => p.functionCall),
+    );
+    expect(modelFnCall).toBeDefined();
+    const fnResp = seen?.contents.flatMap((c) => c.parts).find((p) => p.functionResponse);
+    expect(fnResp).toBeDefined();
   });
 });

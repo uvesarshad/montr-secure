@@ -2,9 +2,12 @@ import { ProviderNotConfiguredError, type LLMRequest, type LLMStreamEvent } from
 import type { MontrConfig } from "@montr/config";
 import {
   collectSystem,
+  extractVertexToolCalls,
   mapVertexFinishReason,
   toVertexContents,
+  toVertexTools,
   type VertexContent,
+  type VertexToolDef,
 } from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
 import { type AdapterEgress } from "./egress.js";
@@ -23,7 +26,12 @@ function vertexDefaultEndpoint(): string {
  */
 
 export interface VertexResponseLike {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{ text?: string; functionCall?: { name?: string; args?: unknown } }>;
+    };
+    finishReason?: string;
+  }>;
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
@@ -35,6 +43,7 @@ export interface VertexGenerateRequest {
   contents: VertexContent[];
   systemInstruction?: string;
   generationConfig: { maxOutputTokens: number; temperature?: number };
+  tools?: VertexToolDef[];
 }
 
 export interface VertexTransport {
@@ -63,6 +72,8 @@ function buildRequest(request: LLMRequest): VertexGenerateRequest {
   const system = collectSystem(request);
   if (system) req.systemInstruction = system;
   if (request.temperature !== undefined) req.generationConfig.temperature = request.temperature;
+  const tools = toVertexTools(request);
+  if (tools) req.tools = tools;
   return req;
 }
 
@@ -105,11 +116,17 @@ export class VertexAdapter implements ProviderAdapter {
     const transport = await this.getTransport();
     const resp = await transport.generate(modelId, buildRequest(request), signal);
     const u = resp.usageMetadata;
+    const toolCalls = extractVertexToolCalls(resp.candidates?.[0]?.content?.parts);
     return {
       id: `${modelId}:response`,
       model: modelId,
       content: vertexText(resp),
-      stopReason: mapVertexFinishReason(resp.candidates?.[0]?.finishReason),
+      // Gemini reports finishReason STOP even when it emits a functionCall, so a
+      // present tool call is the authoritative "tool_use" signal.
+      stopReason: toolCalls
+        ? "tool_use"
+        : mapVertexFinishReason(resp.candidates?.[0]?.finishReason),
+      ...(toolCalls ? { toolCalls } : {}),
       usage: makeUsage(u?.promptTokenCount ?? 0, u?.candidatesTokenCount ?? 0, {
         totalTokens: u?.totalTokenCount,
       }),
@@ -188,6 +205,7 @@ async function createDefaultVertexTransport(config: MontrConfig): Promise<Vertex
       const result = await gm.generateContent({
         contents: req.contents,
         generationConfig: req.generationConfig,
+        ...(req.tools ? { tools: req.tools } : {}),
       });
       return result.response;
     },
@@ -196,6 +214,7 @@ async function createDefaultVertexTransport(config: MontrConfig): Promise<Vertex
       const result = await gm.generateContentStream({
         contents: req.contents,
         generationConfig: req.generationConfig,
+        ...(req.tools ? { tools: req.tools } : {}),
       });
       for await (const item of result.stream) yield item;
     },
