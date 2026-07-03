@@ -40,7 +40,9 @@ import { confirmFindings, type ConfirmDeps, type ConfirmInput } from "@montr/con
 import {
   createFsSourceReader,
   createMapSourceReader,
+  createNodeProofRunner,
   generateFixes,
+  type ProofTestRunner,
   type SourceReader,
 } from "@montr/fix";
 import { buildReport, type PullRequestOpener } from "@montr/report";
@@ -64,6 +66,8 @@ export interface LayerRunnerOptions {
   resolveRepoRoot?: (ctx: LayerContext) => string | undefined;
   /** Override the Layer-4 source reader (else fs-at-repoRoot, else empty map). */
   sourceReader?: (ctx: LayerContext<"layer4">) => SourceReader;
+  /** Override the Layer-4 proof-of-fix executor (else the default Node runner). */
+  proofRunner?: ProofTestRunner;
   /** ⛔ Auto-fix PR opener (Layer 5). Absent ⇒ pure path, NO PRs opened. */
   opener?: PullRequestOpener;
   /** Base branch auto-fix PRs target (Layer 5). Defaults per the report layer. */
@@ -237,6 +241,11 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         humanRequiredCategoriesAlways: ctx.config.autoFix.humanRequiredCategoriesAlways,
         // ⛔ Bounded coding-agent fix loop (OFF by default; @montr/config).
         agentLoop: ctx.config.autoFix.agentLoop,
+        // ⛔ Execution-backed proof-of-fix (OFF by default): actually run the
+        // synthesized test against original + patched source.
+        ...(ctx.config.autoFix.executeProofTests
+          ? { proofRunner: opts.proofRunner ?? createNodeProofRunner() }
+          : {}),
         ...(opts.now ? { now: opts.now } : {}),
         confirmed,
       });

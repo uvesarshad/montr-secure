@@ -86,6 +86,12 @@ export const AutoFixConfigSchema = z.object({
     .default(["broken_access_control", "broken_authentication", "weak_crypto", "idor", "csrf"]),
   /** Bounded coding-agent fix loop (OFF by default). */
   agentLoop: AgentLoopConfigSchema.default({}),
+  /**
+   * ⛔ Execution-backed proof-of-fix (OFF by default). When on, the synthesized
+   * proof-of-fix test is actually RUN against the original + patched source so
+   * fails-pre/passes-post is observed, not modeled. Adds a per-fix subprocess.
+   */
+  executeProofTests: z.boolean().default(false),
 });
 export type AutoFixConfig = z.infer<typeof AutoFixConfigSchema>;
 

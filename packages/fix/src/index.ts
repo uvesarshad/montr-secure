@@ -39,5 +39,11 @@ export {
 } from "./patch.js";
 
 export { createFsSourceReader, createMapSourceReader, type SourceReader } from "./source.js";
+export {
+  createNodeProofRunner,
+  type ProofTestRunner,
+  type ProofRunInput,
+  type NodeProofRunnerOptions,
+} from "./proof-runner.js";
 
 export { generateFixes, type GenerateFixesInput, type FixGenerationContext } from "./generate.js";

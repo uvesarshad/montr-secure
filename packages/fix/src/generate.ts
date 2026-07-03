@@ -34,6 +34,7 @@ import {
   type FixStrategy,
 } from "./strategies.js";
 import type { SourceReader } from "./source.js";
+import type { ProofTestRunner } from "./proof-runner.js";
 
 export interface FixGenerationContext {
   clientId: string;
@@ -56,6 +57,12 @@ export interface FixGenerationContext {
    * validation gate + risk classifier + PR gate are unchanged.
    */
   agentLoop?: { enabled: boolean; maxIterations: number };
+  /**
+   * ⛔ Optional proof-of-fix EXECUTOR. When present, the synthesized proof test is
+   * actually run against the original + patched source; a candidate is accepted
+   * only if the test FAILS pre-patch and PASSES post-patch by real execution.
+   */
+  proofRunner?: ProofTestRunner;
 }
 
 export interface GenerateFixesInput extends FixGenerationContext {
@@ -349,10 +356,26 @@ async function generateOne(
       candidates.push({ fixedSource: deterministic, via: "deterministic" });
     }
 
+    const proofCode = strategy.proofTestCode(filePath, finding);
     for (const candidate of candidates) {
       const patch = buildUnifiedDiff(filePath, original, candidate.fixedSource);
       const validation = validatePatch(original, patch, strategy.vulnerable);
       if (validation.applies && validation.failsPrePatch && validation.passesPostPatch) {
+        // Execution-backed proof-of-fix: actually run the synthesized test against
+        // the original (must FAIL) + patched (must PASS). Reject on contradiction.
+        if (ctx.proofRunner) {
+          const failsPre = !(await ctx.proofRunner.run({
+            testCode: proofCode,
+            targetPath: filePath,
+            source: original,
+          }));
+          const passesPost = await ctx.proofRunner.run({
+            testCode: proofCode,
+            targetPath: filePath,
+            source: candidate.fixedSource,
+          });
+          if (!failsPre || !passesPost) continue;
+        }
         const risk = classifyConfirmedFindingRisk(
           finding,
           {

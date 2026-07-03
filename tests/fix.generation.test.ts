@@ -8,7 +8,9 @@ import {
   pickStrategy,
   createFsSourceReader,
   createMapSourceReader,
+  createNodeProofRunner,
   type GenerateFixesInput,
+  type ProofTestRunner,
 } from "@montr/fix";
 import {
   mockConfirmedFindings,
@@ -315,6 +317,37 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     const { gateway, requests } = recordingGateway(createFakeLlmGateway());
     await generateFixes(baseInput({ confirmed: [SQLI], gateway }));
     expect(requests.length).toBe(1);
+  });
+
+  it("⛔ createNodeProofRunner actually RUNS the proof test: fails-pre, passes-post", async () => {
+    const runner = createNodeProofRunner({ timeoutMs: 20_000 });
+    const strategy = pickStrategy("sql_injection")!;
+    const original = read("app/api/users/route.ts");
+    const fixed = strategy.apply(original)!; // deterministic fix removes $queryRawUnsafe
+    const testCode = strategy.proofTestCode("app/api/users/route.ts", SQLI);
+
+    // Real subprocess: the synthesized test FAILS on the vulnerable file, PASSES on the fix.
+    expect(
+      await runner.run({ testCode, targetPath: "app/api/users/route.ts", source: original }),
+    ).toBe(false);
+    expect(
+      await runner.run({ testCode, targetPath: "app/api/users/route.ts", source: fixed }),
+    ).toBe(true);
+  }, 40_000);
+
+  it("⛔ execution-backed gate accepts only when the proof test fails-pre AND passes-post", async () => {
+    const original = read("app/api/users/route.ts");
+    // Honest runner: FAILS on the original (vuln present), PASSES on any patched source.
+    const honest: ProofTestRunner = { run: async ({ source }) => source !== original };
+    const ok = await generateFixes(baseInput({ confirmed: [SQLI], proofRunner: honest }));
+    expect(ok.fixes[0]!.riskClass).toBe("auto-eligible");
+
+    // Contradicting runner: the test PASSES even on the original (never fails-pre) ⇒ no
+    // candidate is execution-confirmed ⇒ fail-safe advisory (human-required).
+    const wrong: ProofTestRunner = { run: async () => true };
+    const adv = await generateFixes(baseInput({ confirmed: [SQLI], proofRunner: wrong }));
+    expect(adv.fixes[0]!.riskClass).toBe("human-required");
+    expect(adv.fixes[0]!.patch).toBe("");
   });
 
   it("emits an advisory human-required fix when no strategy matches", async () => {
