@@ -181,6 +181,12 @@ model Client {
   auditEvents   AuditEvent[]
   dastTargets   DastTarget[]
   llmCredential LlmCredential?
+
+  // Phase-4 (Wave 5) — scale & intelligence (appended; per-client isolated).
+  customRules      CustomRule[]
+  redTeamScenarios RedTeamScenario[]
+  scanSchedules    ScanSchedule[]
+  postureSnapshots PostureSnapshot[]
 }
 
 model User {
@@ -529,5 +535,100 @@ model AuditEvent {
   at         DateTime @default(now())
 
   @@unique([clientId, sequence])
+  @@index([clientId, scanId])
+}
+
+// --------------------------------------------------------------------------- //
+// Phase-4 (Wave 5) — Scale & Intelligence (PRD §16). STRICTLY ADDITIVE.
+//   Every table is per-client isolated (clientId + index) and every mutation is
+//   audit-logged by the API layer (§8.5). Enum/String value choices mirror the
+//   @montr/contracts Zod schemas exactly (category stored as String because its
+//   vocab is owned by the Zod RedTeamCategory enum, mirroring AuditEvent.action).
+// --------------------------------------------------------------------------- //
+
+enum RuleEngine {
+  semgrep
+  secret
+}
+
+/// Client-authored detection rule (custom Semgrep rule or secret detector).
+/// `enabled` defaults false — a rule must be VALIDATED before it can be turned on.
+/// `body` is a detection rule, never a credential (not encrypted; needs validation).
+model CustomRule {
+  id        String     @id @default(cuid())
+  clientId  String
+  client    Client     @relation(fields: [clientId], references: [id])
+  name      String
+  language  String // Language (Zod enum is source of truth)
+  engine    RuleEngine
+  body      String // Semgrep YAML / secret-detector definition
+  version   Int        @default(1)
+  enabled   Boolean    @default(false)
+  createdBy String
+  createdAt DateTime   @default(now())
+
+  @@unique([clientId, name, version])
+  @@index([clientId])
+}
+
+/// Reusable, versioned red-team / DAST scenario (§16). `enabled` defaults false.
+/// ⛔ `targetAllowlistRef` binds a scenario to an allowlisted DAST target/scope;
+///    running one is approver-authorized + routed via the @montr/security egress
+///    guard + kill switch (§11). `steps` is field-encrypted at rest (attack
+///    playbooks are sensitive) — AES-256-GCM, key from KMS/Vault/k8s secret.
+model RedTeamScenario {
+  id                 String   @id @default(cuid())
+  clientId           String
+  client             Client   @relation(fields: [clientId], references: [id])
+  name               String
+  category           String // RedTeamCategory (Zod enum is source of truth)
+  /// @encrypted — JSON-serialized RedTeamStep[] stored as an AES-256-GCM envelope.
+  steps              String
+  targetAllowlistRef String
+  version            Int      @default(1)
+  enabled            Boolean  @default(false)
+  createdBy          String
+  createdAt          DateTime @default(now())
+
+  @@unique([clientId, name, version])
+  @@index([clientId])
+}
+
+/// Cron-scheduled scan (§16). `enabled` defaults false. ⛔ `budgetCeiling` (USD)
+/// is a hard per-run ceiling; scheduled runs still honor the human gate.
+model ScanSchedule {
+  id            String    @id @default(cuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id])
+  repo          String
+  mode          ScanMode  @default(full)
+  cron          String
+  budgetCeiling Float
+  enabled       Boolean   @default(false)
+  nextRunAt     DateTime?
+  createdBy     String
+  createdAt     DateTime  @default(now())
+
+  @@index([clientId])
+  @@index([clientId, repo])
+}
+
+/// Posture-over-time snapshot for a repo (§16). Derived from a completed scan's
+/// CONFIRMED findings only (never raw candidates — golden rule "never headline
+/// raw counts"). Persisted per client for fast trend/regression queries.
+model PostureSnapshot {
+  id                  String   @id @default(cuid())
+  clientId            String
+  client              Client   @relation(fields: [clientId], references: [id])
+  scanId              String
+  repo                String
+  at                  DateTime @default(now())
+  confirmedBySeverity Json // SeverityCounts (Partial<Record<Severity, number>>)
+  total               Int      @default(0)
+  delta               Json? // PostureDelta (vs previous snapshot for this repo)
+  createdAt           DateTime @default(now())
+
+  @@index([clientId])
+  @@index([clientId, repo])
   @@index([clientId, scanId])
 }

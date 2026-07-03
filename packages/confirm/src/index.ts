@@ -56,6 +56,23 @@ export {
   defaultBrowserDriver,
 } from "./live.js";
 
+// ⛔ Red-team scenario library (Phase-4 / Wave 5, §16). A scenario PARAMETERIZES
+// the gated live-DAST engine — no new egress path. Every run reuses
+// assertLiveAuthorized + ScopeGuard (allowlist + production block + kill switch +
+// rate/blast caps + egress guard).
+export {
+  validateScenario,
+  isRelativePath,
+  resolveScenarioTarget,
+  assertScenarioAuthorized,
+  runScenario,
+  type ScenarioValidation,
+  type ScenarioAuthzInput,
+  type ScenarioRunDeps,
+  type ScenarioRunResult,
+  type ScenarioStepResult,
+} from "./scenarios.js";
+
 // Deterministic classification helpers.
 export {
   deriveSeverity,

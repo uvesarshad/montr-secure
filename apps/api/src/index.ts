@@ -32,6 +32,7 @@ export {
   apiStoreFromStateStore,
   InMemoryAuditLogClient,
   type ApiStore,
+  type StateStoreLike,
   type ReportStore,
   type DastTargetStore,
   type DastTarget,
@@ -39,6 +40,11 @@ export {
   type IdGen,
   type UserRecord,
   type InMemoryApiStoreOptions,
+  // Phase-4 (Wave 5) — scale & intelligence stores.
+  type CustomRuleStore,
+  type RedTeamScenarioStore,
+  type ScanScheduleStore,
+  type PostureStore,
 } from "./store.js";
 
 // Users + auth primitives

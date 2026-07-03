@@ -13,8 +13,12 @@ import {
   type AuditEvent,
   type AuditEventInput,
   type ConfirmedFinding,
+  type CustomRule,
+  type PostureSnapshot,
+  type RedTeamScenario,
   type Report,
   type Scan,
+  type ScanSchedule,
   type UnconfirmedFinding,
 } from "@montr/contracts";
 import type { AuditListOptions, AuditLogClient } from "@montr/telemetry";
@@ -44,6 +48,12 @@ export interface StateStoreLike {
   confirmed: FindingRepository<ConfirmedFinding>;
   unconfirmed: FindingRepository<UnconfirmedFinding>;
   audit: AuditLogClient;
+  // Phase-4 (Wave 5). The real StateStore repos are structurally assignable
+  // (they carry the same client-scoped signatures plus a few extra methods).
+  customRules: CustomRuleStore;
+  redTeamScenarios: RedTeamScenarioStore;
+  scanSchedules: ScanScheduleStore;
+  posture: PostureStore;
 }
 
 /** A client-authorized live-DAST target (mirrors the Prisma `DastTarget` model). */
@@ -72,6 +82,47 @@ export interface ReportStore {
   save(report: Report): Promise<Report>;
 }
 
+/* --------------------------------------------------------------------------- *
+ * Phase-4 (Wave 5) stores — scale & intelligence (§16). Client-scoped; mirror
+ * the @montr/state-store repositories (the real StateStore is structurally
+ * assignable). Every mutation the routes perform is bound to an audit event.
+ * --------------------------------------------------------------------------- */
+
+/** Client custom detection rules (validated before enable). */
+export interface CustomRuleStore {
+  create(clientId: string, rule: CustomRule): Promise<CustomRule>;
+  get(clientId: string, id: string): Promise<CustomRule | null>;
+  list(clientId: string): Promise<CustomRule[]>;
+  update(clientId: string, rule: CustomRule): Promise<CustomRule>;
+  delete(clientId: string, id: string): Promise<void>;
+}
+
+/** ⛔ Red-team scenarios — allowlist-gated, approver-authorized to run (§11). */
+export interface RedTeamScenarioStore {
+  create(clientId: string, scenario: RedTeamScenario): Promise<RedTeamScenario>;
+  get(clientId: string, id: string): Promise<RedTeamScenario | null>;
+  list(clientId: string): Promise<RedTeamScenario[]>;
+  update(clientId: string, scenario: RedTeamScenario): Promise<RedTeamScenario>;
+  delete(clientId: string, id: string): Promise<void>;
+}
+
+/** Cron-scheduled scans (budget-ceiling + human-gate honoring). */
+export interface ScanScheduleStore {
+  create(clientId: string, schedule: ScanSchedule): Promise<ScanSchedule>;
+  get(clientId: string, id: string): Promise<ScanSchedule | null>;
+  list(clientId: string): Promise<ScanSchedule[]>;
+  update(clientId: string, schedule: ScanSchedule): Promise<ScanSchedule>;
+  delete(clientId: string, id: string): Promise<void>;
+}
+
+/** Posture-over-time snapshots (trend / regression intelligence). */
+export interface PostureStore {
+  record(clientId: string, snapshot: PostureSnapshot): Promise<PostureSnapshot>;
+  list(clientId: string): Promise<PostureSnapshot[]>;
+  listByRepo(clientId: string, repo: string): Promise<PostureSnapshot[]>;
+  latestForRepo(clientId: string, repo: string): Promise<PostureSnapshot | null>;
+}
+
 /** Everything the API routes read/write. */
 export interface ApiStore {
   users: UserStore;
@@ -81,6 +132,11 @@ export interface ApiStore {
   reports: ReportStore;
   dastTargets: DastTargetStore;
   audit: AuditLogClient;
+  // Phase-4 (Wave 5) — scale & intelligence.
+  customRules: CustomRuleStore;
+  redTeamScenarios: RedTeamScenarioStore;
+  scanSchedules: ScanScheduleStore;
+  posture: PostureStore;
 }
 
 export interface Clock {
@@ -190,6 +246,57 @@ class InMemoryDastTargetStore implements DastTargetStore {
   }
 }
 
+/** Generic client-scoped in-memory CRUD store for the Phase-4 entities. */
+class InMemoryCrudStore<T extends { id: string; clientId: string; createdAt?: string }> {
+  private readonly rows = new Map<string, T>();
+  private key(clientId: string, id: string) {
+    return `${clientId}:${id}`;
+  }
+  async create(clientId: string, entity: T): Promise<T> {
+    this.rows.set(this.key(clientId, entity.id), { ...entity });
+    return { ...entity };
+  }
+  async get(clientId: string, id: string): Promise<T | null> {
+    const r = this.rows.get(this.key(clientId, id));
+    return r ? { ...r } : null;
+  }
+  async list(clientId: string): Promise<T[]> {
+    const out: T[] = [];
+    for (const r of this.rows.values()) if (r.clientId === clientId) out.push({ ...r });
+    return out.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+  }
+  async update(clientId: string, entity: T): Promise<T> {
+    this.rows.set(this.key(clientId, entity.id), { ...entity });
+    return { ...entity };
+  }
+  async delete(clientId: string, id: string): Promise<void> {
+    this.rows.delete(this.key(clientId, id));
+  }
+}
+
+/** In-memory posture-snapshot store (trend queries). */
+class InMemoryPostureStore implements PostureStore {
+  private readonly rows: PostureSnapshot[] = [];
+  async record(clientId: string, snapshot: PostureSnapshot): Promise<PostureSnapshot> {
+    const saved = { ...snapshot, clientId };
+    this.rows.push(saved);
+    return { ...saved };
+  }
+  async list(clientId: string): Promise<PostureSnapshot[]> {
+    return this.rows.filter((r) => r.clientId === clientId).map((r) => ({ ...r }));
+  }
+  async listByRepo(clientId: string, repo: string): Promise<PostureSnapshot[]> {
+    return this.rows
+      .filter((r) => r.clientId === clientId && r.repo === repo)
+      .sort((a, b) => a.at.localeCompare(b.at))
+      .map((r) => ({ ...r }));
+  }
+  async latestForRepo(clientId: string, repo: string): Promise<PostureSnapshot | null> {
+    const series = await this.listByRepo(clientId, repo);
+    return series.length > 0 ? (series[series.length - 1] as PostureSnapshot) : null;
+  }
+}
+
 /**
  * Append-only, hash-chained audit log kept in memory for dev/tests. Reuses the
  * REAL `computeAuditHash` from @montr/state-store so the chain is genuinely
@@ -267,6 +374,10 @@ export function createInMemoryApiStore(opts: InMemoryApiStoreOptions = {}): ApiS
     reports: new InMemoryReportStore(),
     dastTargets: new InMemoryDastTargetStore(),
     audit: new InMemoryAuditLogClient(clock, idgen),
+    customRules: new InMemoryCrudStore<CustomRule>(),
+    redTeamScenarios: new InMemoryCrudStore<RedTeamScenario>(),
+    scanSchedules: new InMemoryCrudStore<ScanSchedule>(),
+    posture: new InMemoryPostureStore(),
   };
 }
 
@@ -287,6 +398,11 @@ export function apiStoreFromStateStore(
     reports: extras.reports,
     dastTargets: extras.dastTargets,
     audit: state.audit,
+    // Phase-4 (Wave 5) — sourced from the shared StateStore.
+    customRules: state.customRules,
+    redTeamScenarios: state.redTeamScenarios,
+    scanSchedules: state.scanSchedules,
+    posture: state.posture,
   };
 }
 

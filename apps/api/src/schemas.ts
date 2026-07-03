@@ -6,9 +6,12 @@
 import { z } from "zod";
 import {
   BudgetPolicySchema,
+  CustomRuleSchema,
   ExportFormatSchema,
+  RedTeamScenarioSchema,
   RoleSchema,
   ScanModeSchema,
+  ScanScheduleSchema,
   ScanScopeSchema,
 } from "@montr/contracts";
 import { DastScopeContractSchema } from "@montr/config";
@@ -91,3 +94,43 @@ export type AuditExportQuery = z.infer<typeof AuditExportQuerySchema>;
 export const ReportExportQuerySchema = z.object({
   format: ExportFormatSchema.optional(),
 });
+
+/* ---------------------- Phase-4: scale & intelligence ---------------------- */
+// Server-supplied fields (id/clientId/createdBy/createdAt) are omitted from the
+// request bodies; the route fills them from the authenticated actor + clock.
+
+/** POST /rules — author a custom detection rule (validated before enable). */
+export const CreateCustomRuleBodySchema = CustomRuleSchema.omit({
+  id: true,
+  clientId: true,
+  createdBy: true,
+  createdAt: true,
+});
+export type CreateCustomRuleBody = z.infer<typeof CreateCustomRuleBodySchema>;
+
+/** ⛔ POST /scenarios — a red-team scenario is disabled until approver-authorized. */
+export const CreateRedTeamScenarioBodySchema = RedTeamScenarioSchema.omit({
+  id: true,
+  clientId: true,
+  createdBy: true,
+  createdAt: true,
+});
+export type CreateRedTeamScenarioBody = z.infer<typeof CreateRedTeamScenarioBodySchema>;
+
+/** POST /schedules — a cron-scheduled scan (budget ceiling + human gate). */
+export const CreateScanScheduleBodySchema = ScanScheduleSchema.omit({
+  id: true,
+  clientId: true,
+  createdBy: true,
+  createdAt: true,
+  nextRunAt: true,
+});
+export type CreateScanScheduleBody = z.infer<typeof CreateScanScheduleBodySchema>;
+
+/** Shared `:id` path param for rule/scenario/schedule routes. */
+export const EntityIdParamsSchema = z.object({ id: z.string().min(1) });
+export type EntityIdParams = z.infer<typeof EntityIdParamsSchema>;
+
+/** GET /analytics/trends?repo= — a repo's posture time-series. */
+export const TrendQuerySchema = z.object({ repo: z.string().min(1) });
+export type TrendQuery = z.infer<typeof TrendQuerySchema>;

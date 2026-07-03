@@ -231,6 +231,24 @@ export {
   type ResolvedDeps,
 } from "./detectors/sca.js";
 
+// ⛔ Custom rule authoring (Phase-4 / Wave 5, §16). VALIDATE a client rule before
+// it may be enabled, then LOAD enabled rules alongside the curated rulesets
+// (semgrep bodies as extra `--config`, secret rules as `extraDetectors`).
+export {
+  validateCustomRule,
+  validateSemgrepStructure,
+  validateSecretStructure,
+  defaultSemgrepValidateRunner,
+  customRuleToDetector,
+  loadCustomRules,
+  type SemgrepValidateRunner,
+  type SemgrepValidateInput,
+  type SemgrepValidateOutcome,
+  type ValidateCustomRuleOptions,
+  type LoadedCustomRules,
+  type LoadedSemgrepRule,
+} from "./custom-rules.js";
+
 export { triageCandidates, parseTriage, type TriageOptions } from "./triage.js";
 export {
   persistCandidates,

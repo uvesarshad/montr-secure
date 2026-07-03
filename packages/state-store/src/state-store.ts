@@ -24,6 +24,12 @@ import {
   makeProbableRepo,
   makeUnconfirmedRepo,
 } from "./repositories.js";
+import {
+  CustomRuleRepositoryImpl,
+  PostureRepositoryImpl,
+  RedTeamScenarioRepositoryImpl,
+  ScanScheduleRepositoryImpl,
+} from "./phase4.js";
 import { RetentionEnforcer } from "./retention.js";
 import type { StateStore } from "./types.js";
 
@@ -66,6 +72,12 @@ function buildStateStore(
     credentials: new CredentialRepositoryImpl(prisma, cipher),
     audit: new PrismaAuditLogClient(prisma),
     retention: new RetentionEnforcer(prisma),
+    // Phase-4 (Wave 5) — scale & intelligence. Scenario steps are encrypted at
+    // rest, so the scenario repo takes the same field cipher as credentials.
+    customRules: new CustomRuleRepositoryImpl(prisma),
+    redTeamScenarios: new RedTeamScenarioRepositoryImpl(prisma, cipher),
+    scanSchedules: new ScanScheduleRepositoryImpl(prisma),
+    posture: new PostureRepositoryImpl(prisma),
     disconnect: async () => {
       if (ownsClient) await prisma.$disconnect();
     },

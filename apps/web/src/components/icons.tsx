@@ -159,6 +159,35 @@ export const DownloadIcon = (p: IconProps) => (
     <path d="M5 21h14" />
   </Svg>
 );
+// Phase-4 (Wave 5) — scale & intelligence.
+export const BarChartIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 3v18h18" />
+    <path d="M7 16v-5" />
+    <path d="M12 16V8" />
+    <path d="M17 16v-9" />
+  </Svg>
+);
+export const TargetIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="5" />
+    <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+  </Svg>
+);
+export const RuleIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+    <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z" />
+    <path d="M9 13l2 2 4-4" />
+  </Svg>
+);
+export const CalendarIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="18" rx="2" />
+    <path d="M3 9h18M8 2v4M16 2v4" />
+  </Svg>
+);
 
 /** Nav-key → icon component. */
 export const NAV_ICONS: Record<IconKey, (p: IconProps) => React.JSX.Element> = {
@@ -171,4 +200,9 @@ export const NAV_ICONS: Record<IconKey, (p: IconProps) => React.JSX.Element> = {
   estimate: DollarIcon,
   overview: ShieldIcon,
   fixes: WrenchIcon,
+  // Phase-4 (Wave 5).
+  dashboards: BarChartIcon,
+  rules: RuleIcon,
+  scenarios: TargetIcon,
+  schedules: CalendarIcon,
 };

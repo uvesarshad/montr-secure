@@ -37,7 +37,12 @@ export type IconKey =
   | "report"
   | "estimate"
   | "overview"
-  | "fixes";
+  | "fixes"
+  // Phase-4 (Wave 5) — scale & intelligence.
+  | "dashboards"
+  | "rules"
+  | "scenarios"
+  | "schedules";
 
 export interface NavItem {
   id: string;
@@ -71,11 +76,41 @@ export const NAV_SECTIONS: readonly NavItem[] = [
     roles: ["operator", "approver", "viewer"],
   },
   {
+    id: "dashboards",
+    label: "Dashboards",
+    href: "/dashboards",
+    icon: "dashboards",
+    roles: ["operator", "approver", "viewer"],
+  },
+  {
     id: "dast-authorization",
     label: "DAST Authorization",
     href: "/dast",
     icon: "dast",
     roles: ["approver"],
+  },
+  // ⛔ Red-team scenarios are the most sensitive Phase-4 surface (attack
+  // playbooks bound to live targets) — approver-only, mirroring DAST auth.
+  {
+    id: "red-team",
+    label: "Red-Team Scenarios",
+    href: "/scenarios",
+    icon: "scenarios",
+    roles: ["approver"],
+  },
+  {
+    id: "custom-rules",
+    label: "Custom Rules",
+    href: "/rules",
+    icon: "rules",
+    roles: ["operator", "approver"],
+  },
+  {
+    id: "scan-schedules",
+    label: "Schedules",
+    href: "/schedules",
+    icon: "schedules",
+    roles: ["operator", "approver"],
   },
   {
     id: "audit-log",
@@ -123,6 +158,26 @@ export function canMarkFalsePositive(role: Role): boolean {
 /** ⛔ Kill switch is operational — any non-viewer may halt active work (§11). */
 export function canActivateKillSwitch(role: Role): boolean {
   return role === "operator" || role === "approver";
+}
+
+/* ----------------------- Phase-4 (Wave 5) capabilities ----------------------- */
+
+/** Author/edit custom detection rules — operator or approver (§16). */
+export function canAuthorRules(role: Role): boolean {
+  return role === "operator" || role === "approver";
+}
+
+/** Create/edit scheduled scans — operator or approver (§16). */
+export function canManageSchedules(role: Role): boolean {
+  return role === "operator" || role === "approver";
+}
+
+/**
+ * ⛔ Run a red-team scenario against a live (allowlisted) target — approver-only,
+ * exactly like live-DAST authorization (§11, golden rule #3).
+ */
+export function canRunRedTeam(role: Role): boolean {
+  return role === "approver";
 }
 
 export const ALL_ROLES: readonly Role[] = ["operator", "approver", "viewer"];
