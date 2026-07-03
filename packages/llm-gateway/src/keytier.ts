@@ -18,17 +18,29 @@ export interface DetectKeyTierInput {
 }
 
 /**
+ * Providers whose DEFAULT/consumer tier is known to retain prompts (often for
+ * training) unless an enterprise/zero-retention contract is in place. Because a
+ * scan sends client source as prompt context, these are classified
+ * `data_retaining` and BLOCKED unless the operator declares an enterprise tier —
+ * a security product must not silently ship client code to a training-retaining
+ * key (golden rule #1 / #4).
+ */
+const DATA_RETAINING_DEFAULT: ReadonlySet<Provider> = new Set(["moonshot", "zhipu", "deepseek"]);
+
+/**
  * Classify the likely retention tier of the configured key.
- * - An operator-declared tier always wins.
+ * - An operator-declared tier always wins (they can attest a zero-retention deal).
  * - Cloud providers (Bedrock/Vertex/Azure) run in the client's own enterprise
  *   tenancy under a BAA/DPA with no model-training retention → `enterprise`.
- * - A direct Anthropic key cannot be confirmed from the key string → `unknown`.
+ * - Consumer/CN providers (Moonshot/Zhipu/DeepSeek) default to `data_retaining`.
+ * - Any other direct key cannot be confirmed from the key string → `unknown`.
  */
 export function detectKeyTier(input: DetectKeyTierInput): KeyTier {
   if (input.declaredTier) return input.declaredTier;
   if (input.provider === "bedrock" || input.provider === "vertex" || input.provider === "azure") {
     return "enterprise";
   }
+  if (DATA_RETAINING_DEFAULT.has(input.provider)) return "data_retaining";
   return "unknown";
 }
 
@@ -54,9 +66,13 @@ export function applyKeyTierGuard(
     return { tier, suspect, action: "allowed" };
   }
   const details = { provider, keyTier: tier };
-  if (mode === "block") {
+  // `data_retaining` is blocked even under `warn`: these providers retain prompts
+  // (= client source) by default, so allowing them requires an explicit operator
+  // action (declare an enterprise tier, or disable the guard entirely with `off`).
+  if (mode === "block" || tier === "data_retaining") {
     throw new KeyTierRejectedError(
-      `Suspected data-retaining key tier "${tier}" blocked by policy (${provider})`,
+      `Suspected data-retaining key tier "${tier}" blocked by policy (${provider}). ` +
+        `Declare an enterprise/zero-retention tier (llm.keyTier) to override.`,
       details,
     );
   }

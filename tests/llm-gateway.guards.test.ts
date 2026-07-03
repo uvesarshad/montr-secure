@@ -67,11 +67,32 @@ describe("⛔ key-tier guard (§11)", () => {
     expect(detectKeyTier({ provider: "anthropic", declaredTier: "enterprise" })).toBe("enterprise");
   });
 
+  it("classifies consumer/CN providers as data_retaining unless declared enterprise", () => {
+    expect(detectKeyTier({ provider: "moonshot" })).toBe("data_retaining");
+    expect(detectKeyTier({ provider: "zhipu" })).toBe("data_retaining");
+    expect(detectKeyTier({ provider: "deepseek" })).toBe("data_retaining");
+    // A direct OpenAI/Google/xAI key is unknown (warned), not auto-data-retaining.
+    expect(detectKeyTier({ provider: "openai" })).toBe("unknown");
+    expect(detectKeyTier({ provider: "xai" })).toBe("unknown");
+    // The operator can attest a zero-retention deal to override.
+    expect(detectKeyTier({ provider: "deepseek", declaredTier: "enterprise" })).toBe("enterprise");
+  });
+
   it("warn mode allows but flags a suspect tier; block mode throws", () => {
     expect(applyKeyTierGuard("unknown", "warn", "anthropic").action).toBe("warned");
     expect(() => applyKeyTierGuard("unknown", "block", "anthropic")).toThrow();
     expect(applyKeyTierGuard("enterprise", "block", "bedrock").action).toBe("allowed");
     expect(applyKeyTierGuard("unknown", "off", "anthropic").action).toBe("allowed");
+  });
+
+  it("BLOCKS data_retaining even under warn mode; only off (or enterprise) allows it", () => {
+    // "block by default" for retention-risky providers regardless of warn/block config.
+    expect(() => applyKeyTierGuard("data_retaining", "warn", "moonshot")).toThrow();
+    expect(() => applyKeyTierGuard("data_retaining", "block", "zhipu")).toThrow();
+    // An explicit `off` (operator accepts the risk) still disables the guard.
+    expect(applyKeyTierGuard("data_retaining", "off", "deepseek").action).toBe("allowed");
+    // Declaring enterprise removes the suspect classification entirely.
+    expect(applyKeyTierGuard("enterprise", "warn", "moonshot").action).toBe("allowed");
   });
 
   it("block policy rejects an unknown-tier Anthropic key at construction", () => {

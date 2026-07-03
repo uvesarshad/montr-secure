@@ -13,6 +13,7 @@ import { createFakeLlmGateway } from "@montr/fixtures";
 import {
   AnthropicAdapter,
   AzureAdapter,
+  OpenAiCompatibleAdapter,
   BedrockAdapter,
   VertexAdapter,
   createLlmGateway,
@@ -169,6 +170,17 @@ const cases: Case[] = [
     name: "azure",
     adapter: new AzureAdapter({ config: CONFIG, client: azureClient }),
     provider: "azure",
+  },
+  {
+    name: "openai-compatible",
+    adapter: new OpenAiCompatibleAdapter({
+      provider: "openai",
+      defaultBaseUrl: "https://api.openai.com/v1",
+      defaultHost: "api.openai.com",
+      config: CONFIG,
+      client: azureClient,
+    }),
+    provider: "openai",
   },
   { name: "fixtures-fake", adapter: fakeFixtureAdapter(), provider: "anthropic", fake: true },
 ];

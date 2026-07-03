@@ -43,7 +43,7 @@ export interface OpenAiClientLike {
   };
 }
 
-function buildBody(request: LLMRequest, modelId: string): Record<string, unknown> {
+export function buildBody(request: LLMRequest, modelId: string): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: modelId,
     max_tokens: request.maxTokens,

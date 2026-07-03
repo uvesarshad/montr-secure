@@ -9,8 +9,29 @@ import { LayerIdSchema } from "./enums.js";
  * key; per-call logging is metadata-only (golden rule #1).
  */
 
-/** Supported providers (BYO-key). Montr never holds its own model relationship. */
-export const ProviderSchema = z.enum(["anthropic", "bedrock", "vertex", "azure"]);
+/**
+ * Supported providers (BYO-key). Montr never holds its own model relationship.
+ *
+ * Grouped by wire family:
+ *   - Anthropic Messages: `anthropic` (direct + any Anthropic-compatible base_url),
+ *     `bedrock` (AWS-hosted Claude).
+ *   - Google Gemini: `vertex` (GCP enterprise tenancy), `google` (direct AI Studio key).
+ *   - OpenAI Chat Completions: `azure` (Azure OpenAI tenancy), `openai` (direct), and the
+ *     OpenAI-compatible third parties `xai` (Grok), `moonshot` (Kimi), `zhipu` (GLM),
+ *     `deepseek` — all reached via a per-provider base_url + Bearer key.
+ */
+export const ProviderSchema = z.enum([
+  "anthropic",
+  "bedrock",
+  "vertex",
+  "azure",
+  "openai",
+  "google",
+  "xai",
+  "moonshot",
+  "zhipu",
+  "deepseek",
+]);
 export type Provider = z.infer<typeof ProviderSchema>;
 
 /** Model tiers mapped to the recommended matrix (DECIDE-3). */

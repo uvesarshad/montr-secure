@@ -7,6 +7,7 @@ import {
   BedrockAdapter,
   VertexAdapter,
   AzureAdapter,
+  OpenAiCompatibleAdapter,
   type AdapterEgress,
   type AnthropicClientLike,
   type BedrockTransport,
@@ -173,6 +174,21 @@ const cases: Case[] = [
     hasProviderDefault: false,
     make: (egress, endpoint, onCall) =>
       new AzureAdapter({ config: cfg(endpoint, "azure"), client: azureFake(onCall), egress }),
+  },
+  {
+    name: "openai-compatible",
+    provider: "openai",
+    defaultHost: "api.openai.com",
+    hasProviderDefault: true,
+    make: (egress, endpoint, onCall) =>
+      new OpenAiCompatibleAdapter({
+        provider: "openai",
+        defaultBaseUrl: "https://api.openai.com/v1",
+        defaultHost: "api.openai.com",
+        config: cfg(endpoint, "openai"),
+        client: azureFake(onCall),
+        egress,
+      }),
   },
 ];
 

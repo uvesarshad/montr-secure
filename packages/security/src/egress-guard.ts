@@ -27,6 +27,14 @@ export const PROVIDER_DEFAULT_HOSTS: Record<Provider, readonly string[]> = {
   bedrock: [".amazonaws.com"],
   vertex: [".googleapis.com"],
   azure: [".openai.azure.com"],
+  // Direct BYO-key providers — exact hosts (narrow default-deny). Operators can
+  // override with `llm.endpoint` (e.g. a regional/intl or private-proxy host).
+  openai: ["api.openai.com"],
+  google: ["generativelanguage.googleapis.com"],
+  xai: ["api.x.ai"],
+  moonshot: ["api.moonshot.ai"],
+  zhipu: ["open.bigmodel.cn"],
+  deepseek: ["api.deepseek.com"],
 };
 
 /** Structural subset of `MontrConfig` the egress guard needs. */

@@ -45,6 +45,12 @@ enum Provider {
   bedrock
   vertex
   azure
+  openai
+  google
+  xai
+  moonshot
+  zhipu
+  deepseek
 }
 
 enum ScanMode {
