@@ -60,12 +60,27 @@ export type LLMPurpose = z.infer<typeof LLMPurposeSchema>;
 export const TextBlockSchema = z.object({ type: z.literal("text"), text: z.string() });
 export type TextBlock = z.infer<typeof TextBlockSchema>;
 
+/**
+ * A tool call the model requested (populated on assistant turns + responses that
+ * stop with `tool_use`). `arguments` is the JSON the model supplied for the tool's
+ * parameters. The caller runs the tool and replies with a `role:"tool"` message
+ * carrying the matching `toolCallId`.
+ */
+export const LLMToolCallSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  arguments: z.record(z.string(), z.unknown()),
+});
+export type LLMToolCall = z.infer<typeof LLMToolCallSchema>;
+
 export const LLMMessageSchema = z.object({
   role: LLMRoleSchema,
   content: z.union([z.string(), z.array(TextBlockSchema)]),
-  /** For tool-result messages. */
+  /** For tool-result messages (role "tool"): the call this result answers. */
   toolCallId: z.string().optional(),
   name: z.string().optional(),
+  /** For assistant turns that called tools: the calls made (multi-turn history). */
+  toolCalls: z.array(LLMToolCallSchema).optional(),
 });
 export type LLMMessage = z.infer<typeof LLMMessageSchema>;
 
@@ -144,6 +159,8 @@ export const LLMResponseSchema = z.object({
   model: z.string(),
   content: z.string(),
   stopReason: StopReasonSchema,
+  /** Tool calls the model made when `stopReason === "tool_use"`. */
+  toolCalls: z.array(LLMToolCallSchema).optional(),
   usage: TokenUsageSchema,
   latencyMs: z.number().nonnegative(),
 });

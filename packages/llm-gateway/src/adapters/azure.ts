@@ -1,6 +1,11 @@
 import { ProviderNotConfiguredError, type LLMRequest, type LLMStreamEvent } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
-import { mapOpenAiFinishReason, toOpenAiMessages } from "../mapping.js";
+import {
+  extractOpenAiToolCalls,
+  mapOpenAiFinishReason,
+  toOpenAiMessages,
+  toOpenAiTools,
+} from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
 import { type AdapterEgress } from "./egress.js";
 
@@ -18,10 +23,18 @@ interface OpenAiUsageLike {
   total_tokens?: number;
 }
 
+export interface OpenAiToolCallLike {
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 export interface OpenAiChatCompletionLike {
   id?: string;
   model?: string;
-  choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>;
+  choices?: Array<{
+    message?: { content?: string | null; tool_calls?: OpenAiToolCallLike[] };
+    finish_reason?: string | null;
+  }>;
   usage?: OpenAiUsageLike | null;
 }
 
@@ -51,6 +64,11 @@ export function buildBody(request: LLMRequest, modelId: string): Record<string, 
   };
   if (request.temperature !== undefined) body.temperature = request.temperature;
   if (request.responseFormat === "json") body.response_format = { type: "json_object" };
+  const tools = toOpenAiTools(request);
+  if (tools) {
+    body.tools = tools;
+    body.tool_choice = "auto";
+  }
   return body;
 }
 
@@ -102,11 +120,13 @@ export class AzureAdapter implements ProviderAdapter {
     )) as OpenAiChatCompletionLike;
     const choice = result.choices?.[0];
     const u = result.usage ?? undefined;
+    const toolCalls = extractOpenAiToolCalls(choice?.message?.tool_calls);
     return {
       id: result.id ?? `${modelId}:response`,
       model: result.model ?? modelId,
       content: choice?.message?.content ?? "",
       stopReason: mapOpenAiFinishReason(choice?.finish_reason),
+      ...(toolCalls ? { toolCalls } : {}),
       usage: makeUsage(u?.prompt_tokens ?? 0, u?.completion_tokens ?? 0, {
         totalTokens: u?.total_tokens,
       }),

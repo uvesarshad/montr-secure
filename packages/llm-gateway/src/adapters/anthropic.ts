@@ -3,8 +3,10 @@ import type { MontrConfig } from "@montr/config";
 import {
   anthropicRejectsSampling,
   collectSystem,
+  extractAnthropicToolCalls,
   mapAnthropicStopReason,
   toAnthropicMessages,
+  toAnthropicTools,
 } from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
 import { resolveOutboundTarget, type AdapterEgress } from "./egress.js";
@@ -26,7 +28,7 @@ export const ANTHROPIC_DEFAULT_ENDPOINT = "https://api.anthropic.com";
 export interface AnthropicMessageLike {
   id?: string;
   model?: string;
-  content?: Array<{ type: string; text?: string }>;
+  content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>;
   stop_reason?: string | null;
   usage?: {
     input_tokens?: number | null;
@@ -87,11 +89,13 @@ export function mapAnthropicMessage(
     cacheReadTokens: msg.usage?.cache_read_input_tokens ?? 0,
     cacheWriteTokens: msg.usage?.cache_creation_input_tokens ?? 0,
   });
+  const toolCalls = extractAnthropicToolCalls(msg.content);
   return {
     id: msg.id ?? `${fallbackModel}:response`,
     model: msg.model ?? fallbackModel,
     content: anthropicText(msg),
     stopReason: mapAnthropicStopReason(msg.stop_reason),
+    ...(toolCalls ? { toolCalls } : {}),
     usage,
   };
 }
@@ -143,6 +147,8 @@ function buildBody(request: LLMRequest, modelId: string): Record<string, unknown
   if (request.temperature !== undefined && !anthropicRejectsSampling(modelId)) {
     body.temperature = request.temperature;
   }
+  const tools = toAnthropicTools(request);
+  if (tools) body.tools = tools;
   return body;
 }
 

@@ -181,6 +181,9 @@ export class MontrLlmGateway implements LLMGateway {
       model: completion.model,
       content: completion.content,
       stopReason: completion.stopReason,
+      ...(completion.toolCalls && completion.toolCalls.length > 0
+        ? { toolCalls: completion.toolCalls }
+        : {}),
       usage: completion.usage,
       latencyMs,
     };

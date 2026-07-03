@@ -5,7 +5,7 @@ import {
   type Provider,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
-import { mapOpenAiFinishReason } from "../mapping.js";
+import { extractOpenAiToolCalls, mapOpenAiFinishReason } from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
 import { resolveOutboundTarget, type AdapterEgress } from "./egress.js";
 import {
@@ -81,11 +81,13 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     )) as OpenAiChatCompletionLike;
     const choice = result.choices?.[0];
     const u = result.usage ?? undefined;
+    const toolCalls = extractOpenAiToolCalls(choice?.message?.tool_calls);
     return {
       id: result.id ?? `${modelId}:response`,
       model: result.model ?? modelId,
       content: choice?.message?.content ?? "",
       stopReason: mapOpenAiFinishReason(choice?.finish_reason),
+      ...(toolCalls ? { toolCalls } : {}),
       usage: makeUsage(u?.prompt_tokens ?? 0, u?.completion_tokens ?? 0, {
         totalTokens: u?.total_tokens,
       }),

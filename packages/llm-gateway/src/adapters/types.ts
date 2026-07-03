@@ -1,6 +1,7 @@
 import type {
   LLMRequest,
   LLMStreamEvent,
+  LLMToolCall,
   Provider,
   StopReason,
   TokenUsage,
@@ -19,6 +20,8 @@ export interface AdapterCompletion {
   model: string;
   content: string;
   stopReason: StopReason;
+  /** Tool calls the model made (when `stopReason === "tool_use"`). */
+  toolCalls?: LLMToolCall[];
   usage: TokenUsage;
 }
 

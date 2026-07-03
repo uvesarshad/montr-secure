@@ -81,4 +81,8 @@ export {
   mapAnthropicStopReason,
   mapVertexFinishReason,
   mapOpenAiFinishReason,
+  toOpenAiTools,
+  toAnthropicTools,
+  extractOpenAiToolCalls,
+  extractAnthropicToolCalls,
 } from "./mapping.js";
