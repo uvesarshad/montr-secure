@@ -47,6 +47,14 @@ export {
   makeUnconfirmedRepo,
 } from "./repositories.js";
 
+// Phase-4 (Wave 5) repository implementations — scale & intelligence (§16).
+export {
+  CustomRuleRepositoryImpl,
+  RedTeamScenarioRepositoryImpl,
+  ScanScheduleRepositoryImpl,
+  PostureRepositoryImpl,
+} from "./phase4.js";
+
 // Audit log (Prisma-backed AuditLogClient) + export helpers.
 export { PrismaAuditLogClient, exportAuditLog, type AuditExportFormat } from "./audit.js";
 

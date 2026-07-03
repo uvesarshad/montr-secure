@@ -209,6 +209,11 @@ const MODEL_NAMES = [
   "promptVersion",
   "dastTarget",
   "auditEvent",
+  // Phase-4 (Wave 5) — scale & intelligence.
+  "customRule",
+  "redTeamScenario",
+  "scanSchedule",
+  "postureSnapshot",
 ] as const;
 
 export type InMemoryPrisma = Record<(typeof MODEL_NAMES)[number], Table> & {

@@ -56,6 +56,19 @@ export const AuditActionSchema = z.enum([
   "auth.logout",
   "auth.role_changed",
   "export.generated",
+  // Phase-4 (Wave 5) — scale & intelligence. Every mutation is audited (§8.5).
+  "rule.created",
+  "rule.updated",
+  "rule.deleted",
+  "scenario.created",
+  "scenario.updated",
+  "scenario.deleted",
+  "scenario.run", // ⛔ approver-authorized, allowlist-gated live-DAST run
+  "schedule.created",
+  "schedule.updated",
+  "schedule.deleted",
+  "schedule.triggered",
+  "posture.snapshot",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 

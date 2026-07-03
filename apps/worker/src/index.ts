@@ -40,6 +40,21 @@ export {
   type InProcessPipelineDeps,
   type RunScanOptions,
 } from "./pipeline.js";
+// Phase-4 (Wave 5) — cron-scheduled scans (BullMQ repeatable jobs). Additive; the
+// core scheduler runs the SAME pipeline + gate + hard budget ceiling as a manual
+// scan (see ./scheduling/scan-scheduler.ts for the ⛔ safety invariants).
+export {
+  startScanScheduler,
+  createScanScheduleService,
+  createBullMqScanTransport,
+  scheduledBudgetPolicy,
+  SCHEDULER_ACTOR,
+  type ScanScheduleService,
+  type StartScanSchedulerDeps,
+  type RepeatableScanTransport,
+  type ScanScheduleJob,
+  type ScheduledJobInfo,
+} from "./scheduling/index.js";
 
 /** Runtime collaborators the durable worker needs (the composition root wires these). */
 export interface WorkerRuntimeDeps {

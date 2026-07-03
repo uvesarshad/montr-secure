@@ -71,9 +71,15 @@ importers:
       '@montr/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@montr/confirm':
+        specifier: workspace:*
+        version: link:../../packages/confirm
       '@montr/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@montr/discovery':
+        specifier: workspace:*
+        version: link:../../packages/discovery
       '@montr/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator

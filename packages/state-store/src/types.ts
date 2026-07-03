@@ -7,15 +7,19 @@ import type {
   AppMap,
   CandidateFinding,
   ConfirmedFinding,
+  CustomRule,
   Fix,
   KeyTier,
   LayerId,
+  PostureSnapshot,
   ProbableFinding,
   Provider,
   PullRequest,
+  RedTeamScenario,
   Report,
   ResumeToken,
   Scan,
+  ScanSchedule,
   ScanStatus,
   UnconfirmedFinding,
 } from "@montr/contracts";
@@ -140,6 +144,43 @@ export interface CredentialRepository {
   delete(clientId: string): Promise<void>;
 }
 
+/* --------------------------------------------------------------------------- *
+ * Phase-4 (Wave 5) repositories — scale & intelligence (§16). Per-client scoped.
+ * --------------------------------------------------------------------------- */
+
+/** Client-authored custom detection rules (validated before enable). */
+export interface CustomRuleRepository extends Repository<CustomRule> {
+  update(clientId: string, rule: CustomRule): Promise<CustomRule>;
+  delete(clientId: string, id: string): Promise<void>;
+}
+
+/**
+ * Reusable, versioned red-team scenarios. ⛔ `steps` is encrypted at rest, so
+ * these methods require a field cipher (like {@link CredentialRepository}).
+ */
+export interface RedTeamScenarioRepository extends Repository<RedTeamScenario> {
+  update(clientId: string, scenario: RedTeamScenario): Promise<RedTeamScenario>;
+  delete(clientId: string, id: string): Promise<void>;
+}
+
+/** Cron-scheduled scans (budget-ceiling + human-gate honoring). */
+export interface ScanScheduleRepository extends Repository<ScanSchedule> {
+  update(clientId: string, schedule: ScanSchedule): Promise<ScanSchedule>;
+  delete(clientId: string, id: string): Promise<void>;
+  /** Enabled schedules only (scheduler dispatch loop). */
+  listEnabled(clientId: string): Promise<ScanSchedule[]>;
+}
+
+/** Posture-over-time snapshots (trend / regression intelligence). */
+export interface PostureRepository {
+  record(clientId: string, snapshot: PostureSnapshot): Promise<PostureSnapshot>;
+  /** All snapshots for the client (chronological). */
+  list(clientId: string): Promise<PostureSnapshot[]>;
+  /** One repo's snapshots (chronological) — the trend series. */
+  listByRepo(clientId: string, repo: string): Promise<PostureSnapshot[]>;
+  latestForRepo(clientId: string, repo: string): Promise<PostureSnapshot | null>;
+}
+
 /** The aggregate persistence surface handed to the orchestrator and layers. */
 export interface StateStore {
   scans: ScanRepository;
@@ -155,5 +196,10 @@ export interface StateStore {
   credentials: CredentialRepository;
   audit: AuditLog;
   retention: RetentionEnforcer;
+  // Phase-4 (Wave 5) — scale & intelligence.
+  customRules: CustomRuleRepository;
+  redTeamScenarios: RedTeamScenarioRepository;
+  scanSchedules: ScanScheduleRepository;
+  posture: PostureRepository;
   disconnect(): Promise<void>;
 }

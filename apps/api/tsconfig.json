@@ -15,6 +15,12 @@
       "path": "../../packages/config"
     },
     {
+      "path": "../../packages/confirm"
+    },
+    {
+      "path": "../../packages/discovery"
+    },
+    {
       "path": "../../packages/state-store"
     },
     {
