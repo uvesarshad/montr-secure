@@ -261,6 +261,62 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     }
   });
 
+  it("⛔ coding-agent loop iterates against the oracle: invalid proposal → feedback → valid fix", async () => {
+    const original = read("app/api/users/route.ts");
+    // Attempt 1: a change that does NOT remove the vulnerability ($queryRawUnsafe stays).
+    const invalid = JSON.stringify({ fixedSource: `${original}\n// noop`, rationale: "attempt 1" });
+    // Attempt 2: a genuine fix (typed query API) that passes the oracle.
+    const valid = JSON.stringify({
+      fixedSource: original.replace(
+        /const rows = await prisma\.\$queryRawUnsafe\([\s\S]*?\);/,
+        "const rows = await prisma.user.findMany({ where: { name: q } });",
+      ),
+      rationale: "use the typed API",
+    });
+
+    const inner = createFakeLlmGateway();
+    let call = 0;
+    const requests: LLMRequest[] = [];
+    const gateway: LLMGateway = {
+      complete: async (req) => {
+        requests.push(req);
+        const base = await inner.complete(req);
+        return { ...base, content: call++ === 0 ? invalid : valid };
+      },
+      stream: (req) => inner.stream(req),
+      listModels: () => inner.listModels(),
+      resolveModel: (t) => inner.resolveModel(t),
+    };
+
+    const audit = new CapturingAudit();
+    const out = await generateFixes(
+      baseInput({
+        confirmed: [SQLI],
+        gateway,
+        audit,
+        agentLoop: { enabled: true, maxIterations: 3 },
+      }),
+    );
+    const fix = out.fixes[0]!;
+
+    // The second (valid) proposal was accepted through the SAME gate.
+    expect(fix.riskClass).toBe("auto-eligible");
+    const v = validatePatch(original, fix.patch, (s) => /\$queryRawUnsafe/.test(s));
+    expect(v.applies && v.passesPostPatch).toBe(true);
+    expect(v.appliedSource).toContain("findMany");
+    // The loop iterated exactly once after the failed attempt (2 gateway round-trips),
+    // and the retry carried the accumulated feedback conversation.
+    expect(requests.length).toBe(2);
+    expect(requests[1]!.messages.length).toBeGreaterThan(1);
+    expect((audit.events[0]!.metadata as { iterations?: number }).iterations).toBe(2);
+  });
+
+  it("single-shot (agent loop OFF) makes exactly one gateway call per finding", async () => {
+    const { gateway, requests } = recordingGateway(createFakeLlmGateway());
+    await generateFixes(baseInput({ confirmed: [SQLI], gateway }));
+    expect(requests.length).toBe(1);
+  });
+
   it("emits an advisory human-required fix when no strategy matches", async () => {
     const ssrf: ConfirmedFinding = {
       ...SQLI,

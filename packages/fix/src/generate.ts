@@ -50,6 +50,12 @@ export interface FixGenerationContext {
   now?: () => string;
   /** Deterministic id factory (defaults to `fix_<confirmedFindingId>`). */
   makeId?: (finding: ConfirmedFinding, index: number) => string;
+  /**
+   * ⛔ Bounded coding-agent loop (OFF by default). When enabled, the proposal step
+   * iterates against the deterministic patch oracle instead of a single shot. The
+   * validation gate + risk classifier + PR gate are unchanged.
+   */
+  agentLoop?: { enabled: boolean; maxIterations: number };
 }
 
 export interface GenerateFixesInput extends FixGenerationContext {
@@ -79,28 +85,26 @@ function safeJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
-/** Ask the gateway to propose a fix. Degrades to `null` on any error. */
-async function proposeFixWithLlm(
-  finding: ConfirmedFinding,
-  source: string | null,
-  ctx: FixGenerationContext,
-): Promise<LlmProposal | null> {
-  const request: LLMRequest = {
+type FixMessage = LLMRequest["messages"][number];
+
+/** The user payload for a fix request: finding metadata + the source file. */
+function fixUserPayload(finding: ConfirmedFinding, source: string | null): string {
+  return JSON.stringify({
+    category: finding.category,
+    filePath: finding.location.file,
+    title: finding.title,
+    impact: finding.impact,
+    // Source is context inside a call to the CLIENT's own key — permitted (§11).
+    source: source ?? "",
+  });
+}
+
+/** Build the fix-generation request from a message history (the single egress path). */
+function buildFixRequest(messages: FixMessage[], ctx: FixGenerationContext): LLMRequest {
+  return {
     tier: "default",
     system: FIX_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: JSON.stringify({
-          category: finding.category,
-          filePath: finding.location.file,
-          title: finding.title,
-          impact: finding.impact,
-          // Source is context inside a call to the CLIENT's own key — permitted (§11).
-          source: source ?? "",
-        }),
-      },
-    ],
+    messages,
     maxTokens: 2048,
     temperature: 0,
     responseFormat: "json",
@@ -112,17 +116,98 @@ async function proposeFixWithLlm(
       layer: "layer4",
     },
   };
+}
 
+/** Extract a proposal from a gateway response body. */
+function parseProposal(content: string, model: string): LlmProposal {
+  const parsed = safeJsonObject(content);
+  const fixedSource =
+    parsed && typeof parsed.fixedSource === "string" ? parsed.fixedSource : undefined;
+  const rationale = parsed && typeof parsed.rationale === "string" ? parsed.rationale : undefined;
+  return { fixedSource, rationale, model };
+}
+
+/** Ask the gateway to propose a fix (single shot). Degrades to `null` on any error. */
+async function proposeFixWithLlm(
+  finding: ConfirmedFinding,
+  source: string | null,
+  ctx: FixGenerationContext,
+): Promise<LlmProposal | null> {
   try {
-    const response = await ctx.gateway.complete(request);
-    const parsed = safeJsonObject(response.content);
-    const fixedSource =
-      parsed && typeof parsed.fixedSource === "string" ? parsed.fixedSource : undefined;
-    const rationale = parsed && typeof parsed.rationale === "string" ? parsed.rationale : undefined;
-    return { fixedSource, rationale, model: response.model };
+    const response = await ctx.gateway.complete(
+      buildFixRequest([{ role: "user", content: fixUserPayload(finding, source) }], ctx),
+    );
+    return parseProposal(response.content, response.model);
   } catch {
     return null;
   }
+}
+
+/** Feedback describing which validation check the last proposal failed. */
+function agentFeedback(v: { applies: boolean; failsPrePatch: boolean }): string {
+  if (!v.applies) {
+    return "Your fix could not be applied to the file. Return the FULL corrected file (not a diff).";
+  }
+  if (!v.failsPrePatch) {
+    return "The proof-of-fix check did not detect the vulnerability in the ORIGINAL file — re-read the finding and target the exact vulnerable code.";
+  }
+  return "Your fix did NOT remove the vulnerability (the vulnerable pattern is still present). Rewrite so the pattern is gone, changing as little else as possible.";
+}
+
+/**
+ * ⛔ Bounded coding-agent loop: propose a fix → validate against the deterministic
+ * patch oracle → feed the failure back → retry, up to `maxIterations`. Returns the
+ * first VALIDATED proposal (or the last attempt) plus the round-trip count. Every
+ * turn is ONE gateway call (golden rule #2); the oracle + downstream risk
+ * classification + PR gate are unchanged, so this only changes HOW a fix is
+ * proposed, never how it is validated or gated.
+ */
+async function proposeFixWithAgent(
+  finding: ConfirmedFinding,
+  original: string | null,
+  strategy: FixStrategy | undefined,
+  ctx: FixGenerationContext,
+  maxIterations: number,
+): Promise<{ proposal: LlmProposal | null; iterations: number }> {
+  const filePath = finding.location.file;
+  const messages: FixMessage[] = [{ role: "user", content: fixUserPayload(finding, original) }];
+  let last: LlmProposal | null = null;
+
+  for (let i = 1; i <= maxIterations; i++) {
+    let proposal: LlmProposal;
+    try {
+      const response = await ctx.gateway.complete(buildFixRequest(messages, ctx));
+      proposal = parseProposal(response.content, response.model);
+      // Record the assistant turn so the model sees its own prior attempt.
+      messages.push({ role: "assistant", content: response.content });
+    } catch {
+      return { proposal: last, iterations: i };
+    }
+    last = proposal;
+
+    // Oracle: the SAME deterministic patch check the accept-gate uses below.
+    if (
+      original !== null &&
+      strategy &&
+      proposal.fixedSource &&
+      proposal.fixedSource !== original
+    ) {
+      const patch = buildUnifiedDiff(filePath, original, proposal.fixedSource);
+      const v = validatePatch(original, patch, strategy.vulnerable);
+      if (v.applies && v.failsPrePatch && v.passesPostPatch) {
+        return { proposal, iterations: i };
+      }
+      messages.push({ role: "user", content: agentFeedback(v) });
+    } else {
+      messages.push({
+        role: "user",
+        content:
+          'Your reply had no usable "fixedSource". Return ONLY minified JSON ' +
+          '{"fixedSource":"<full fixed file>","rationale":"..."} that removes the vulnerability.',
+      });
+    }
+  }
+  return { proposal: last, iterations: maxIterations };
 }
 
 function composeRationale(
@@ -186,6 +271,8 @@ interface AuditMeta {
   via: "llm" | "deterministic" | "advisory";
   changedLines: number;
   model?: string;
+  /** Coding-agent loop round-trips taken to reach this proposal (1 = single-shot). */
+  iterations?: number;
 }
 
 interface GeneratedOne {
@@ -244,7 +331,11 @@ async function generateOne(
   const strategy = pickStrategy(finding.category);
 
   // Always exercise the gateway (architecture + token accounting + audit path).
-  const llm = await proposeFixWithLlm(finding, original, ctx);
+  // With the coding-agent loop enabled, iterate against the patch oracle; else
+  // a single shot. Either way the proposal flows through the SAME accept-gate below.
+  const { proposal: llm, iterations } = ctx.agentLoop?.enabled
+    ? await proposeFixWithAgent(finding, original, strategy, ctx, ctx.agentLoop.maxIterations)
+    : { proposal: await proposeFixWithLlm(finding, original, ctx), iterations: 1 };
 
   if (original !== null && strategy) {
     // Candidate fixed sources: prefer a VALIDATED model proposal, else the
@@ -291,13 +382,16 @@ async function generateOne(
             via: candidate.via,
             changedLines: validation.changedLines,
             model: llm?.model,
+            iterations,
           },
         };
       }
     }
   }
 
-  return generateAdvisory(finding, index, ctx, llm, original !== null);
+  const advisory = generateAdvisory(finding, index, ctx, llm, original !== null);
+  advisory.auditMeta.iterations = iterations;
+  return advisory;
 }
 
 async function auditFixGenerated(
@@ -324,6 +418,7 @@ async function auditFixGenerated(
       changedLines: meta.changedLines,
       framework: fix.proofOfFixTest.framework ?? null,
       model: meta.model ?? null,
+      iterations: meta.iterations ?? null,
     },
   });
 }

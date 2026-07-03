@@ -235,6 +235,8 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         audit: ctx.store.audit,
         // ⛔ Categories forced to human review regardless of the toggle (§11).
         humanRequiredCategoriesAlways: ctx.config.autoFix.humanRequiredCategoriesAlways,
+        // ⛔ Bounded coding-agent fix loop (OFF by default; @montr/config).
+        agentLoop: ctx.config.autoFix.agentLoop,
         ...(opts.now ? { now: opts.now } : {}),
         confirmed,
       });

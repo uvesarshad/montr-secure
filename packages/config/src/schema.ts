@@ -59,6 +59,21 @@ export const BudgetConfigSchema = z.object({
 });
 export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
 
+/**
+ * ⛔ Layer-4 coding-agent loop (OFF by default). When enabled, fix generation
+ * becomes a BOUNDED, gateway-routed iterate loop: propose a fix → validate it
+ * against the deterministic patch oracle → feed back the failure → retry, up to
+ * `maxIterations`. It changes ONLY how a candidate fix is proposed; the patch
+ * validation, risk classification, and PR-only gate are unchanged, so a fix still
+ * only becomes auto-eligible through the same safety spine.
+ */
+export const AgentLoopConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Hard cap on gateway round-trips per finding (bounds cost + latency). */
+  maxIterations: z.number().int().positive().max(10).default(3),
+});
+export type AgentLoopConfig = z.infer<typeof AgentLoopConfigSchema>;
+
 export const AutoFixConfigSchema = z.object({
   /** ⛔ OFF by default. Even ON, only auto-eligible fixes open PRs. */
   enabled: z.boolean().default(false),
@@ -69,6 +84,8 @@ export const AutoFixConfigSchema = z.object({
   humanRequiredCategoriesAlways: z
     .array(CategorySchema)
     .default(["broken_access_control", "broken_authentication", "weak_crypto", "idor", "csrf"]),
+  /** Bounded coding-agent fix loop (OFF by default). */
+  agentLoop: AgentLoopConfigSchema.default({}),
 });
 export type AutoFixConfig = z.infer<typeof AutoFixConfigSchema>;
 
