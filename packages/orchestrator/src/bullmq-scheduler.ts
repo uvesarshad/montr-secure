@@ -64,20 +64,34 @@ export class BullMqJobScheduler implements JobScheduler {
   private channel?: KillChannel;
   private killHandler?: (signal: KillSwitchSignal) => void;
 
-  constructor(private readonly transport: BullMqTransport) {}
+  /**
+   * @param consume when false, {@link start} sets up the queues + kill channel for
+   *   ENQUEUEING and kill propagation but does NOT bring up per-layer workers. This
+   *   is the producer role used by apps/api: it creates + starts + kills scans and
+   *   enqueues Layer-0, while apps/worker (the sole consumer, with the scanners +
+   *   git) processes every layer. Keeps the split deployment safe (the distroless
+   *   api image never tries to run a scanner-bearing layer job).
+   */
+  constructor(
+    private readonly transport: BullMqTransport,
+    private readonly consume = true,
+  ) {}
 
   setProcessor(processor: JobProcessor): void {
     this.processor = processor;
   }
 
   async start(): Promise<void> {
-    if (!this.processor) throw new Error("BullMqJobScheduler.start(): processor not set");
+    if (this.consume && !this.processor)
+      throw new Error("BullMqJobScheduler.start(): processor not set");
     for (const layer of LAYER_ORDER) {
       const name = QUEUE_NAMES[layer];
       this.queues.set(name, this.transport.createQueue(name));
     }
-    for (const layer of LAYER_ORDER) {
-      this.workers.push(this.transport.createWorker(QUEUE_NAMES[layer], this.processor));
+    if (this.consume) {
+      for (const layer of LAYER_ORDER) {
+        this.workers.push(this.transport.createWorker(QUEUE_NAMES[layer], this.processor!));
+      }
     }
     this.channel = this.transport.killChannel();
     this.channel.subscribe((signal) => this.killHandler?.(signal));
@@ -240,7 +254,8 @@ export async function createRealBullMqTransport(
 /** Convenience: a BullMQ scheduler wired to the real transport (apps/worker). */
 export async function createBullMqScheduler(
   connection: RedisConnection,
+  opts: { consume?: boolean } = {},
 ): Promise<BullMqJobScheduler> {
   const transport = await createRealBullMqTransport(connection);
-  return new BullMqJobScheduler(transport);
+  return new BullMqJobScheduler(transport, opts.consume ?? true);
 }

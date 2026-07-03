@@ -57,4 +57,4 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
     CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"]
 # distroless nodejs ENTRYPOINT is `node`; CMD is the script path (relative to WORKDIR).
-CMD ["dist/index.js"]
+CMD ["dist/main.js"]

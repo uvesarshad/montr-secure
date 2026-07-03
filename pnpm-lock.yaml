@@ -77,9 +77,15 @@ importers:
       '@montr/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@montr/cost-meter':
+        specifier: workspace:*
+        version: link:../../packages/cost-meter
       '@montr/discovery':
         specifier: workspace:*
         version: link:../../packages/discovery
+      '@montr/llm-gateway':
+        specifier: workspace:*
+        version: link:../../packages/llm-gateway
       '@montr/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
@@ -186,6 +192,9 @@ importers:
       '@montr/fix':
         specifier: workspace:*
         version: link:../../packages/fix
+      '@montr/llm-gateway':
+        specifier: workspace:*
+        version: link:../../packages/llm-gateway
       '@montr/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
@@ -201,6 +210,9 @@ importers:
       '@montr/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
+      prisma:
+        specifier: ^5.20.0
+        version: 5.22.0
     devDependencies:
       '@montr/fixtures':
         specifier: workspace:*

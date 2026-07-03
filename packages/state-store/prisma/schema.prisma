@@ -29,6 +29,11 @@ datasource db {
 
 generator client {
   provider = "prisma-client-js"
+  // Cover the container runtimes: the build stage + worker are Debian (OpenSSL
+  // 3.0 on bookworm/debian12); include 1.1.x for older bases. `native` keeps
+  // local dev working. Without a matching target the client can't load its
+  // query engine at runtime in the distroless/slim images.
+  binaryTargets = ["native", "debian-openssl-3.0.x", "debian-openssl-1.1.x"]
 }
 
 // --------------------------------------------------------------------------- //

@@ -84,15 +84,17 @@ services:
   # bring-up never blocks on a step the state-store owner has not wired yet.
   # -------------------------------------------------------------------------
   migrate:
-    profiles: ["migrate"]
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile.api
+      dockerfile: deploy/docker/Dockerfile.worker
     restart: "no"
     env_file:
       - .env
-    # Placeholder command; WS-C replaces with the prisma migrate entrypoint.
-    command: ["dist/index.js", "--migrate"]
+    # One-shot `prisma migrate deploy`. Runs on the worker image (it ships the
+    # prisma CLI + schema + migrations) with a WRITABLE root fs (unlike the
+    # hardened api/worker) so Prisma can resolve its schema engine. api + worker
+    # wait for this to complete before starting.
+    command: ["node", "dist/migrate-cli.js"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -122,6 +124,8 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -159,14 +163,18 @@ services:
       # Writable scratch for repo checkouts / sandboxed analysis (root FS is RO).
       - workspacedata:/workspace
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
+      # The worker runs on the node:slim base (node is on PATH), NOT the distroless
+      # /nodejs/bin/node used by the api/web images.
       test:
         - CMD
-        - /nodejs/bin/node
+        - node
         - -e
         - "const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"
       interval: 30s
