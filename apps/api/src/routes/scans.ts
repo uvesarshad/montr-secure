@@ -54,8 +54,14 @@ export function registerScanRoutes(app: FastifyInstance, deps: ResolvedDeps): vo
         metadata: { repo: body.repo, branch: body.branch, mode: body.mode },
       });
 
+      // Kick off the pipeline: Layer 0 (App Map + cost estimate) runs, then the FSM
+      // halts at the pre-scan cost-estimate gate for approval (hardened default).
+      // start() only enqueues Layer 0 and returns; the worker consumes + runs it.
+      await orchestrator.start(scan.id);
+      const started = (await orchestrator.status(scan.id).catch(() => scan)) ?? scan;
+
       reply.status(201);
-      return { scan };
+      return { scan: started };
     },
   );
 

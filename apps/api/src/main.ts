@@ -13,16 +13,15 @@
  * fast + explicitly on a missing required secret.
  *
  * Known limitations of this composition (documented, non-blocking for §5.1):
- *   - users + DAST targets use in-memory stores (no Postgres repos exist yet), so
- *     they do not survive a restart; the seeded operator/approver are re-created
- *     on boot. Pipeline data (scans/findings/reports/audit) is real Postgres.
+ *   - DAST targets use an in-memory store (no Postgres repo yet); DAST is OFF by
+ *     default so this is inert. Users + all pipeline data are real Postgres.
  *   - live pipeline events (SSE) are process-local; cross-process progress is read
  *     via the persisted Scan status, not the worker's in-process event bus.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { loadConfig } from "@montr/config";
 import { MontrError, type Report, type Role } from "@montr/contracts";
-import { createStateStore } from "@montr/state-store";
+import { createPrismaClient, createStateStoreFromClient } from "@montr/state-store";
 import { createLlmGateway } from "@montr/llm-gateway";
 import { createCostMeter } from "@montr/cost-meter";
 import {
@@ -35,7 +34,8 @@ import { createLogger, type Logger } from "@montr/telemetry";
 import { createApiServer } from "./server.js";
 import { apiStoreFromStateStore } from "./store.js";
 import type { DastTarget, DastTargetStore, ReportStore } from "./store.js";
-import { InMemoryUserStore, type UserRecord } from "./auth/users.js";
+import { type UserRecord, type UserStore } from "./auth/users.js";
+import { PrismaUserStore } from "./auth/users-prisma.js";
 import { hashPassword } from "./auth/password.js";
 
 function requireEnv(name: string): string {
@@ -97,11 +97,7 @@ class InMemoryDastTargetStore implements DastTargetStore {
 }
 
 /** Seed one operator + one approver so a fresh stack is usable end-to-end. */
-async function seedUsers(
-  users: InMemoryUserStore,
-  clientId: string,
-  logger: Logger,
-): Promise<void> {
+async function seedUsers(users: UserStore, clientId: string, logger: Logger): Promise<void> {
   const now = new Date().toISOString();
   const seed = async (email: string, password: string, role: Role): Promise<void> => {
     if (await users.findByEmail(clientId, email)) return;
@@ -131,8 +127,10 @@ async function main(): Promise<void> {
   const redis = requireEnv("REDIS_URL");
   const port = Number(process.env.PORT ?? 3001);
 
-  const state = createStateStore({
-    databaseUrl,
+  // One Prisma client shared by the StateStore (pipeline data) and the user store.
+  const prisma = createPrismaClient({ databaseUrl });
+  const state = createStateStoreFromClient(prisma, {
+    ownsClient: true,
     ...(process.env.MONTR_FIELD_ENCRYPTION_KEY
       ? { fieldEncryptionKey: process.env.MONTR_FIELD_ENCRYPTION_KEY }
       : {}),
@@ -151,8 +149,9 @@ async function main(): Promise<void> {
     scheduler,
   });
 
-  // API-owned stores (no Postgres repos yet) + the real StateStore for pipeline data.
-  const users = new InMemoryUserStore();
+  // Postgres-backed users (FKs from Scan/audit require persisted users) + the real
+  // StateStore for pipeline data. DAST targets stay in-memory (DAST is OFF by default).
+  const users = new PrismaUserStore(prisma);
   await seedUsers(users, config.clientId, logger);
   const reports: ReportStore = {
     getByScan: (clientId, scanId) => state.reports.getByScan(clientId, scanId),
