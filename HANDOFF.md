@@ -101,9 +101,10 @@ Hardened defaults: auto-fix OFF · DAST OFF · budget hard-halt ON · telemetry 
   scanners on PATH (they're in the worker image) it auto-switches to `live-scanners`.
 - **The offline tests use a deterministic FAKE LLM adapter** (`@montr/fixtures`) → cost actuals ≈ $0,
   so the ±15% cost-variance metric is unvalidated until a real key is used.
-- **docs/ is git-IGNORED.** The PRD + build-plan (`docs/plan/*`) do NOT travel via `git clone`. If you
-  cloned, copy `docs/` over manually, or they're gone. This HANDOFF + README/DEPLOY/RUNBOOK/DOD ARE
-  committed and self-sufficient.
+- **The PRD + build-plan (`docs/plan/*`) ARE committed and transfer via `git clone`** — Wave 0's
+  `.gitignore` does not exclude `docs/`. `docs/plan/montr-secure-build-plan.md` is the exhaustive
+  checklist (188/198 done; the 10 open = §5.A). `docs/plan/montr-secure-prd.md` is the product spec.
+  This HANDOFF + README/DEPLOY/RUNBOOK/DOD are also committed.
 
 ---
 
