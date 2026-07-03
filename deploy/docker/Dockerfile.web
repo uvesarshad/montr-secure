@@ -1,16 +1,9 @@
 # syntax=docker/dockerfile:1.7
-# Montr Secure — operator console (Next.js). Multi-stage, DISTROLESS, non-root.
-#
-# NOTE: apps/web is currently a Wave-0 TypeScript stub. This Dockerfile builds
-# and ships that stub today so the image and compose/Helm wiring stay green.
-# When WS-K converts apps/web into a Next.js 14 App-Router app, switch to the
-# Next standalone runtime by:
-#   1. setting `output: "standalone"` in apps/web/next.config.mjs,
-#   2. replacing the build step with `pnpm --filter @montr/web build`,
-#   3. copying `.next/standalone`, `.next/static`, and `public` into /app,
-#   4. changing CMD to ["apps/web/server.js"] (the standalone entrypoint),
-#   5. mounting a writable emptyDir at /app/apps/web/.next/cache (ISR cache).
-# The runtime contract (distroless, non-root, port 3000, /tmp writable) is stable.
+# Montr Secure — operator console (Next.js 16, App Router). Multi-stage,
+# DISTROLESS, non-root. Ships the real Next.js app via the standalone output
+# (apps/web/next.config.mjs sets `output: "standalone"`), built with the
+# webpack builder (`build:next`) because Turbopack cannot resolve this repo's
+# .js-extension TS import convention.
 #
 # Build context is the REPO ROOT (docker-compose.yml sets `context: ../..`).
 
@@ -29,17 +22,17 @@ RUN corepack enable
 WORKDIR /repo
 
 # ---------------------------------------------------------------------------
-# build
+# build — compile workspace type deps, then the Next standalone bundle
 # ---------------------------------------------------------------------------
 FROM base AS build
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
 RUN pnpm exec tsc -b
-RUN pnpm --filter @montr/web deploy --prod --legacy /app
+RUN pnpm --filter @montr/web build:next
 
 # ---------------------------------------------------------------------------
-# runtime
+# runtime — distroless; standalone server + traced node_modules only
 # ---------------------------------------------------------------------------
 FROM ${DISTROLESS} AS runtime
 LABEL org.opencontainers.image.title="montr-secure-web" \
@@ -51,9 +44,14 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
     NEXT_TELEMETRY_DISABLED=1
-COPY --from=build --chown=nonroot:nonroot /app /app
+# Monorepo standalone layout: the traced server tree is rooted at the standalone
+# dir; the app entrypoint + assets nest under apps/web/.
+COPY --from=build --chown=nonroot:nonroot /repo/apps/web/.next/standalone ./
+COPY --from=build --chown=nonroot:nonroot /repo/apps/web/.next/static ./apps/web/.next/static
+COPY --from=build --chown=nonroot:nonroot /repo/apps/web/public ./apps/web/public
 USER nonroot
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
     CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/').then(function(r){process.exit(r.status<500?0:1)}).catch(function(){process.exit(1)})"]
-CMD ["dist/index.js"]
+# distroless nodejs image ENTRYPOINT is node; run the standalone server.
+CMD ["apps/web/server.js"]

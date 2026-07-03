@@ -31,19 +31,37 @@ RUN pnpm --filter @montr/worker deploy --prod --legacy /app
 # ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
-FROM ${DISTROLESS} AS runtime
+# Runtime is a hardened SLIM base (not distroless): the worker runs the Layer-1
+# discovery scanners, and Semgrep needs a Python runtime — so it needs a real OS.
+# Hardened instead via non-root user, read-only root FS (compose/Helm securityContext),
+# and the default-deny-egress NetworkPolicy. Scanner versions are pinned and are
+# refreshed offline via the air-gap signed bundle (deploy/airgap).
+FROM node:${NODE_VERSION} AS runtime
 LABEL org.opencontainers.image.title="montr-secure-worker" \
-      org.opencontainers.image.description="Montr Secure worker (BullMQ + pipeline layers)" \
+      org.opencontainers.image.description="Montr Secure worker (BullMQ + pipeline layers + SAST/secrets/SCA scanners)" \
       org.opencontainers.image.source="https://github.com/montr/secure" \
       org.opencontainers.image.licenses="Proprietary"
+ARG GITLEAKS_VERSION=8.21.2
+ARG OSV_SCANNER_VERSION=1.9.1
+# Semgrep (SAST, Python), gitleaks (secrets, static Go), osv-scanner (SCA, static Go),
+# git (repo checkout). curl is removed after use to shrink attack surface.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-pip python3-venv git ca-certificates curl \
+ && python3 -m pip install --no-cache-dir --break-system-packages semgrep \
+ && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+      | tar -xz -C /usr/local/bin gitleaks \
+ && curl -fsSL -o /usr/local/bin/osv-scanner \
+      "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_${OSV_SCANNER_VERSION}_linux_amd64" \
+ && chmod +x /usr/local/bin/osv-scanner \
+ && apt-get purge -y curl && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production \
     MONTR_WORKSPACE_DIR=/workspace \
     REDIS_URL=redis://redis:6379
-COPY --from=build --chown=nonroot:nonroot /app /app
-USER nonroot
+COPY --from=build --chown=node:node /app /app
+USER node
 # The worker has no HTTP port; liveness = it can reach Redis (its job broker).
-# Uses only Node built-ins (net/URL) so it works on distroless.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["/nodejs/bin/node", "-e", "const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',function(){s.end();process.exit(0)});s.on('error',function(){process.exit(1)});s.on('timeout',function(){process.exit(1)})"]
+    CMD ["node", "-e", "const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',function(){s.end();process.exit(0)});s.on('error',function(){process.exit(1)});s.on('timeout',function(){process.exit(1)})"]
 CMD ["dist/index.js"]

@@ -3,7 +3,7 @@
  * direction: detectors → types), so there are no import cycles and every
  * external scanner is expressed as an injectable interface (offline-testable).
  */
-import type { AppMap, LLMGateway, ScanScope } from "@montr/contracts";
+import type { AppMap, CustomRule, LLMGateway, ScanScope } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
 import type { Logger } from "@montr/telemetry";
 import type { FileProvider, RepoFile } from "./util/files.js";
@@ -94,6 +94,15 @@ export interface RunDiscoveryInput {
   repoRoot?: string;
   /** In-memory files (alternative to `repoRoot`; wins for the content detectors). */
   files?: RepoFile[];
+  /**
+   * ⛔ Client-authored custom rules (Phase-4 / Wave 5, §16). Only ENABLED rules
+   * are loaded (via {@link loadCustomRules}) and run ALONGSIDE the curated
+   * rulesets: enabled secret rules become extra secret detectors; enabled semgrep
+   * bodies are materialized to temporary `--config` files for the SAST pass.
+   * Disabled drafts NEVER feed a scan (fail-safe). Omitting this leaves the
+   * standard scan path byte-for-byte unchanged.
+   */
+  customRules?: readonly CustomRule[];
   deps?: DiscoveryDeps;
 }
 
