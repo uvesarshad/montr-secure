@@ -85,7 +85,8 @@ describe("runModelVariance — harness scaffold over the gateway (fake adapter)"
 describe("runQaSuite — end-to-end self-check", () => {
   it("perfect scanner passes the committed gate with zero false positives", async () => {
     const { corpus, run, regression } = await runQaSuite();
-    expect(corpus.repos.length).toBe(4);
+    // 2 @montr/fixtures seed + 2 shared OWASP + 4 standalone python/jvm (WS-Q).
+    expect(corpus.repos.length).toBe(8);
     expect(run.score.fpRate).toBe(0);
     expect(run.score.falsePositives).toBe(0);
     expect(run.score.falseNegatives).toBe(0);

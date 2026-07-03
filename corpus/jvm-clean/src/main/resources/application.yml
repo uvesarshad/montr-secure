@@ -1,0 +1,20 @@
+# corpus: jvm-clean — secured configuration (secrets externalized, actuator locked down).
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/appdb
+    username: appuser
+    # Secret is externalized to the environment — never committed.
+    password: ${DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+app:
+  api-key: ${APP_API_KEY}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Only the health endpoint is exposed.
+        include: health

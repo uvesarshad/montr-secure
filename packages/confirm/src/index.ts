@@ -67,3 +67,10 @@ export {
   DATAFLOW_SINK_KINDS,
   type SinkAssessment,
 } from "./taxonomy.js";
+
+// ⛔ Per-language confirmation heuristics (Layer 3a stack breadth — §7 Wave 4).
+// A new stack adds a plugin under heuristics/<lang>/ and is appended to
+// HEURISTICS — the static-confirmation engine stays stack-agnostic.
+export { HEURISTICS, resolveHeuristics } from "./heuristics/registry.js";
+export { EMPTY_HEURISTICS } from "./heuristics/types.js";
+export type { ConfirmationHeuristics, ResolvedHeuristics } from "./heuristics/types.js";

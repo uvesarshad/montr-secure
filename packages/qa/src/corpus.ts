@@ -138,6 +138,47 @@ export async function loadCorpus(opts: LoadCorpusOptions = {}): Promise<LoadedCo
     });
   }
 
+  // 2b. Standalone per-stack corpus manifests (build-plan §7 Wave 4). A stack
+  // corpus (python, jvm, …) ships its OWN ground truth next to its repos as
+  // `corpus/<stack>-vuln/ground-truth.manifest.json`; wiring a new stack into the
+  // precision/recall gate is therefore just dropping that file — no edit to the
+  // shared manifest or this loader. CONVENTION: repo `path`s in EVERY corpus
+  // manifest (shared or standalone) are expressed relative to the corpus root, so
+  // one standalone manifest can declare both its vuln and clean sibling repos.
+  const standaloneManifestPaths = await fg("*/ground-truth.manifest.json", {
+    cwd: corpusDir,
+    onlyFiles: true,
+  });
+  for (const rel of standaloneManifestPaths.sort()) {
+    const abs = join(corpusDir, rel);
+    let parsedManifest: ReturnType<typeof GroundTruthManifestSchema.safeParse>;
+    try {
+      parsedManifest = GroundTruthManifestSchema.safeParse(JSON.parse(await readFile(abs, "utf8")));
+    } catch (cause) {
+      throw new ConfigValidationError(`could not read/parse corpus manifest: ${abs}`, {
+        cause: String(cause),
+      });
+    }
+    if (!parsedManifest.success) {
+      throw new ConfigValidationError(
+        `corpus manifest ${rel} failed schema validation: ${parsedManifest.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}`,
+      );
+    }
+    for (const repo of parsedManifest.data.repos) {
+      // The shared manifest wins if a name is declared in both (no double-count).
+      if (seenNames.has(repo.name)) continue;
+      addRepo({
+        name: repo.name,
+        kind: repo.kind,
+        source: "corpus",
+        path: resolve(corpusDir, repo.path),
+        expectedFindings: repo.expectedFindings,
+      });
+    }
+  }
+
   // 3. Cross-check the manifest against what is on disk (fast-glob discovery).
   const declaredCorpusDirs = new Set(corpusManifest.repos.map((r) => basename(r.path)));
   const discovered = await fg("*", { cwd: join(corpusDir, "repos"), onlyDirectories: true });

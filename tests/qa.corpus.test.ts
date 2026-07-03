@@ -10,15 +10,49 @@ import { parseScanFindings } from "../packages/qa/src/findings-io";
  */
 
 describe("loadCorpus — merged golden corpus", () => {
-  it("merges @montr/fixtures seed repos with the expanded corpus/ repos", async () => {
+  it("merges fixtures seed + shared OWASP + standalone python/jvm corpus repos", async () => {
     const corpus = await loadCorpus();
     const names = corpus.repos.map((r) => r.name).sort();
     expect(names).toEqual(
-      ["clean-nextjs", "clean-nextjs-owasp", "vulnerable-nextjs", "vulnerable-nextjs-owasp"].sort(),
+      [
+        // @montr/fixtures seed repos (TS/JS)
+        "clean-nextjs",
+        "vulnerable-nextjs",
+        // shared corpus/ground-truth.manifest.json (TS/JS OWASP)
+        "clean-nextjs-owasp",
+        "vulnerable-nextjs-owasp",
+        // Phase-3 stack breadth — standalone corpus/<stack>-vuln manifests (WS-Q)
+        "jvm-clean",
+        "jvm-vuln",
+        "python-clean",
+        "python-vuln",
+      ].sort(),
     );
     expect(corpus.repos.filter((r) => r.source === "fixtures")).toHaveLength(2);
-    expect(corpus.repos.filter((r) => r.source === "corpus")).toHaveLength(2);
+    // 2 shared OWASP + 4 standalone python/jvm repos all resolve as source "corpus".
+    expect(corpus.repos.filter((r) => r.source === "corpus")).toHaveLength(6);
     expect(corpus.warnings).toEqual([]);
+  });
+
+  it("wires the Phase-3 python + jvm stacks (Django/FastAPI + Spring) into the gate", async () => {
+    const corpus = await loadCorpus();
+    for (const name of ["python-vuln", "python-clean", "jvm-vuln", "jvm-clean"] as const) {
+      const repo = corpus.repos.find((r) => r.name === name);
+      expect(repo, `${name} present in merged corpus`).toBeDefined();
+      expect(repo!.source).toBe("corpus");
+      expect(existsSync(repo!.path)).toBe(true);
+    }
+    // The vulnerable python + jvm repos carry the planted OWASP ground truth.
+    const pyVuln = corpus.repos.find((r) => r.name === "python-vuln")!;
+    const jvmVuln = corpus.repos.find((r) => r.name === "jvm-vuln")!;
+    expect(pyVuln.expectedFindings.length).toBeGreaterThanOrEqual(5);
+    expect(jvmVuln.expectedFindings.length).toBeGreaterThanOrEqual(5);
+    // Stack-specific classes the TS/JS corpus does not exercise are now covered.
+    const allCategories = new Set(
+      corpus.repos.flatMap((r) => r.expectedFindings).map((f) => f.category),
+    );
+    expect(allCategories.has("command_injection")).toBe(true); // jvm
+    expect(allCategories.has("insecure_deserialization")).toBe(true); // jvm
   });
 
   it("resolves every repo to an existing absolute directory", async () => {

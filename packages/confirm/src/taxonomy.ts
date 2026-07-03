@@ -12,6 +12,7 @@ import {
   type TaintSink,
   type TaintSinkKind,
 } from "@montr/contracts";
+import type { ResolvedHeuristics } from "./heuristics/types.js";
 
 /**
  * Which sink kinds a category's tainted-flow can terminate in. An EMPTY list
@@ -110,11 +111,26 @@ export interface SinkAssessment {
  * Decide whether tainted input reaching this sink is dangerous. Fail-safe: on
  * ambiguity (conflicting or absent markers on a non-raw sink) it resolves toward
  * NOT dangerous so uncertain findings stay in the appendix (golden rule #4).
+ *
+ * `extra` carries per-language heuristics (from the registry) APPENDED after the
+ * stack-agnostic base; when empty (the Phase-1 TS/JS path) the result is
+ * identical to the base-only assessment.
  */
-export function assessSink(sink: TaintSink): SinkAssessment {
+export function assessSink(sink: TaintSink, extra?: ResolvedHeuristics): SinkAssessment {
   const d = (sink.description ?? "").toLowerCase();
-  const unsafe = UNSAFE_MARKERS.find((k) => d.includes(k));
-  const safe = SAFE_MARKERS.find((k) => d.includes(k));
+  const unsafeMarkers =
+    extra && extra.unsafeMarkers.length > 0
+      ? [...UNSAFE_MARKERS, ...extra.unsafeMarkers]
+      : UNSAFE_MARKERS;
+  const safeMarkers =
+    extra && extra.safeMarkers.length > 0 ? [...SAFE_MARKERS, ...extra.safeMarkers] : SAFE_MARKERS;
+  const rawSinkKinds =
+    extra && extra.rawSinkKinds.length > 0
+      ? new Set<TaintSinkKind>([...RAW_SINK_KINDS, ...extra.rawSinkKinds])
+      : RAW_SINK_KINDS;
+
+  const unsafe = unsafeMarkers.find((k) => d.includes(k));
+  const safe = safeMarkers.find((k) => d.includes(k));
 
   if (unsafe && !safe)
     return { dangerous: true, reason: `unsanitized sink construct ("${unsafe}")` };
@@ -132,7 +148,7 @@ export function assessSink(sink: TaintSink): SinkAssessment {
       reason: `ambiguous sink (both unsafe and safe markers); treated as sanitized (fail-safe)`,
     };
   // No description markers → fall back to the sink kind.
-  if (RAW_SINK_KINDS.has(sink.kind))
+  if (rawSinkKinds.has(sink.kind))
     return {
       dangerous: true,
       reason: `raw sink kind "${sink.kind}" with no sanitizer on the path`,
@@ -230,10 +246,18 @@ const PARAM_PATTERNS: readonly RegExp[] = [
   /\bcookies?\.([A-Za-z0-9_]+)/,
 ];
 
-/** Best-effort request-parameter name from a taint-source description. */
-export function extractParam(description?: string): string | undefined {
+/**
+ * Best-effort request-parameter name from a taint-source description. `extra`
+ * appends per-language patterns after the base ones; empty extras (Phase-1
+ * TS/JS) leave the result identical to the base.
+ */
+export function extractParam(description?: string, extra?: ResolvedHeuristics): string | undefined {
   if (!description) return undefined;
-  for (const re of PARAM_PATTERNS) {
+  const patterns =
+    extra && extra.paramPatterns.length > 0
+      ? [...PARAM_PATTERNS, ...extra.paramPatterns]
+      : PARAM_PATTERNS;
+  for (const re of patterns) {
     const m = re.exec(description);
     if (m?.[1]) return m[1];
   }

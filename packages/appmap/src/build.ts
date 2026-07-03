@@ -13,11 +13,8 @@ import type { AppMap, Layer0Output, ScanScope } from "@montr/contracts";
 import { createNullLogger } from "@montr/telemetry";
 import type { BuildAppMapDeps, BuildAppMapInput } from "./types.js";
 import { deriveContentSha, resolveWorkspace } from "./workspace.js";
-import { collectFiles, createProject, detectFrameworks, detectLanguages } from "./sources.js";
-import { scanRoutes } from "./routes.js";
-import { scanPrisma } from "./prisma.js";
-import { scanThirdPartyCalls, scanEnvSecretSurfaces } from "./surfaces.js";
-import { scanTaint } from "./taint.js";
+import { collectFiles, createProject } from "./sources.js";
+import { buildDeterministicPieces } from "./languages/registry.js";
 import { computeDiffScope } from "./diff.js";
 import { labelAuthBoundaries } from "./llm.js";
 import { estimateCost } from "./cost.js";
@@ -72,24 +69,18 @@ export async function buildAppMap(
       }
     }
 
-    progress("detect", 25, "language + framework detection");
-    const languages = detectLanguages(inv.sourceFiles);
-    const frameworks = detectFrameworks(inv);
-
-    const project = createProject(workspace.dir, inv.sourceFiles);
-
-    progress("routes", 40, "route introspection");
-    const { routes, entrypoints, routeIdsByFile } = scanRoutes(project, workspace.dir);
-
-    progress("datastores", 55, "prisma models");
-    const { dataStores, ormModels } = await scanPrisma(workspace.dir, inv.prismaSchemas);
-
-    progress("surfaces", 65, "third-party + env/secret surface");
-    const thirdPartyCalls = scanThirdPartyCalls(project, workspace.dir);
-    const envSecretSurfaces = await scanEnvSecretSurfaces(project, workspace.dir, inv.envFiles);
-
-    progress("taint", 75, "taint sources + sinks");
-    const { taintSources, taintSinks } = scanTaint(project, workspace.dir, routeIdsByFile);
+    // Detect the stacks present and run their analyzers, merging the
+    // language-agnostic App-Map pieces (routes/models/surfaces/taint). Phase 1
+    // ships the `typescript` analyzer; python/java plug in under
+    // languages/<lang>/ WITHOUT touching this dispatcher (build-plan §7 Wave 4).
+    progress("detect", 25, "language detection + deterministic parse");
+    const pieces = await buildDeterministicPieces({
+      dir: workspace.dir,
+      inventory: inv,
+      logger,
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    });
+    progress("taint", 75, "routes + models + surfaces + taint");
 
     // Assemble + validate the DETERMINISTIC map (no LLM has run yet).
     let appMap: AppMap = AppMapSchema.parse({
@@ -100,16 +91,16 @@ export async function buildAppMap(
       branch: input.branch,
       commitSha,
       createdAt: now().toISOString(),
-      languages,
-      frameworks,
-      entrypoints,
-      routes,
-      dataStores,
-      ormModels,
-      thirdPartyCalls,
-      envSecretSurfaces,
-      taintSources,
-      taintSinks,
+      languages: pieces.languages,
+      frameworks: pieces.frameworks,
+      entrypoints: pieces.entrypoints,
+      routes: pieces.routes,
+      dataStores: pieces.dataStores,
+      ormModels: pieces.ormModels,
+      thirdPartyCalls: pieces.thirdPartyCalls,
+      envSecretSurfaces: pieces.envSecretSurfaces,
+      taintSources: pieces.taintSources,
+      taintSinks: pieces.taintSinks,
       stale: false,
       rebuildPolicy: "rebuild_on_stale_commit",
     } satisfies AppMap);
@@ -135,7 +126,17 @@ export async function buildAppMap(
     }
 
     progress("done", 100, "map complete");
-    return finalize(appMap, input, inv.sourceFiles.length, project, workspace.dir);
+    // A diff scope needs the TS/JS import graph; build it lazily so full-mode
+    // scans never pay for it. Mirrors the reuse path above (symmetric).
+    const diffProject =
+      input.mode === "diff" ? createProject(workspace.dir, inv.sourceFiles) : undefined;
+    return finalize(
+      appMap,
+      input,
+      inv.sourceFiles.length,
+      diffProject,
+      diffProject ? workspace.dir : undefined,
+    );
   } finally {
     await workspace.cleanup();
   }

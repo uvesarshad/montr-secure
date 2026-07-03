@@ -1,0 +1,78 @@
+{
+  "version": "1.0.0",
+  "repos": [
+    {
+      "name": "python-vuln",
+      "kind": "vulnerable",
+      "path": "python-vuln",
+      "expectedFindings": [
+        {
+          "id": "gt_py_sqli",
+          "category": "sql_injection",
+          "cwe": ["CWE-89"],
+          "owasp": "A03:2021",
+          "file": "myapp/views.py",
+          "line": 18,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "Tainted `q` (request.GET) is f-string interpolated into cursor.execute raw SQL on a public route."
+        },
+        {
+          "id": "gt_py_xss",
+          "category": "xss",
+          "cwe": ["CWE-79"],
+          "owasp": "A03:2021",
+          "file": "myapp/views.py",
+          "line": 21,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "`q` echoed via mark_safe(), bypassing Django template autoescaping (reflected XSS)."
+        },
+        {
+          "id": "gt_py_ssrf",
+          "category": "ssrf",
+          "cwe": ["CWE-918"],
+          "owasp": "A10:2021",
+          "file": "myapp/views.py",
+          "line": 28,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "User-supplied `url` fetched server-side with requests.get and no allowlist (SSRF)."
+        },
+        {
+          "id": "gt_py_idor",
+          "category": "idor",
+          "cwe": ["CWE-639"],
+          "owasp": "A01:2021",
+          "file": "myapp/views.py",
+          "line": 34,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Order fetched by id with no ownership check; access-control fix is human-required."
+        },
+        {
+          "id": "gt_py_secret",
+          "category": "hardcoded_secret",
+          "cwe": ["CWE-798"],
+          "owasp": "A07:2021",
+          "file": "myapp/settings.py",
+          "line": 5,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Hard-coded Django SECRET_KEY; rotation requires a human."
+        }
+      ]
+    },
+    {
+      "name": "python-clean",
+      "kind": "clean",
+      "path": "python-clean",
+      "expectedFindings": []
+    }
+  ]
+}
