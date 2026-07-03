@@ -69,8 +69,15 @@ export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
  */
 export const AgentLoopConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  /** Hard cap on gateway round-trips per finding (bounds cost + latency). */
+  /** Hard cap on fix-proposal round-trips per finding (bounds cost + latency). */
   maxIterations: z.number().int().positive().max(10).default(3),
+  /**
+   * Hard cap on read_file tool rounds per finding. The loop gives the model a
+   * sandboxed read_file tool so it can inspect imported/sibling files (a
+   * multi-file agent) before proposing; this bounds that exploration. 0 disables
+   * tool use (pure message loop).
+   */
+  maxToolCalls: z.number().int().nonnegative().max(20).default(5),
 });
 export type AgentLoopConfig = z.infer<typeof AgentLoopConfigSchema>;
 

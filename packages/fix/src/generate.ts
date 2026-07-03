@@ -23,6 +23,7 @@ import {
   type Layer4Output,
   type LLMGateway,
   type LLMRequest,
+  type LLMResponse,
 } from "@montr/contracts";
 import type { AuditLogClient } from "@montr/telemetry";
 import { classifyConfirmedFindingRisk, type RiskDecision } from "./risk.js";
@@ -53,10 +54,12 @@ export interface FixGenerationContext {
   makeId?: (finding: ConfirmedFinding, index: number) => string;
   /**
    * ⛔ Bounded coding-agent loop (OFF by default). When enabled, the proposal step
-   * iterates against the deterministic patch oracle instead of a single shot. The
-   * validation gate + risk classifier + PR gate are unchanged.
+   * iterates against the deterministic patch oracle instead of a single shot, and
+   * (when maxToolCalls > 0) gives the model a sandboxed read_file tool so it can
+   * inspect imported/sibling files — a multi-file agent. The validation gate + risk
+   * classifier + PR gate are unchanged.
    */
-  agentLoop?: { enabled: boolean; maxIterations: number };
+  agentLoop?: { enabled: boolean; maxIterations: number; maxToolCalls?: number };
   /**
    * ⛔ Optional proof-of-fix EXECUTOR. When present, the synthesized proof test is
    * actually run against the original + patched source; a candidate is accepted
@@ -73,7 +76,9 @@ const FIX_SYSTEM_PROMPT =
   "You are a secure-code fix generator. Given a confirmed vulnerability and the source file, return " +
   'ONLY minified JSON of the form {"fixedSource": "<the full fixed file>", "rationale": "<plain English>"}. ' +
   "Change as little as possible and remove ONLY the vulnerability. NEVER modify authentication, session, " +
-  "cryptography, or access-control logic. If you cannot fix it safely, return {}.";
+  "cryptography, or access-control logic. If you cannot fix it safely, return {}. " +
+  "If a read_file tool is available, you MAY call it to inspect imported or related files before answering; " +
+  "when ready, stop calling tools and return the JSON fix.";
 
 interface LlmProposal {
   fixedSource?: string;
@@ -106,16 +111,39 @@ function fixUserPayload(finding: ConfirmedFinding, source: string | null): strin
   });
 }
 
+type FixTool = NonNullable<LLMRequest["tools"]>[number];
+
+/** A sandboxed read tool the agent may call to inspect imported/sibling files. */
+const READ_FILE_TOOL: FixTool = {
+  name: "read_file",
+  description:
+    "Read a repo-relative source file (e.g. an imported module, a shared helper, or a " +
+    "config) to understand context BEFORE proposing the fix. Returns the file text.",
+  parameters: {
+    type: "object",
+    properties: { path: { type: "string", description: "repo-relative file path" } },
+    required: ["path"],
+  },
+};
+
 /** Build the fix-generation request from a message history (the single egress path). */
-function buildFixRequest(messages: FixMessage[], ctx: FixGenerationContext): LLMRequest {
+function buildFixRequest(
+  messages: FixMessage[],
+  ctx: FixGenerationContext,
+  tools?: FixTool[],
+): LLMRequest {
+  const withTools = tools !== undefined && tools.length > 0;
   return {
     tier: "default",
     system: FIX_SYSTEM_PROMPT,
     messages,
     maxTokens: 2048,
     temperature: 0,
-    responseFormat: "json",
+    // With tools available the model alternates tool_use / final text, so JSON is
+    // not forced; the final answer is still parsed leniently by safeJsonObject.
+    responseFormat: withTools ? "text" : "json",
     stream: false,
+    ...(withTools ? { tools } : {}),
     metadata: {
       purpose: "fix_generation",
       scanId: ctx.scanId,
@@ -123,6 +151,27 @@ function buildFixRequest(messages: FixMessage[], ctx: FixGenerationContext): LLM
       layer: "layer4",
     },
   };
+}
+
+/** Execute the agent's tool calls (only `read_file`, via the sandboxed reader). */
+async function executeToolCalls(
+  toolCalls: NonNullable<LLMResponse["toolCalls"]>,
+  ctx: FixGenerationContext,
+): Promise<FixMessage[]> {
+  const out: FixMessage[] = [];
+  for (const tc of toolCalls) {
+    let content: string;
+    if (tc.name === "read_file") {
+      const path = typeof tc.arguments.path === "string" ? tc.arguments.path : "";
+      // ⛔ Reads go through the sandboxed SourceReader (repo-root scoped) — no raw fs.
+      const src = path ? await ctx.source.read(path) : null;
+      content = src ?? `(file not found or unreadable: ${path})`;
+    } else {
+      content = `(unsupported tool: ${tc.name})`;
+    }
+    out.push({ role: "tool", content, toolCallId: tc.id, name: tc.name });
+  }
+  return out;
 }
 
 /** Extract a proposal from a gateway response body. */
@@ -175,22 +224,47 @@ async function proposeFixWithAgent(
   strategy: FixStrategy | undefined,
   ctx: FixGenerationContext,
   maxIterations: number,
+  maxToolCalls: number,
 ): Promise<{ proposal: LlmProposal | null; iterations: number }> {
   const filePath = finding.location.file;
   const messages: FixMessage[] = [{ role: "user", content: fixUserPayload(finding, original) }];
+  const tools = maxToolCalls > 0 ? [READ_FILE_TOOL] : undefined;
   let last: LlmProposal | null = null;
+  let fixIters = 0;
+  let toolRounds = 0;
 
-  for (let i = 1; i <= maxIterations; i++) {
-    let proposal: LlmProposal;
+  // Bound total round-trips: proposal attempts + tool rounds.
+  while (fixIters < maxIterations) {
+    let response: LLMResponse;
     try {
-      const response = await ctx.gateway.complete(buildFixRequest(messages, ctx));
-      proposal = parseProposal(response.content, response.model);
-      // Record the assistant turn so the model sees its own prior attempt.
-      messages.push({ role: "assistant", content: response.content });
+      response = await ctx.gateway.complete(buildFixRequest(messages, ctx, tools));
     } catch {
-      return { proposal: last, iterations: i };
+      return { proposal: last, iterations: Math.max(1, fixIters) };
     }
+
+    // Tool round: the model wants to inspect other files first. Execute + continue
+    // WITHOUT consuming a fix attempt (bounded separately by maxToolCalls).
+    if (
+      response.stopReason === "tool_use" &&
+      response.toolCalls &&
+      response.toolCalls.length > 0 &&
+      toolRounds < maxToolCalls
+    ) {
+      toolRounds++;
+      messages.push({
+        role: "assistant",
+        content: response.content,
+        toolCalls: response.toolCalls,
+      });
+      messages.push(...(await executeToolCalls(response.toolCalls, ctx)));
+      continue;
+    }
+
+    // Proposal attempt.
+    fixIters++;
+    const proposal = parseProposal(response.content, response.model);
     last = proposal;
+    messages.push({ role: "assistant", content: response.content });
 
     // Oracle: the SAME deterministic patch check the accept-gate uses below.
     if (
@@ -202,7 +276,7 @@ async function proposeFixWithAgent(
       const patch = buildUnifiedDiff(filePath, original, proposal.fixedSource);
       const v = validatePatch(original, patch, strategy.vulnerable);
       if (v.applies && v.failsPrePatch && v.passesPostPatch) {
-        return { proposal, iterations: i };
+        return { proposal, iterations: fixIters };
       }
       messages.push({ role: "user", content: agentFeedback(v) });
     } else {
@@ -214,7 +288,7 @@ async function proposeFixWithAgent(
       });
     }
   }
-  return { proposal: last, iterations: maxIterations };
+  return { proposal: last, iterations: Math.max(1, fixIters) };
 }
 
 function composeRationale(
@@ -341,7 +415,14 @@ async function generateOne(
   // With the coding-agent loop enabled, iterate against the patch oracle; else
   // a single shot. Either way the proposal flows through the SAME accept-gate below.
   const { proposal: llm, iterations } = ctx.agentLoop?.enabled
-    ? await proposeFixWithAgent(finding, original, strategy, ctx, ctx.agentLoop.maxIterations)
+    ? await proposeFixWithAgent(
+        finding,
+        original,
+        strategy,
+        ctx,
+        ctx.agentLoop.maxIterations,
+        ctx.agentLoop.maxToolCalls ?? 0,
+      )
     : { proposal: await proposeFixWithLlm(finding, original, ctx), iterations: 1 };
 
   if (original !== null && strategy) {

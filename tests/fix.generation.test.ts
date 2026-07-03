@@ -313,6 +313,69 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     expect((audit.events[0]!.metadata as { iterations?: number }).iterations).toBe(2);
   });
 
+  it("⛔ tool-using agent: calls read_file on a sibling, then proposes an accepted fix", async () => {
+    const original = read("app/api/users/route.ts");
+    const valid = JSON.stringify({
+      fixedSource: original.replace(
+        /const rows = await prisma\.\$queryRawUnsafe\([\s\S]*?\);/,
+        "const rows = await prisma.user.findMany({ where: { name: q } });",
+      ),
+      rationale: "use the typed API",
+    });
+    // Sandboxed source with the target + a sibling the agent will read via the tool.
+    const source = createMapSourceReader({
+      "app/api/users/route.ts": original,
+      "lib/db.ts": "export const db = 'the shared prisma client';",
+    });
+
+    const inner = createFakeLlmGateway();
+    let call = 0;
+    const requests: LLMRequest[] = [];
+    const gateway: LLMGateway = {
+      complete: async (req) => {
+        requests.push(req);
+        const base = await inner.complete(req);
+        // Turn 1: the model calls read_file. Turn 2: it returns the fix.
+        return call++ === 0
+          ? {
+              ...base,
+              content: "",
+              stopReason: "tool_use" as const,
+              toolCalls: [{ id: "c1", name: "read_file", arguments: { path: "lib/db.ts" } }],
+            }
+          : { ...base, content: valid };
+      },
+      stream: (req) => inner.stream(req),
+      listModels: () => inner.listModels(),
+      resolveModel: (t) => inner.resolveModel(t),
+    };
+
+    const audit = new CapturingAudit();
+    const out = await generateFixes(
+      baseInput({
+        confirmed: [SQLI],
+        source,
+        gateway,
+        audit,
+        agentLoop: { enabled: true, maxIterations: 3, maxToolCalls: 3 },
+      }),
+    );
+    const fix = out.fixes[0]!;
+    expect(fix.riskClass).toBe("auto-eligible");
+
+    // Turn 1 offered the read_file tool; two round-trips total (1 tool + 1 proposal).
+    expect(requests[0]!.tools?.some((t) => t.name === "read_file")).toBe(true);
+    expect(requests.length).toBe(2);
+    // Turn 2 carried the tool RESULT (the sibling's contents) back to the model.
+    const toolMsg = requests[1]!.messages.find((m) => m.role === "tool");
+    expect(toolMsg).toBeDefined();
+    expect(typeof toolMsg!.content === "string" ? toolMsg!.content : "").toContain(
+      "shared prisma client",
+    );
+    // The tool round did NOT count as a fix attempt (iterations = 1).
+    expect((audit.events[0]!.metadata as { iterations?: number }).iterations).toBe(1);
+  });
+
   it("single-shot (agent loop OFF) makes exactly one gateway call per finding", async () => {
     const { gateway, requests } = recordingGateway(createFakeLlmGateway());
     await generateFixes(baseInput({ confirmed: [SQLI], gateway }));
