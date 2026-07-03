@@ -15,9 +15,9 @@
     "dist"
   ],
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "tsc -b",
-    "build:next": "next build",
+    "build:next": "next build --webpack",
     "start": "next start",
     "typecheck": "tsc -b",
     "lint": "eslint src",

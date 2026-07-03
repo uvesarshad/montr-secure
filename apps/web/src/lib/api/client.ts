@@ -37,7 +37,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: { Accept: "application/json", ...(init?.headers ?? {}) },
     });
-  } catch (cause) {
+  } catch {
     throw new ApiError(0, `Network error contacting ${url}`, "NETWORK");
   }
   const text = await res.text();

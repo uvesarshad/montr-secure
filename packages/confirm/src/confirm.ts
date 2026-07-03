@@ -95,6 +95,39 @@ export async function confirmFindings(
   for (const finding of probable) {
     throwIfKilled(deps); // ⛔ kill switch halts between findings
 
+    // ⛔ §15 FP loop: a known operator-marked false positive is suppressed to the
+    // Unconfirmed appendix (kept, never deleted) BEFORE any confirmation work.
+    // Fail-safe: this can only withhold a confirmation, never create one.
+    if (
+      deps.fpTuning?.isKnownFalsePositive({
+        category: finding.category,
+        file: finding.location.file,
+        line: finding.location.line,
+      })
+    ) {
+      unconfirmed.push(
+        toUnconfirmed(
+          finding,
+          "Matches a known false positive in the regression corpus (§15); suppressed to the appendix pending re-review (fail-safe).",
+        ),
+      );
+      await safeAppend(
+        deps,
+        agentAudit(
+          input,
+          "finding.demoted",
+          `Suppressed known false positive (static): ${finding.category}`,
+          {
+            category: finding.category,
+            exposure: finding.exposure,
+            reason: "known_false_positive",
+          },
+          finding.id,
+        ),
+      );
+      continue;
+    }
+
     const staticOutcome = await confirmStatic(finding, input, deps);
 
     let live: Awaited<ReturnType<typeof confirmLive>> | undefined;

@@ -14,6 +14,10 @@
  */
 export { correlate, type CorrelateInput } from "./correlate.js";
 
+// §15 false-positive tuning hook — inject the regression corpus (from @montr/qa)
+// to down-rank/demote known false positives. Additive + fail-safe.
+export type { FalsePositiveTuning, FalsePositiveSignal } from "./tuning.js";
+
 // Pure building blocks — exported for the orchestrator, tests, and future stacks
 // (the engine is stack-agnostic by design, build-plan §7).
 export { AppMapIndex, groundCandidate, extractPackageName, type Grounding } from "./grounding.js";

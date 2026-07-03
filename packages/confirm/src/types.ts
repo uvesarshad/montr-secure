@@ -13,6 +13,7 @@ import type {
   ProbableFinding,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
+import type { FalsePositiveTuning } from "./tuning.js";
 
 /**
  * Layer 3 input. Mirrors the frozen `Layer3JobData` the orchestrator builds
@@ -126,6 +127,13 @@ export interface ConfirmDeps {
    * data-flow proof confirms.
    */
   useLlmCrossCheck?: boolean;
+  /**
+   * ⛔ §15 regression-corpus tuning (fail-safe). When supplied, a probable finding
+   * whose (category, file, line) matches an operator-marked known false positive
+   * is SKIPPED and routed straight to the Unconfirmed appendix (kept, never
+   * deleted). Additive; can only make confirmation more conservative.
+   */
+  fpTuning?: FalsePositiveTuning;
 }
 
 /* --------------------------------- outcomes -------------------------------- */

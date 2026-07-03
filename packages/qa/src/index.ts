@@ -5,6 +5,9 @@
  *   ground truth) merged from @montr/fixtures + `corpus/`.
  * - Precision/recall scorer with a headline false-positive rate (target < 5%),
  *   per category and per repo.
+ * - A §15 regression corpus: operators mark a confirmed finding as a false
+ *   positive; the metadata-only record feeds the scorer's precision/FP-rate and
+ *   the correlation/confirmation tuning hook (down-rank/skip known FPs).
  * - A committed-baseline regression gate with clear exit codes for CI.
  * - A model-variance harness scaffold that runs the corpus across the gateway's
  *   models (fake adapter for now) and emits a model matrix.
@@ -16,6 +19,7 @@
 export * from "./types.js";
 export * from "./exit-codes.js";
 export * from "./scorer.js";
+export * from "./regression-corpus.js";
 export * from "./synthetic.js";
 export * from "./baseline.js";
 export * from "./corpus.js";

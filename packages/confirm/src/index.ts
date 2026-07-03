@@ -29,6 +29,10 @@ export type {
   LiveConfirmOutcome,
 } from "./types.js";
 
+// §15 false-positive tuning hook — inject the regression corpus (from @montr/qa)
+// to skip/suppress known false positives to the appendix. Additive + fail-safe.
+export type { FalsePositiveTuning, FalsePositiveSignal } from "./tuning.js";
+
 // Static confirmation (3a) internals — reusable by the fix/report layers + tests.
 export { confirmStatic, assembleConfirmed, toUnconfirmed } from "./static.js";
 

@@ -18,6 +18,7 @@ import { registerRoutes } from "./routes/index.js";
 import { registerErrorHandler } from "./errors.js";
 import { createInMemoryApiStore, type ApiStore, type Clock, type IdGen } from "./store.js";
 import { createStubOrchestrator } from "./stub-orchestrator.js";
+import { noopRegressionCorpus, type RegressionCorpusRecorder } from "./fp-corpus.js";
 import type { ApiServerDeps, ResolvedDeps } from "./types.js";
 
 const DEFAULT_GLOBAL_RATE = { max: 300, timeWindow: "1 minute" } as const;
@@ -48,6 +49,7 @@ function resolveDeps(deps: ApiServerDeps): ResolvedDeps {
     cookieSecure: deps.cookieSecure ?? true,
     sessionTtlMinutes: deps.config.rbac.sessionTtlMinutes,
     authRate: deps.rateLimits?.auth ?? DEFAULT_AUTH_RATE,
+    regressionCorpus: deps.regressionCorpus ?? noopRegressionCorpus,
   };
 }
 
@@ -123,6 +125,8 @@ export interface InMemoryDepsOverrides {
   enableSwaggerUi?: boolean;
   corsOrigins?: string[];
   rateLimits?: ApiServerDeps["rateLimits"];
+  /** §15 regression-corpus sink (defaults to a fail-safe no-op). */
+  regressionCorpus?: RegressionCorpusRecorder;
 }
 
 /**
@@ -148,5 +152,6 @@ export function createInMemoryDeps(overrides: InMemoryDepsOverrides = {}): ApiSe
     enableSwaggerUi: overrides.enableSwaggerUi ?? false,
     ...(overrides.corsOrigins ? { corsOrigins: overrides.corsOrigins } : {}),
     ...(overrides.rateLimits ? { rateLimits: overrides.rateLimits } : {}),
+    ...(overrides.regressionCorpus ? { regressionCorpus: overrides.regressionCorpus } : {}),
   };
 }

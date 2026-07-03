@@ -70,6 +70,18 @@ export interface CorpusScore extends ConfusionCounts {
   perRepo: RepoScore[];
 }
 
+/**
+ * A metadata-only marker for an operator-confirmed FALSE POSITIVE (§15 FP loop).
+ * Derived from the regression corpus; matched against a confirmed finding on
+ * category + file + line (within {@link ScoreOptions.lineTolerance}). Carries no
+ * code/secret body (golden rule #1).
+ */
+export interface FalsePositiveMarker {
+  category: Category;
+  file: string;
+  line: number;
+}
+
 /** Options controlling how confirmed findings are matched to ground truth. */
 export interface ScoreOptions {
   /**
@@ -78,6 +90,14 @@ export interface ScoreOptions {
    * on category and file.
    */
   lineTolerance?: number;
+  /**
+   * Operator-marked false positives from the regression corpus (§15). A confirmed
+   * finding matching one of these is scored as a FALSE POSITIVE regardless of
+   * ground truth (the human override authoritatively overturns the confirmation),
+   * and the matching ground-truth case is not counted as a miss. Additive: omit
+   * for pure ground-truth scoring.
+   */
+  falsePositives?: readonly FalsePositiveMarker[];
 }
 
 /** A scan's confirmed findings for one corpus repo. */

@@ -40,6 +40,7 @@ import {
   buildCorrelationRequest,
   parseCorrelationResponse,
 } from "./llm.js";
+import type { FalsePositiveTuning } from "./tuning.js";
 
 const DEFAULT_LLM_TRUST = 0.5;
 const DEFAULT_LLM_MAX_DELTA = 0.2;
@@ -67,6 +68,13 @@ export interface CorrelateInput {
   llmScoreMaxDelta?: number;
   /** Audit actor id (default "layer2-correlation"). */
   actorId?: string;
+  /**
+   * ⛔ §15 regression-corpus tuning (fail-safe). When supplied, a candidate whose
+   * (category, file, line) matches an operator-marked known false positive is
+   * DEMOTED to the appendix (kept, never deleted) instead of promoted. Additive:
+   * omit to run without corpus feedback. Never promotes; never relaxes a guardrail.
+   */
+  fpTuning?: FalsePositiveTuning;
 }
 
 interface PendingProbable {
@@ -111,9 +119,24 @@ export async function correlate(input: CorrelateInput): Promise<Layer2Output> {
   for (const group of groups) {
     const { grounding: g, representative: rep } = group;
 
-    if (g.demote) {
+    // ⛔ §15 FP loop: an operator-marked known false positive is demoted to the
+    // appendix (kept, never deleted) before promotion — fail-safe, additive.
+    const knownFalsePositive =
+      input.fpTuning?.isKnownFalsePositive({
+        category: rep.category,
+        file: rep.location.file,
+        line: rep.location.line,
+        ...(rep.ruleId ? { ruleId: rep.ruleId } : {}),
+      }) ?? false;
+
+    if (g.demote || knownFalsePositive) {
       // Never delete — keep every raw candidate in the appendix.
       for (const c of group.candidates) demotedCandidates.push(c);
+      const reason = knownFalsePositive
+        ? g.demote
+          ? `${g.demoteReason ?? "uncorroborated"}; also matches a known false positive in the regression corpus (§15)`
+          : "matches a known false positive in the regression corpus (§15)"
+        : (g.demoteReason ?? "uncorroborated by the App Map");
       if (input.audit) {
         demotedAudits.push({
           clientId,
@@ -121,10 +144,11 @@ export async function correlate(input: CorrelateInput): Promise<Layer2Output> {
           actor,
           action: "finding.demoted",
           targetType: "candidate",
-          summary: `${rep.category} demoted: ${g.demoteReason ?? "uncorroborated by the App Map"}`,
+          summary: `${rep.category} demoted: ${reason}`,
           metadata: {
             category: rep.category,
-            reason: g.demoteReason ?? "uncorroborated",
+            reason,
+            knownFalsePositive,
             corroborationBasis: g.corroborationBasis,
             candidateIds: group.candidates.map((c) => c.id),
           },
