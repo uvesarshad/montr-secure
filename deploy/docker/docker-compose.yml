@@ -184,6 +184,12 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.web
+      args:
+        # NEXT_PUBLIC_* is inlined into the client bundle at build time, so it
+        # must come in as a build arg (not env_file, which is runtime-only) —
+        # host-reachable address of the `api` service, since this URL is
+        # called from the browser, not from inside the compose network.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
     env_file:
       - .env
     ports:

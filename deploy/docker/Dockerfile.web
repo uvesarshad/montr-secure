@@ -9,6 +9,12 @@
 
 ARG NODE_VERSION=20-bookworm-slim
 ARG DISTROLESS=gcr.io/distroless/nodejs20-debian12:nonroot
+# Next.js inlines NEXT_PUBLIC_* vars into the client bundle at build time, so
+# this can't be an env_file/runtime env var like the rest of the stack's config
+# — it must be a build ARG. Without it, the browser-side client falls back to
+# calling its own origin (apps/web/src/lib/api/config.ts), which has no
+# /api/v1/* routes, and every request 404s.
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
 
 # ---------------------------------------------------------------------------
 # base
@@ -25,6 +31,8 @@ WORKDIR /repo
 # build — compile workspace type deps, then the Next standalone bundle
 # ---------------------------------------------------------------------------
 FROM base AS build
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
