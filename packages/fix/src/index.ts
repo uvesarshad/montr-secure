@@ -28,7 +28,9 @@ export {
   pickStrategy,
   advisoryProofTestCode,
   proofTestPath,
+  languageOfFile,
   type FixStrategy,
+  type StrategyLang,
 } from "./strategies.js";
 
 export {

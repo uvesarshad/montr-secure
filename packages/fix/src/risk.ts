@@ -25,10 +25,30 @@ export const ALWAYS_HUMAN_REQUIRED_CATEGORIES: readonly Category[] = [
 ];
 
 /**
- * Mechanical, low-blast-radius categories eligible for auto-fix PRs. Every
- * entry here MUST have a real, implemented `FixStrategy` in strategies.ts
- * (`FIX_STRATEGIES`) — this list is the advertised auto-fix surface, not an
- * aspiration, so it is kept 1:1 with what is actually implemented.
+ * Mechanical, low-blast-radius categories eligible for auto-fix PRs — a
+ * CEILING, not a per-finding guarantee. Every entry here MUST have a real,
+ * implemented `FixStrategy` in strategies.ts (`FIX_STRATEGIES`) for AT LEAST
+ * ONE language — this list is the advertised auto-fix surface, not an
+ * aspiration, so it is kept 1:1 with what is actually implemented SOMEWHERE.
+ *
+ * Membership here is deliberately CATEGORY-ONLY and never inspects a specific
+ * finding's language/file-extension — that is what keeps `classifyFixRisk`/
+ * `classifyConfirmedFindingRisk` 100% language-blind (proved by
+ * `tests/stack-agnostic.invariant.test.ts`'s Layer-4 classifier suite: the
+ * SAME risk class for a finding in the same category regardless of its
+ * source file's language). Whether a GIVEN finding's fix is actually auto-eligible in
+ * practice is decided one layer down, in generate.ts: `generateOne()` calls
+ * `pickStrategy(category, filePath)` (strategies.ts), which returns a
+ * strategy ONLY if one exists whose `languages` match that file's inferred
+ * language — never a JS/TS strategy misapplied to Python/Java source or vice
+ * versa. No matching-language strategy (or the strategy fails to validate) ⇒
+ * `generateOne()` falls through to `generateAdvisory`, which sets
+ * `uncertain: true` — and `classifyFixRisk`'s `uncertain` check (above
+ * `AUTO_ELIGIBLE_CATEGORIES` in precedence) forces `human-required`
+ * regardless of category membership. So a category being on this list means
+ * "auto-fixable on at least one stack today"; a SPECIFIC finding on a stack
+ * with no implemented strategy yet fails safe to human-required via the
+ * uncertainty path, not via a language check here.
  *
  * `vulnerable_dependency` is deliberately NOT here even though it sounds
  * mechanical ("bump the version"): a safe bump requires knowing the first

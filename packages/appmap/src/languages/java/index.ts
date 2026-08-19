@@ -209,6 +209,10 @@ export const javaAnalyzer: LanguageAnalyzer = {
       ).sort(byName),
       taintSources: dedupeByLoc(taintSources).sort(byLocation),
       taintSinks: dedupeByLoc(taintSinks).sort(byLocation),
+      // No interprocedural/cross-file resolution for JVM yet (TS/JS only, see
+      // typescript/callgraph.ts) — Layer 2 falls back to its same-file
+      // proximity heuristic, unchanged.
+      taintFlows: [],
     };
   },
 };

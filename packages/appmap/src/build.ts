@@ -101,6 +101,7 @@ export async function buildAppMap(
       envSecretSurfaces: pieces.envSecretSurfaces,
       taintSources: pieces.taintSources,
       taintSinks: pieces.taintSinks,
+      taintFlows: pieces.taintFlows,
       stale: false,
       rebuildPolicy: "rebuild_on_stale_commit",
     } satisfies AppMap);

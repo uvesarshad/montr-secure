@@ -16,6 +16,7 @@ import type {
   EnvSecretSurface,
   Exposure,
   Route,
+  TaintFlowEdge,
   TaintSink,
   TaintSource,
 } from "@montr/contracts";
@@ -24,6 +25,21 @@ import { classifyCategory, type FindingClass } from "./taxonomy.js";
 /** Signals that a validator/sanitizer neutralizes tainted input before a sink. */
 const SANITIZER_RE =
   /\b(validat|paramet|sanitiz|escap|encod|allowlist|whitelist|prepared|bind|zod|parseInt|number\()/i;
+
+/**
+ * How the taint reachability verdict was reached:
+ *   - "cross-file-resolved": a real interprocedural flow (App Map's
+ *     `taintFlows`, see `packages/appmap/src/languages/typescript/callgraph.ts`)
+ *     named the actual function that carries the tainted value to the sink —
+ *     structural proof, not a proximity guess. May or may not literally cross
+ *     a file (see the flow's own `crossFile` flag), but is always resolved via
+ *     the call graph rather than nearest-line distance.
+ *   - "same-file-heuristic": the original nearest-line-in-the-same-file guess
+ *     (paired with the text-based sanitizer regex) — kept as the fallback for
+ *     everything the resolver above doesn't (yet) handle.
+ *   - "none": no taint path was established either way.
+ */
+export type TaintFlowKind = "cross-file-resolved" | "same-file-heuristic" | "none";
 
 /** The deterministic verdict for a single candidate, grounded in the App Map. */
 export interface Grounding {
@@ -40,7 +56,11 @@ export interface Grounding {
   matchedSource?: TaintSource;
   matchedSecretSurface?: EnvSecretSurface;
   matchedEntrypoint?: Entrypoint;
-  /** A validator/sanitizer interrupts the source→sink path. */
+  /** The resolved interprocedural flow this verdict is grounded in, if any. */
+  matchedFlow?: TaintFlowEdge;
+  /** Was the taint verdict a resolved call-graph flow, a same-file proximity guess, or neither? */
+  taintFlowKind: TaintFlowKind;
+  /** A validator/sanitizer interrupts the source→sink path (same-file heuristic only). */
   sanitizerInterrupts: boolean;
   /** Tainted input plausibly reaches the sink with no interrupt. */
   taintReaches: boolean;
@@ -60,6 +80,9 @@ export class AppMapIndex {
   private readonly secretsByFile = new Map<string, EnvSecretSurface[]>();
   private readonly entrypointsByFile = new Map<string, Entrypoint[]>();
   private readonly routeById = new Map<string, Route>();
+  /** Resolved taint flows, indexed by the FILE THE SINK SITS IN (a candidate's
+   * own location is always the sink side, never the source side). */
+  private readonly flowsBySinkFile = new Map<string, TaintFlowEdge[]>();
 
   constructor(readonly appMap: AppMap) {
     for (const route of appMap.routes) {
@@ -72,6 +95,8 @@ export class AppMapIndex {
       if (s.location) push(this.secretsByFile, s.location.file, s);
     for (const e of appMap.entrypoints)
       if (e.location) push(this.entrypointsByFile, e.location.file, e);
+    for (const flow of appMap.taintFlows ?? [])
+      push(this.flowsBySinkFile, flow.sinkLocation.file, flow);
   }
 
   routesInFile(file: string): Route[] {
@@ -88,6 +113,10 @@ export class AppMapIndex {
   }
   entrypointsInFile(file: string): Entrypoint[] {
     return this.entrypointsByFile.get(file) ?? [];
+  }
+  /** Resolved taint flows whose SINK sits in `file`. */
+  flowsInFile(file: string): TaintFlowEdge[] {
+    return this.flowsBySinkFile.get(file) ?? [];
   }
   getRoute(id: string): Route | undefined {
     return this.routeById.get(id);
@@ -127,6 +156,20 @@ function nearestByLine<T extends { location?: { line: number } }>(
     const dist = Math.abs(item.location.line - line);
     if (dist < bestDist) {
       best = item;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+/** Nearest resolved taint-flow edge (by its sink line) to a target line. */
+function nearestFlowByLine(flows: TaintFlowEdge[], line: number): TaintFlowEdge | undefined {
+  let best: TaintFlowEdge | undefined;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const flow of flows) {
+    const dist = Math.abs(flow.sinkLocation.line - line);
+    if (dist < bestDist) {
+      best = flow;
       bestDist = dist;
     }
   }
@@ -183,17 +226,48 @@ export function groundCandidate(cand: CandidateFinding, index: AppMapIndex): Gro
         sourcesHere[0])
       : undefined;
 
+  // A resolved call-graph flow (see callgraph.ts) is structural proof the
+  // source reaches this exact sink — prefer it over the same-file proximity
+  // guess whenever the candidate's sink line has one. Only attempted for
+  // "injection" candidates (matching the class the same-file heuristic below
+  // has always applied its taintReaches/sanitizerInterrupts verdict to).
+  const matchedFlow =
+    klass === "injection"
+      ? nearestFlowByLine(index.flowsInFile(file), cand.location.line)
+      : undefined;
+
   const pathText = [
     matchedSource?.description ?? "",
     matchedSink?.description ?? "",
     cand.evidenceSnippet,
   ].join(" ");
-  const sanitizerInterrupts = klass === "injection" && SANITIZER_RE.test(pathText);
-  const taintReaches =
+  const heuristicSanitizerInterrupts = klass === "injection" && SANITIZER_RE.test(pathText);
+  const heuristicTaintReaches =
     klass === "injection" &&
     matchedSink !== undefined &&
     matchedSource !== undefined &&
-    !sanitizerInterrupts;
+    !heuristicSanitizerInterrupts;
+
+  let taintFlowKind: TaintFlowKind;
+  let sanitizerInterrupts: boolean;
+  let taintReaches: boolean;
+  if (matchedFlow !== undefined) {
+    // callgraph.ts only ever emits an edge when the tainted parameter reaches
+    // the sink with nothing sanitizer-shaped called on it in between (see its
+    // `isCleanParamUse` — a nested call anywhere on the path drops the edge
+    // entirely) — so a resolved edge IS the proof the path is clean.
+    taintFlowKind = "cross-file-resolved";
+    sanitizerInterrupts = false;
+    taintReaches = true;
+  } else if (klass === "injection") {
+    taintFlowKind = "same-file-heuristic";
+    sanitizerInterrupts = heuristicSanitizerInterrupts;
+    taintReaches = heuristicTaintReaches;
+  } else {
+    taintFlowKind = "none";
+    sanitizerInterrupts = false;
+    taintReaches = false;
+  }
 
   // --- Secret / dependency corroboration.
   const matchedSecretSurface =
@@ -211,12 +285,14 @@ export function groundCandidate(cand: CandidateFinding, index: AppMapIndex): Gro
   let corroborationBasis: string;
   switch (klass) {
     case "injection":
-      corroborated = matchedSink !== undefined || route !== undefined;
-      corroborationBasis = matchedSink
-        ? `taint sink (${matchedSink.kind}) on the App Map`
-        : route
-          ? `registered route ${route.path}`
-          : "none";
+      corroborated = matchedSink !== undefined || matchedFlow !== undefined || route !== undefined;
+      corroborationBasis = matchedFlow
+        ? `resolved taint flow${matchedFlow.throughFunction ? ` via ${matchedFlow.throughFunction}` : ""} (${matchedFlow.sinkKind})`
+        : matchedSink
+          ? `taint sink (${matchedSink.kind}) on the App Map`
+          : route
+            ? `registered route ${route.path}`
+            : "none";
       break;
     case "config":
     case "access":
@@ -264,6 +340,8 @@ export function groundCandidate(cand: CandidateFinding, index: AppMapIndex): Gro
     matchedSource,
     matchedSecretSurface,
     matchedEntrypoint,
+    matchedFlow,
+    taintFlowKind,
     sanitizerInterrupts,
     taintReaches,
     corroborated,

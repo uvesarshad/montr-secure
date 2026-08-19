@@ -147,6 +147,10 @@ export const pythonAnalyzer: LanguageAnalyzer = {
       envSecretSurfaces: surfaces.envSecretSurfaces,
       taintSources: taint.taintSources,
       taintSinks: taint.taintSinks,
+      // No interprocedural/cross-file resolution for Python yet (TS/JS only,
+      // see typescript/callgraph.ts) — Layer 2 falls back to its same-file
+      // proximity heuristic, unchanged.
+      taintFlows: [],
     };
   },
 };

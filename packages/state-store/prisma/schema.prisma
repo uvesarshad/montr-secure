@@ -241,6 +241,7 @@ model AppMap {
   ormModels         Json // OrmModel[] (Prisma DMMF-derived)
   thirdPartyCalls   Json // ThirdPartyCall[]
   envSecretSurfaces Json // EnvSecretSurface[]
+  taintFlows        Json                @default("[]") // TaintFlowEdge[] (resolved interprocedural flows)
   stale             Boolean             @default(false)
   rebuildPolicy     AppMapRebuildPolicy @default(rebuild_on_stale_commit)
   createdAt         DateTime            @default(now())

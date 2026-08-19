@@ -13,6 +13,7 @@ import { scanRoutes } from "./routes.js";
 import { scanPrisma } from "./prisma.js";
 import { scanEnvSecretSurfaces, scanThirdPartyCalls } from "./surfaces.js";
 import { scanTaint } from "./taint.js";
+import { scanTaintFlows } from "./callgraph.js";
 import type { AnalyzerInput, AppMapContribution, LanguageAnalyzer } from "../types.js";
 
 const TS_JS_SOURCE_RE = /\.(tsx?|jsx?|mjs|cjs)$/i;
@@ -46,6 +47,12 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
     const thirdPartyCalls = scanThirdPartyCalls(project, dir);
     const envSecretSurfaces = await scanEnvSecretSurfaces(project, dir, inventory.envFiles);
     const { taintSources, taintSinks } = scanTaint(project, dir, routeIdsByFile);
+    // Bounded interprocedural extension (see callgraph.ts) — resolves 1-2 hop
+    // taint flows across function/file boundaries that the same-file
+    // taintSources/taintSinks catalog above cannot express by itself. Layer 2
+    // (@montr/correlation) still falls back to its same-file proximity
+    // heuristic for everything not resolved here.
+    const taintFlows = scanTaintFlows(project, dir);
 
     return {
       languages: detectLanguages(inventory.sourceFiles),
@@ -58,6 +65,7 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
       envSecretSurfaces,
       taintSources,
       taintSinks,
+      taintFlows,
     };
   },
 };
@@ -68,3 +76,4 @@ export { scanRoutes, type RouteScanResult } from "./routes.js";
 export { scanPrisma, type PrismaScanResult } from "./prisma.js";
 export { scanThirdPartyCalls, scanEnvSecretSurfaces } from "./surfaces.js";
 export { scanTaint, type TaintScanResult } from "./taint.js";
+export { scanTaintFlows } from "./callgraph.js";

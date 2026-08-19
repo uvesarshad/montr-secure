@@ -180,6 +180,7 @@ export function appMapScalarsToCreate(
     ormModels: toJson(m.ormModels),
     thirdPartyCalls: toJson(m.thirdPartyCalls),
     envSecretSurfaces: toJson(m.envSecretSurfaces),
+    taintFlows: toJson(m.taintFlows),
     stale: m.stale,
     rebuildPolicy: m.rebuildPolicy,
     createdAt: toDate(m.createdAt),
@@ -280,6 +281,7 @@ export function appMapFromRows(
     envSecretSurfaces: fromJson<AppMap["envSecretSurfaces"]>(row.envSecretSurfaces),
     taintSources: sources.map(taintSourceFromRow),
     taintSinks: sinks.map(taintSinkFromRow),
+    taintFlows: fromJson<AppMap["taintFlows"]>(row.taintFlows),
     stale: row.stale,
     rebuildPolicy: row.rebuildPolicy,
   };

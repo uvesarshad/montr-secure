@@ -20,6 +20,7 @@ import type {
   Language,
   OrmModel,
   Route,
+  TaintFlowEdge,
   TaintSink,
   TaintSource,
   ThirdPartyCall,
@@ -45,6 +46,9 @@ export interface AppMapContribution {
   envSecretSurfaces: EnvSecretSurface[];
   taintSources: TaintSource[];
   taintSinks: TaintSink[];
+  /** Resolved cross-function/cross-file taint flows (optional — empty for
+   * analyzers that don't implement interprocedural resolution). */
+  taintFlows: TaintFlowEdge[];
 }
 
 /** Everything an analyzer needs, assembled once by the dispatcher (offline). */
@@ -91,5 +95,6 @@ export function emptyContribution(): AppMapContribution {
     envSecretSurfaces: [],
     taintSources: [],
     taintSinks: [],
+    taintFlows: [],
   };
 }

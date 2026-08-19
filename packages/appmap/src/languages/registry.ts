@@ -67,6 +67,12 @@ const byLocation = (
   a: { location: { file: string; line: number } },
   b: { location: { file: string; line: number } },
 ): number => a.location.file.localeCompare(b.location.file) || a.location.line - b.location.line;
+const byFlowSink = (
+  a: { sinkLocation: { file: string; line: number } },
+  b: { sinkLocation: { file: string; line: number } },
+): number =>
+  a.sinkLocation.file.localeCompare(b.sinkLocation.file) ||
+  a.sinkLocation.line - b.sinkLocation.line;
 
 /**
  * Merge several language contributions into one. A SINGLE contribution (the
@@ -90,6 +96,7 @@ export function mergeContributions(contributions: AppMapContribution[]): AppMapC
     merged.envSecretSurfaces.push(...c.envSecretSurfaces);
     merged.taintSources.push(...c.taintSources);
     merged.taintSinks.push(...c.taintSinks);
+    merged.taintFlows.push(...c.taintFlows);
     merged.languages.push(...c.languages);
     merged.frameworks.push(...c.frameworks);
   }
@@ -110,6 +117,7 @@ export function mergeContributions(contributions: AppMapContribution[]): AppMapC
   merged.envSecretSurfaces.sort(byName);
   merged.taintSources.sort(byLocation);
   merged.taintSinks.sort(byLocation);
+  merged.taintFlows.sort(byFlowSink);
 
   return {
     ...merged,

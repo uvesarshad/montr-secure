@@ -134,6 +134,50 @@ export const TaintSinkSchema = z.object({
 export type TaintSink = z.infer<typeof TaintSinkSchema>;
 
 /**
+ * How a {@link TaintFlowEdge} determined the source reaches the sink through an
+ * intermediate function, rather than same-file line proximity.
+ */
+export const TaintFlowResolutionSchema = z.enum([
+  /** The tainted argument is used directly as the sink's argument inside the callee. */
+  "direct-call",
+  /** The tainted argument is returned by the callee; the caller's use of the
+   * return value (passed straight to a sink, or assigned then used by a sink)
+   * is the second hop. */
+  "return-propagated",
+]);
+export type TaintFlowResolution = z.infer<typeof TaintFlowResolutionSchema>;
+
+/**
+ * A source -> sink taint flow RESOLVED across an explicit, bounded call chain —
+ * i.e. a language analyzer actually named the function that carries the tainted
+ * value from its origin to the sink (optionally crossing a file boundary), as
+ * opposed to `grounding.ts`'s same-file nearest-line proximity guess. Emitted
+ * only by analyzers that implement this (TS/JS today — see
+ * `packages/appmap/src/languages/typescript/callgraph.ts` for exactly which
+ * patterns are, and are not, resolved). Absence of an edge for a given
+ * source/sink pair is NOT a claim that no flow exists — Layer 2 falls back to
+ * the proximity heuristic whenever no edge is present.
+ */
+export const TaintFlowEdgeSchema = z.object({
+  id: IdSchema.optional(),
+  /** Where the tainted value originates (the argument expression at the outermost call). */
+  sourceLocation: SourceLocationSchema,
+  sourceKind: TaintSourceKindSchema.optional(),
+  /** The intermediate function/method name that carried the taint, if resolvable. */
+  throughFunction: z.string().optional(),
+  throughLocation: SourceLocationSchema.optional(),
+  /** Where the sink call itself sits (this is what a candidate finding's location should match). */
+  sinkLocation: SourceLocationSchema,
+  sinkKind: TaintSinkKindSchema,
+  resolution: TaintFlowResolutionSchema,
+  /** 1 = tainted arg flows straight into the sink inside the callee; 2 = via one intermediate return hop. */
+  hops: z.number().int().min(1).max(2),
+  /** True when source and sink are not in the same file (the case the old heuristic missed). */
+  crossFile: z.boolean(),
+});
+export type TaintFlowEdge = z.infer<typeof TaintFlowEdgeSchema>;
+
+/**
  * DECIDE-2: AppMap is persisted per client, encrypted, and rebuilt on a stale
  * commit by default.
  */
@@ -163,6 +207,8 @@ export const AppMapSchema = z.object({
   envSecretSurfaces: z.array(EnvSecretSurfaceSchema).default([]),
   taintSources: z.array(TaintSourceSchema).default([]),
   taintSinks: z.array(TaintSinkSchema).default([]),
+  /** Resolved cross-function/cross-file taint flows (see {@link TaintFlowEdgeSchema}). */
+  taintFlows: z.array(TaintFlowEdgeSchema).default([]),
   /** True when the persisted map is older than the current commit (DECIDE-2). */
   stale: z.boolean().default(false),
   rebuildPolicy: AppMapRebuildPolicySchema.default("rebuild_on_stale_commit"),

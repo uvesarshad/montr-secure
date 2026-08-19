@@ -13,9 +13,10 @@ import {
   AppMapSchema,
   Layer2OutputSchema,
   ProbableFindingSchema,
+  type AppMap,
   type CandidateFinding,
 } from "@montr/contracts";
-import { correlate } from "@montr/correlation";
+import { correlate, AppMapIndex, groundCandidate } from "@montr/correlation";
 
 const base = { clientId: CLIENT_ID, scanId: SCAN_ID, now: FIXED_NOW } as const;
 
@@ -290,6 +291,78 @@ describe("@montr/correlation — Layer 2 correlate (the moat)", () => {
     expect(orders.exploitHypothesis).not.toContain("the User model");
     expect(users.exploitHypothesis).toContain("the User model");
     expect(users.exploitHypothesis).not.toContain("the Order model");
+  });
+
+  it("A24: resolves a cross-file taint flow (source in file A, sink in file B) via taintFlows — the same-file heuristic alone cannot see this", async () => {
+    // The tainted source lives in the route handler; the sink lives in an
+    // entirely separate db-helper file with NO taint source/sink registered
+    // in it at all — the old same-file proximity heuristic would find nothing
+    // in the sink's own file and demote this candidate. `taintFlows` supplies
+    // the structural proof a real call-graph resolver would have produced.
+    const crossFileMap: AppMap = AppMapSchema.parse({
+      id: "appmap_crossfile_0001",
+      clientId: CLIENT_ID,
+      scanId: SCAN_ID,
+      repo: "https://example.internal/montr/crossfile",
+      branch: "main",
+      commitSha: "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
+      createdAt: FIXED_NOW,
+      languages: ["typescript"],
+      frameworks: ["nextjs", "prisma"],
+      routes: [
+        {
+          id: "route_report_0001",
+          path: "/api/report",
+          method: "GET",
+          authState: "public",
+          isApiRoute: true,
+          handler: { file: "app/api/report/route.ts", line: 5 },
+        },
+      ],
+      // Deliberately NO taintSources/taintSinks entries — proving the verdict
+      // below comes from `taintFlows`, not the nearest-line heuristic.
+      taintFlows: [
+        {
+          sourceLocation: { file: "app/api/report/route.ts", line: 6 },
+          sourceKind: "query_param",
+          throughFunction: "runReportQuery",
+          throughLocation: { file: "lib/db.ts", line: 3 },
+          sinkLocation: { file: "lib/db.ts", line: 5 },
+          sinkKind: "sql_query",
+          resolution: "direct-call",
+          hops: 1,
+          crossFile: true,
+        },
+      ],
+      stale: false,
+      rebuildPolicy: "rebuild_on_stale_commit",
+    });
+
+    const cand: CandidateFinding = {
+      ...mockCandidateFindings[0]!,
+      id: "cand_crossfile_sqli",
+      category: "sql_injection",
+      // The candidate's own location is the SINK side (file B), per the flow's
+      // sinkLocation — this is the file a real scanner would flag.
+      location: { file: "lib/db.ts", line: 5 },
+    };
+
+    // Unit-level: groundCandidate must report the resolved-flow verdict.
+    const index = new AppMapIndex(crossFileMap);
+    const g = groundCandidate(cand, index);
+    expect(g.taintFlowKind).toBe("cross-file-resolved");
+    expect(g.matchedFlow).toEqual(crossFileMap.taintFlows[0]);
+    expect(g.taintReaches).toBe(true);
+    expect(g.sanitizerInterrupts).toBe(false);
+    expect(g.corroborated).toBe(true);
+    expect(g.demote).toBe(false);
+
+    // End-to-end: the finding survives correlation as a probable, not demoted.
+    const out = await correlate({ ...base, appMap: crossFileMap, candidates: [cand] });
+    expect(out.demoted).toHaveLength(0);
+    const probable = out.probable.find((p) => p.category === "sql_injection");
+    expect(probable).toBeDefined();
+    expect(probable!.reachabilityScore).toBeGreaterThanOrEqual(0.9);
   });
 
   it("handles an empty candidate set", async () => {

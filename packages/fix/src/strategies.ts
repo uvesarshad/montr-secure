@@ -9,8 +9,48 @@
  */
 import type { Category, ConfirmedFinding } from "@montr/contracts";
 
+/**
+ * Coarse language/stack bucket used ONLY to DISPATCH a category to the
+ * syntax-correct mechanical strategy — never to change a risk decision (that
+ * stays in risk.ts, which is 100% language-blind; see its docstring). Not the
+ * full `@montr/contracts` `Language` enum: this is scoped to what the strategy
+ * REGISTRY actually needs to distinguish (a target-syntax bucket, not a
+ * granular language/config-format list) — e.g. a Spring Boot app's Java
+ * sources and its YAML config share one bucket because both are mechanically
+ * "the JVM stack" from a fix-strategy point of view.
+ *
+ * ⛔ This file (strategies.ts) is a DELIBERATE, reviewed exception to the
+ * stack-agnostic invariant enforced by `tests/stack-agnostic.invariant.test.ts`
+ * for the rest of `@montr/fix` (risk.ts, generate.ts, patch.ts, source.ts):
+ * a mechanical SOURCE-SYNTAX transform table's entire job is to know target
+ * languages' real syntax (this was already true pre-Python/JVM — every existing
+ * strategy below is already JS/TS-syntax-specific: `dangerouslySetInnerHTML`,
+ * `.cookie(...)`, Next.js config shapes). What must stay language-blind — and
+ * is what the invariant suite actually verifies — is the SAFETY decision
+ * (`classifyFixRisk`/`classifyConfirmedFindingRisk`) and the L2/L4/L5
+ * orchestration; see the invariant test's own scoping comment for the exact
+ * boundary.
+ */
+export type StrategyLang = "js_ts" | "python" | "jvm";
+
+const JS_TS_EXTENSION_RE = /\.(tsx|ts|jsx|js|mjs|cjs)$/i;
+const PYTHON_EXTENSION_RE = /\.py$/i;
+const JVM_SOURCE_EXTENSION_RE = /\.java$/i;
+/** Spring Boot's own config-file naming convention (application[-profile].yml/.yaml/.properties). */
+const JVM_CONFIG_FILE_RE = /(^|\/)application(-[\w.]+)?\.(ya?ml|properties)$/i;
+
+/** Infer the strategy dispatch bucket from a repo-relative file path's extension. */
+export function languageOfFile(filePath: string): StrategyLang | undefined {
+  if (JS_TS_EXTENSION_RE.test(filePath)) return "js_ts";
+  if (PYTHON_EXTENSION_RE.test(filePath)) return "python";
+  if (JVM_SOURCE_EXTENSION_RE.test(filePath) || JVM_CONFIG_FILE_RE.test(filePath)) return "jvm";
+  return undefined;
+}
+
 export interface FixStrategy {
   readonly category: Category;
+  /** Which stack(s) this strategy's syntax-shaped pattern/transform targets. */
+  readonly languages: readonly StrategyLang[];
   /** true ⇒ the insecure pattern is present. Non-global regex (safe for .test). */
   vulnerable(source: string): boolean;
   /** Mechanical transform → fixed source, or `null` if it does not apply here. */
@@ -55,6 +95,8 @@ function renderProofTest(
 
 interface RegexStrategyConfig {
   category: Category;
+  /** Defaults to `["js_ts"]` — every strategy pre-dating Python/JVM support targeted JS/TS. */
+  languages?: readonly StrategyLang[];
   vulnerable: RegExp;
   safe?: RegExp;
   transform(source: string): string;
@@ -67,6 +109,7 @@ function makeStrategy(config: RegexStrategyConfig): FixStrategy {
   const safe = config.safe;
   return {
     category: config.category,
+    languages: config.languages ?? ["js_ts"],
     vulnerable: (source: string): boolean => vulnerable.test(source),
     apply: (source: string): string | null => {
       const fixed = config.transform(source);
@@ -299,7 +342,327 @@ const openRedirectStrategy = makeStrategy({
     "off-site.",
 });
 
-/** All deterministic strategies, keyed by category via {@link pickStrategy}. */
+/* ========================================================================= *
+ * Python strategies (Flask/Django-shaped syntax — see corpus/python-vuln,
+ * corpus/pygoat for the real patterns these target).
+ * ========================================================================= */
+
+/**
+ * Insecure cookie (Python) — a `.set_cookie(...)` call (Django's
+ * `HttpResponse.set_cookie` / Flask's `Response.set_cookie`, both share this
+ * kwarg shape) where `secure`/`httponly` are missing or explicitly `False`, or
+ * `samesite` is missing or `None`. Mirrors the JS cookie strategy's spirit but
+ * Python's flags are kwargs directly in the call (no nested options object), so
+ * a missing flag is APPENDED and an explicit insecure value (`secure=False`,
+ * `httponly=False`, `samesite=None`) is CORRECTED in place — real corpus shapes
+ * (corpus/pygoat) include both: `response.set_cookie('auth_cookiee', cookie)`
+ * (all three missing) and `response.set_cookie('userid', obj.userid,
+ * max_age=31449600, samesite=None, secure=False)` (explicitly insecure).
+ */
+const PY_CALL_ARGS = String.raw`(?:[^()]|\([^()]*\))*`; // one level of nested parens (e.g. `.decode(...)`)
+const PY_COOKIE_CALL_RE = new RegExp(String.raw`\.set_cookie\((${PY_CALL_ARGS})\)`, "g");
+
+function pyHasTrueFlag(args: string, name: string): boolean {
+  return new RegExp(String.raw`\b${name}\s*=\s*True\b`, "i").test(args);
+}
+
+function pyHasSameSiteValue(args: string): boolean {
+  return /\bsamesite\s*=\s*['"][^'"]*['"]/i.test(args);
+}
+
+function pyCookieVulnerableArgs(args: string): boolean {
+  return (
+    !pyHasTrueFlag(args, "secure") || !pyHasTrueFlag(args, "httponly") || !pyHasSameSiteValue(args)
+  );
+}
+
+function pyAppendKwarg(args: string, kwarg: string): string {
+  const trimmed = args.trim();
+  return trimmed.length > 0 ? `${trimmed}, ${kwarg}` : kwarg;
+}
+
+function pyFixCookieArgs(args: string): string {
+  let out = args;
+  if (/\bsecure\s*=\s*False\b/i.test(out)) {
+    out = out.replace(/\bsecure\s*=\s*False\b/i, "secure=True");
+  } else if (!pyHasTrueFlag(out, "secure")) {
+    out = pyAppendKwarg(out, "secure=True");
+  }
+  if (/\bhttponly\s*=\s*False\b/i.test(out)) {
+    out = out.replace(/\bhttponly\s*=\s*False\b/i, "httponly=True");
+  } else if (!pyHasTrueFlag(out, "httponly")) {
+    out = pyAppendKwarg(out, "httponly=True");
+  }
+  if (/\bsamesite\s*=\s*None\b/i.test(out)) {
+    out = out.replace(/\bsamesite\s*=\s*None\b/i, 'samesite="Lax"');
+  } else if (!pyHasSameSiteValue(out)) {
+    out = pyAppendKwarg(out, 'samesite="Lax"');
+  }
+  return out;
+}
+
+const PY_COOKIE_VULNERABLE_RE = new RegExp(
+  String.raw`\.set_cookie\((?:` +
+    String.raw`(?!${PY_CALL_ARGS}\bsecure\s*=\s*True\b)|` +
+    String.raw`(?!${PY_CALL_ARGS}\bhttponly\s*=\s*True\b)|` +
+    String.raw`(?!${PY_CALL_ARGS}\bsamesite\s*=\s*['"])` +
+    String.raw`)${PY_CALL_ARGS}\)`,
+  "i",
+);
+const PY_COOKIE_SAFE_RE = new RegExp(
+  String.raw`\.set_cookie\(` +
+    String.raw`(?=${PY_CALL_ARGS}\bsecure\s*=\s*True\b)` +
+    String.raw`(?=${PY_CALL_ARGS}\bhttponly\s*=\s*True\b)` +
+    String.raw`(?=${PY_CALL_ARGS}\bsamesite\s*=\s*['"])` +
+    String.raw`${PY_CALL_ARGS}\)`,
+  "i",
+);
+
+const pyInsecureCookieStrategy = makeStrategy({
+  category: "insecure_cookie",
+  languages: ["python"],
+  vulnerable: PY_COOKIE_VULNERABLE_RE,
+  safe: PY_COOKIE_SAFE_RE,
+  transform: (source) =>
+    source.replace(PY_COOKIE_CALL_RE, (match, args: string) =>
+      pyCookieVulnerableArgs(args) ? `.set_cookie(${pyFixCookieArgs(args)})` : match,
+    ),
+  rationale:
+    "Added or corrected the `secure`/`httponly`/`samesite` cookie kwargs on `.set_cookie(...)` " +
+    "(preserving every other existing argument), so the cookie can no longer be sent over plain HTTP, " +
+    "read by client-side script, or attached to cross-site requests.",
+});
+
+/**
+ * SQL injection (Python) — a raw `cursor.execute(f"...")` call where the SQL is
+ * an f-string with one or more SIMPLE interpolations (a bare identifier or
+ * dotted attribute chain only — never a call/expression, so the transform never
+ * has to guess). Matches the real corpus/python-vuln shape exactly:
+ * `cursor.execute(f"SELECT id, name FROM app_user WHERE name = '{q}'")`.
+ * Rewritten to Django's DB-API paramstyle (`%s` placeholders + a params list —
+ * Django's cursor wrapper normalizes `%s` across every backend), and any quotes
+ * immediately surrounding an interpolation are stripped first (mirrors the JS
+ * SQL strategy's `stripQuotesAroundInterpolations`) so the placeholder is never
+ * left double-quoted (`'%s'`), which would defeat parameterization entirely.
+ * Deliberately conservative: if ANY interpolation in the f-string is not a
+ * simple identifier/attribute chain, the whole call is left untouched (falls
+ * through to human review) rather than guessing at a complex expression.
+ */
+const PY_EXECUTE_CALL_RE = /\.execute\(\s*f(['"])([\s\S]*?)\1\s*\)/g;
+const PY_SIMPLE_INTERPOLATION_RE = /\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
+const PY_ANY_INTERPOLATION_RE = /\{[^{}]*\}/g;
+
+function pyStripQuotesAroundInterpolations(content: string): string {
+  return content.replace(/'(\{[^{}]+\})'/g, "$1").replace(/"(\{[^{}]+\})"/g, "$1");
+}
+
+function pyRewriteExecuteCall(quote: string, content: string): string | null {
+  const allInterpolations = content.match(PY_ANY_INTERPOLATION_RE) ?? [];
+  if (allInterpolations.length === 0) return null; // not an interpolated f-string
+  const isSimple = allInterpolations.every((token) => /^\{[A-Za-z_][A-Za-z0-9_.]*\}$/.test(token));
+  if (!isSimple) return null; // a non-mechanical expression is present — don't guess
+
+  const stripped = pyStripQuotesAroundInterpolations(content);
+  const params: string[] = [];
+  PY_SIMPLE_INTERPOLATION_RE.lastIndex = 0;
+  const paramized = stripped.replace(PY_SIMPLE_INTERPOLATION_RE, (_m, expr: string) => {
+    params.push(expr);
+    return "%s";
+  });
+  return `.execute(${quote}${paramized}${quote}, [${params.join(", ")}])`;
+}
+
+// NOTE: content is scanned by EXCLUDING only the outer captured quote char
+// (`(?!\1)`), not both quote types — the SQL literal legitimately contains
+// the OPPOSITE quote (e.g. `f"... = '{q}'"` — single quotes inside a
+// double-quoted f-string), which a naive `[^'"]*` would wrongly stop at.
+const PY_SQL_VULNERABLE_RE = new RegExp(
+  String.raw`\.execute\(\s*f(['"])(?:(?!\1)[\s\S])*?\{[A-Za-z_][A-Za-z0-9_.]*\}(?:(?!\1)[\s\S])*?\1\s*\)`,
+);
+const PY_SQL_SAFE_RE = new RegExp(
+  String.raw`\.execute\((['"])(?:(?!\1)[\s\S])*?%s(?:(?!\1)[\s\S])*?\1\s*,\s*\[`,
+);
+
+const pySqlInjectionStrategy = makeStrategy({
+  category: "sql_injection",
+  languages: ["python"],
+  vulnerable: PY_SQL_VULNERABLE_RE,
+  safe: PY_SQL_SAFE_RE,
+  transform: (source) =>
+    source.replace(PY_EXECUTE_CALL_RE, (match, quote: string, content: string) => {
+      const rewritten = pyRewriteExecuteCall(quote, content);
+      return rewritten ?? match;
+    }),
+  rationale:
+    "Replaced the interpolated f-string SQL with a parameterized `.execute(query, [params])` call " +
+    "(Django's `%s` DB-API paramstyle), so tainted values are bound as query parameters and can never " +
+    "alter SQL structure.",
+});
+
+/* ========================================================================= *
+ * JVM strategies (Java/Spring-shaped syntax — see corpus/jvm-vuln for the
+ * real patterns these target).
+ * ========================================================================= */
+
+/**
+ * Insecure cookie (JVM) — a `javax.servlet.http.Cookie` (or `jakarta.*`
+ * equivalent — the API shape is identical) declared and assigned inline
+ * (`Cookie x = new Cookie(...);`) whose immediately-following setter-call
+ * lines on that SAME variable never call `.setSecure(true)` / `.setHttpOnly
+ * (true)`. Purely additive: missing setter calls are inserted right after the
+ * declaration, at the declaration's own indentation, and every existing
+ * setter line is left untouched — never re-orders or removes anything.
+ * Deliberately scoped to the declared-variable idiom (the common case); an
+ * inline `.addCookie(new Cookie(...))` with no variable is NOT matched (there
+ * is nowhere mechanical to attach a setter) and falls through to human review.
+ *
+ * This strategy cannot be expressed as a single static `vulnerable`/`safe`
+ * regex pair the way the others are (the "is this variable's declaration
+ * followed by a `.setSecure(true)` call on ITSELF" check is inherently
+ * multi-line and keyed off a captured variable name), so it builds its own
+ * `FixStrategy` directly instead of going through {@link makeStrategy}, and
+ * its `proofTestCode` embeds the SAME detection logic as literal, genuinely
+ * self-contained vitest source (no import of this module — the proof test
+ * runs in an isolated temp workspace, exactly like every other strategy's).
+ */
+const JAVA_COOKIE_ARGS = String.raw`(?:[^()]|\([^()]*\))*`;
+const JAVA_COOKIE_DECL_RE = new RegExp(
+  String.raw`([ \t]*\bCookie\s+(\w+)\s*=\s*new\s+Cookie\(${JAVA_COOKIE_ARGS}\)\s*;\r?\n)` +
+    String.raw`((?:[ \t]*\2\.[A-Za-z_]\w*\(${JAVA_COOKIE_ARGS}\)\s*;\r?\n)*)`,
+  "g",
+);
+
+function javaCookieBlockMissing(
+  varName: string,
+  setters: string,
+): { secure: boolean; httpOnly: boolean } {
+  const secure = new RegExp(String.raw`\b${varName}\.setSecure\(\s*true\s*\)`, "i").test(setters);
+  const httpOnly = new RegExp(String.raw`\b${varName}\.setHttpOnly\(\s*true\s*\)`, "i").test(
+    setters,
+  );
+  return { secure: !secure, httpOnly: !httpOnly };
+}
+
+function javaCookieVulnerable(source: string): boolean {
+  JAVA_COOKIE_DECL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = JAVA_COOKIE_DECL_RE.exec(source))) {
+    const missing = javaCookieBlockMissing(m[2]!, m[3]!);
+    if (missing.secure || missing.httpOnly) return true;
+  }
+  return false;
+}
+
+function javaCookieApply(source: string): string | null {
+  let changed = false;
+  const fixed = source.replace(
+    JAVA_COOKIE_DECL_RE,
+    (full, decl: string, varName, setters: string) => {
+      const missing = javaCookieBlockMissing(varName, setters);
+      if (!missing.secure && !missing.httpOnly) return full;
+      changed = true;
+      const indent = /^[ \t]*/.exec(decl)?.[0] ?? "";
+      const additions =
+        (missing.secure ? `${indent}${varName}.setSecure(true);\n` : "") +
+        (missing.httpOnly ? `${indent}${varName}.setHttpOnly(true);\n` : "");
+      return decl + additions + setters;
+    },
+  );
+  return changed ? fixed : null;
+}
+
+const JAVA_COOKIE_RATIONALE =
+  "Added the missing `setSecure(true)`/`setHttpOnly(true)` calls immediately after the `Cookie` " +
+  "declaration (preserving every other existing setter call), so the cookie can no longer be sent " +
+  "over plain HTTP or read by client-side script.";
+
+const jvmInsecureCookieStrategy: FixStrategy = {
+  category: "insecure_cookie",
+  languages: ["jvm"],
+  vulnerable: javaCookieVulnerable,
+  apply: javaCookieApply,
+  rationale: JAVA_COOKIE_RATIONALE,
+  testFramework: "vitest",
+  proofTestCode: (filePath: string, finding: ConfirmedFinding): string => {
+    const lines = [
+      `import { readFileSync } from "node:fs";`,
+      `import { describe, it, expect } from "vitest";`,
+      ``,
+      `// Proof-of-fix test generated by @montr/fix (Layer 4) for ${finding.category}.`,
+      `// Run against the PATCHED working tree: FAILS before the patch, PASSES after.`,
+      `// Self-contained (no import of @montr/fix — this runs in an isolated temp`,
+      `// workspace): duplicates the strategy's own detection regex/logic as literal,`,
+      `// genuinely executed source, exactly the same real-vitest-subprocess model as`,
+      `// every other strategy's proof test (a text-pattern assertion, not an actual`,
+      `// execution of the target Java source — see packages/fix/src/patch.ts).`,
+      `const source = readFileSync(${JSON.stringify(filePath)}, "utf8");`,
+      `const DECL_RE = ${JAVA_COOKIE_DECL_RE.toString()};`,
+      `function stillVulnerable(text) {`,
+      `  DECL_RE.lastIndex = 0;`,
+      `  let m;`,
+      `  while ((m = DECL_RE.exec(text))) {`,
+      `    const varName = m[2];`,
+      `    const setters = m[3];`,
+      `    const hasSecure = new RegExp("\\\\b" + varName + "\\\\.setSecure\\\\(\\\\s*true\\\\s*\\\\)", "i").test(setters);`,
+      `    const hasHttpOnly = new RegExp("\\\\b" + varName + "\\\\.setHttpOnly\\\\(\\\\s*true\\\\s*\\\\)", "i").test(setters);`,
+      `    if (!hasSecure || !hasHttpOnly) return true;`,
+      `  }`,
+      `  return false;`,
+      `}`,
+      `describe(${JSON.stringify(`proof-of-fix: ${finding.category} @ ${filePath}`)}, () => {`,
+      `  it("no Cookie declaration is missing Secure/HttpOnly", () => {`,
+      `    expect(stillVulnerable(source)).toBe(false);`,
+      `  });`,
+      `});`,
+      ``,
+    ];
+    return lines.join("\n");
+  },
+};
+
+/**
+ * Hard-coded secret (JVM/Spring config) — a YAML `key: <literal>` line (Spring
+ * Boot's `application.yml`/`application-<profile>.yml`/`.properties`
+ * convention) whose value is a Stripe-shaped `sk_live_`/`sk_test_` secret —
+ * the SAME narrow, recognizable secret shape the JS strategy targets, applied
+ * to the real corpus/jvm-vuln shape: `api-key: sk_live_51H8xLcAbCdEfGhIjKlMnOpQrStUv`.
+ * The PATCH is mechanical (swap the literal for Spring's own `${ENV_VAR}`
+ * property-placeholder syntax, derived from the YAML key), but — matching the
+ * JS strategy's `hardcoded_secret` handling exactly — this category is
+ * deliberately NOT on `AUTO_ELIGIBLE_CATEGORIES` (risk.ts): the leaked key
+ * must still be ROTATED and purged from history by a human.
+ */
+const YAML_SECRET_RE =
+  /^([ \t]*[\w.-]+)(:[ \t]*)(['"]?)(?:sk_live_|sk_test_)[A-Za-z0-9]+\3[ \t]*$/gm;
+const YAML_SECRET_VULNERABLE_RE =
+  /^[ \t]*[\w.-]+:[ \t]*(['"]?)(?:sk_live_|sk_test_)[A-Za-z0-9]+\1[ \t]*$/m;
+const YAML_SECRET_SAFE_RE = /:\s*"\$\{[A-Z0-9_]+\}"\s*$/m;
+
+const jvmHardcodedSecretStrategy = makeStrategy({
+  category: "hardcoded_secret",
+  languages: ["jvm"],
+  vulnerable: YAML_SECRET_VULNERABLE_RE,
+  safe: YAML_SECRET_SAFE_RE,
+  transform: (source) =>
+    source.replace(YAML_SECRET_RE, (_m, keyPart: string, colonPart: string) => {
+      const envVar = keyPart
+        .trim()
+        .replace(/[^A-Za-z0-9]+/g, "_")
+        .toUpperCase();
+      return `${keyPart}${colonPart}"\${${envVar}}"`;
+    }),
+  rationale:
+    "Replaced the hard-coded secret literal with a Spring `${ENV_VAR}` property placeholder. NOTE: the " +
+    "exposed key must still be ROTATED and purged from version-control history by a human — this fix " +
+    "prevents future hard-coding but does not invalidate the already-leaked credential.",
+});
+
+/**
+ * All deterministic strategies, keyed by (category, language) via
+ * {@link pickStrategy}. The original JS/TS strategies are listed FIRST so the
+ * language-agnostic lookup form (`pickStrategy(category)`, no `filePath`) keeps
+ * its pre-existing behavior exactly (first-registered match for the category).
+ */
 export const FIX_STRATEGIES: readonly FixStrategy[] = [
   sqlInjectionStrategy,
   xssStrategy,
@@ -309,11 +672,37 @@ export const FIX_STRATEGIES: readonly FixStrategy[] = [
   insecureCookieStrategy,
   missingSecurityHeadersStrategy,
   openRedirectStrategy,
+  // Python
+  pyInsecureCookieStrategy,
+  pySqlInjectionStrategy,
+  // JVM
+  jvmInsecureCookieStrategy,
+  jvmHardcodedSecretStrategy,
 ];
 
-/** The deterministic strategy for a category, if one exists. */
-export function pickStrategy(category: Category): FixStrategy | undefined {
-  return FIX_STRATEGIES.find((s) => s.category === category);
+/**
+ * The deterministic strategy for a category, matched to a specific file's
+ * language when `filePath` is given.
+ *
+ * - `pickStrategy(category, filePath)` — the REAL, safety-relevant form used by
+ *   fix generation (see generate.ts): infers the file's language from its
+ *   extension and returns ONLY a strategy that targets that SAME language.
+ *   Unknown extension, or no strategy registered for this (category, language)
+ *   pair ⇒ `undefined` — the caller falls through to `generateAdvisory`
+ *   (human-required). This is the fail-safe that keeps a JS/TS-syntax regex
+ *   from ever being misapplied to Python/Java source (and vice versa).
+ * - `pickStrategy(category)` — language-agnostic form, kept for callers (and
+ *   existing tests) that only care "does ANY implemented strategy exist for
+ *   this category" — e.g. the `AUTO_ELIGIBLE_CATEGORIES` consistency check in
+ *   risk.ts's test suite. Returns the FIRST registered match, ignoring language.
+ */
+export function pickStrategy(category: Category, filePath?: string): FixStrategy | undefined {
+  if (filePath === undefined) {
+    return FIX_STRATEGIES.find((s) => s.category === category);
+  }
+  const language = languageOfFile(filePath);
+  if (!language) return undefined;
+  return FIX_STRATEGIES.find((s) => s.category === category && s.languages.includes(language));
 }
 
 /** Placeholder proof-of-fix test for findings with no auto-validated fix. */

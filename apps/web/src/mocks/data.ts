@@ -225,6 +225,7 @@ const appMapCompleted = {
       description: "dangerouslySetInnerHTML={{ __html: q }}",
     },
   ],
+  taintFlows: [],
   stale: false,
   rebuildPolicy: "rebuild_on_stale_commit",
 } satisfies AppMap;

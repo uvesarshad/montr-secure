@@ -241,7 +241,10 @@ async function generateOne(
 ): Promise<GeneratedOne> {
   const filePath = finding.location.file;
   const original = await ctx.source.read(filePath);
-  const strategy = pickStrategy(finding.category);
+  // Language-aware: only a strategy whose syntax actually matches this
+  // finding's file (by extension) is ever picked — see strategies.ts's
+  // pickStrategy docstring. No match ⇒ falls through to generateAdvisory.
+  const strategy = pickStrategy(finding.category, filePath);
 
   // Always exercise the gateway (architecture + token accounting + audit path).
   const llm = await proposeFixWithLlm(finding, original, ctx);
