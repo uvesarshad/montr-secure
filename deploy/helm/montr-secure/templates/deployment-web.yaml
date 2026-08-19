@@ -39,7 +39,6 @@ spec:
         - name: web
           image: {{ include "montr.image" (dict "ctx" . "component" "web") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["dist/index.js"]
           ports:
             - name: http
               containerPort: {{ .Values.web.port }}

@@ -15,6 +15,7 @@
     "dist"
   ],
   "scripts": {
+    "start": "node dist/main.js",
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "lint": "eslint src",
@@ -30,6 +31,7 @@
     "@montr/cost-meter": "workspace:*",
     "@montr/discovery": "workspace:*",
     "@montr/fix": "workspace:*",
+    "@montr/llm-gateway": "workspace:*",
     "@montr/orchestrator": "workspace:*",
     "@montr/report": "workspace:*",
     "@montr/security": "workspace:*",

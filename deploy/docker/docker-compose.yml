@@ -76,12 +76,11 @@ services:
 
   # -------------------------------------------------------------------------
   # migrate — one-shot Prisma migration runner (runs to completion, then exits).
-  # Owned by WS-C (@montr/state-store). Enabled via the `migrate` profile so it
-  # does not run on every `up` unless requested:
+  # Runs `prisma migrate deploy` against the @montr/state-store schema (see
+  # apps/api/src/migrate.ts + Dockerfile.api, which COPYs the schema +
+  # migrations into the image and sets MONTR_PRISMA_SCHEMA). Enabled via the
+  # `migrate` profile so it does not run on every `up` unless requested:
   #   docker compose --profile migrate run --rm migrate
-  # api/worker will `depends_on` service_completed_successfully once WS-C ships
-  # `prisma migrate deploy` in the image. Left in a profile so the default
-  # bring-up never blocks on a step the state-store owner has not wired yet.
   # -------------------------------------------------------------------------
   migrate:
     profiles: ["migrate"]
@@ -91,8 +90,7 @@ services:
     restart: "no"
     env_file:
       - .env
-    # Placeholder command; WS-C replaces with the prisma migrate entrypoint.
-    command: ["dist/index.js", "--migrate"]
+    command: ["dist/main.js", "--migrate"]
     depends_on:
       postgres:
         condition: service_healthy

@@ -45,8 +45,13 @@ LABEL org.opencontainers.image.title="montr-secure-api" \
       org.opencontainers.image.licenses="Proprietary"
 WORKDIR /app
 ENV NODE_ENV=production \
-    PORT=3001
+    PORT=3001 \
+    MONTR_PRISMA_SCHEMA=/app/prisma/schema.prisma
 COPY --from=build --chown=nonroot:nonroot /app /app
+# The `prisma migrate deploy` CLI (see src/migrate.ts, run via `--migrate` — the
+# docker-compose `migrate` service) needs the schema + migrations on disk; they
+# are @montr/state-store source, not part of @montr/api's `pnpm deploy` output.
+COPY --from=build --chown=nonroot:nonroot /repo/packages/state-store/prisma /app/prisma
 USER nonroot
 EXPOSE 3001
 # HEALTHCHECK runs the distroless node binary directly (no shell in the image).
@@ -54,4 +59,4 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
     CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"]
 # distroless nodejs ENTRYPOINT is `node`; CMD is the script path (relative to WORKDIR).
-CMD ["dist/index.js"]
+CMD ["dist/main.js"]

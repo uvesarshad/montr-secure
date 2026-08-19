@@ -15,6 +15,7 @@
     "dist"
   ],
   "scripts": {
+    "start": "node dist/main.js",
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "lint": "eslint src",
@@ -38,6 +39,7 @@
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*",
     "fastify": "^5.9.0",
+    "prisma": "^5.20.0",
     "zod": "^3.23.8"
   }
 }

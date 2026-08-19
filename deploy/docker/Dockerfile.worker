@@ -50,9 +50,14 @@ RUN apt-get update \
  && python3 -m pip install --no-cache-dir --break-system-packages semgrep \
  && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
       | tar -xz -C /usr/local/bin gitleaks \
- && curl -fsSL -o /usr/local/bin/osv-scanner \
-      "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_${OSV_SCANNER_VERSION}_linux_amd64" \
+ && curl -fsSL -o /tmp/osv-scanner_linux_amd64 \
+      "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+ && curl -fsSL -o /tmp/osv-scanner_SHA256SUMS \
+      "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_SHA256SUMS" \
+ && (cd /tmp && grep "osv-scanner_linux_amd64$" osv-scanner_SHA256SUMS | sha256sum -c -) \
+ && mv /tmp/osv-scanner_linux_amd64 /usr/local/bin/osv-scanner \
  && chmod +x /usr/local/bin/osv-scanner \
+ && rm -f /tmp/osv-scanner_SHA256SUMS \
  && apt-get purge -y curl && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -64,4 +69,4 @@ USER node
 # The worker has no HTTP port; liveness = it can reach Redis (its job broker).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["node", "-e", "const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',function(){s.end();process.exit(0)});s.on('error',function(){process.exit(1)});s.on('timeout',function(){process.exit(1)})"]
-CMD ["dist/index.js"]
+CMD ["dist/main.js"]

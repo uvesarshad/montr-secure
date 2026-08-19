@@ -95,6 +95,9 @@ importers:
       fastify:
         specifier: ^5.9.0
         version: 5.9.0
+      prisma:
+        specifier: ^5.20.0
+        version: 5.22.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -186,6 +189,9 @@ importers:
       '@montr/fix':
         specifier: workspace:*
         version: link:../../packages/fix
+      '@montr/llm-gateway':
+        specifier: workspace:*
+        version: link:../../packages/llm-gateway
       '@montr/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
