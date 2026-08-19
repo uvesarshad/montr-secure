@@ -41,6 +41,15 @@ async function main(): Promise<void> {
   const redisUrl = process.env["REDIS_URL"] ?? "redis://redis:6379";
 
   const prisma = createPrismaClient({ databaseUrl });
+  // See apps/api/src/production-deps.ts for why: every row has a required FK
+  // to Client, and config.clientId IS the tenant identity for an on-prem,
+  // single-tenant deploy. Idempotent upsert so it's safe regardless of
+  // whether apps/api or apps/worker boots first.
+  await prisma.client.upsert({
+    where: { id: config.clientId },
+    update: {},
+    create: { id: config.clientId, name: config.clientId },
+  });
   const store: StateStore = createStateStoreFromClient(prisma, {
     ...(config.security.fieldEncryptionKeyRef
       ? { fieldEncryptionKey: config.security.fieldEncryptionKeyRef }

@@ -15,6 +15,7 @@
     "dist"
   ],
   "scripts": {
+    "generate": "prisma generate --schema=prisma/schema.prisma",
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "lint": "eslint src",

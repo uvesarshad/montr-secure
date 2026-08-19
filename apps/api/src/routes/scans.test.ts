@@ -103,6 +103,21 @@ describe("POST /scans/:id/kill", () => {
     scanId = (created.json() as { scan: Scan }).scan.id;
   });
 
+  it("POST /scans transitions the created scan to running, not just queued", async () => {
+    // Regression guard: createScan() alone only persists a "queued" row —
+    // orchestrator.start() is what actually enqueues Layer 0. A caller that
+    // stops at createScan() leaves the scan queued forever.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/scans",
+      headers: { authorization: `Bearer ${operator.token}` },
+      payload: { repo: "acme/other-app", branch: "main", mode: "full" },
+    });
+    expect(res.statusCode).toBe(201);
+    const { scan } = res.json() as { scan: Scan };
+    expect(scan.status).toBe("running");
+  });
+
   afterEach(() => {
     killSpy.mockClear();
   });

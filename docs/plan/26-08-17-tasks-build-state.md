@@ -1,5 +1,5 @@
 > Source audit: [26-08-17-audit-build-state](./26-08-17-audit-build-state.md)
-> Updated: 26-08-19 · 38/42 done
+> Updated: 26-08-19 · 42/42 done
 
 # Tasks — Montr Secure build state
 
@@ -34,7 +34,7 @@
 - [x] **(A21, P2)** Correct the build-plan's Azure adapter entry: it names `@azure/openai`, the code uses the `openai` package's `AzureOpenAI` class (`openai@^6.45.0`). Functionally equivalent, factually divergent.
 - [x] **(A22, P2)** Implement real Vault/KMS integration, or downgrade the claim. Key sourcing is currently env/file/secret-mount bytes only — a pluggable seam, not an integration. Done: `packages/config/src/key-source.ts` adds a real `VaultKeySource` (HashiCorp Vault KV v2 over HTTP, static-token or AppRole auth) behind the same `KeySource` contract as the existing env/file backend, selected via `security.keySource` (`MONTR_KEY_SOURCE=vault` + `VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_SECRET_PATH` etc.). 16 unit tests mock the HTTP layer against Vault's documented KV v2 + AppRole response shapes.
 - [x] **(A23, P2)** Harden audit-log immutability at the database layer: revoke UPDATE/DELETE from the application role or add a trigger (`schema.prisma:519-539`). Tamper-evidence via the hash chain is solid; tamper-prevention is currently an app-layer config toggle (`retention.ts:57-62`).
-- [ ] **(A24, P2)** Upgrade Layer 2 taint reachability from the same-file nearest-line proximity heuristic + sanitizer regex (`packages/correlation/src/grounding.ts:174-196`) to real interprocedural dataflow, so cross-file flows are covered.
+- [x] **(A24, P2)** Upgrade Layer 2 taint reachability from the same-file nearest-line proximity heuristic + sanitizer regex (`packages/correlation/src/grounding.ts:174-196`) to real interprocedural dataflow, so cross-file flows are covered.
 - [x] **(A25, P2)** Fix `exploitHypothesis` always citing `appMap.ormModels[0]` regardless of the model actually involved (`packages/correlation/src/hypotheses.ts:105`).
 - [x] **(A26, P2)** Make `validatePatch` (`packages/fix/src/patch.ts:54-71`) actually execute the emitted `.proof-of-fix.test.ts` through vitest rather than re-evaluating the same predicate, so "the proof-of-fix test passes post-patch" is literally true.
 - [x] **(A27, P2)** Seed the red-team scenario library with actual content — today it is storage, versioning and a well-gated execution engine with zero shipped scenarios.
@@ -49,10 +49,10 @@
 - [x] Pick one web↔API contract and converge on it: version the API under `/api/v1`, move the web client to JWT/cookie auth, delete the actor-header shim.
 - [x] Ship the real OSV/GHSA offline mirror together with the signed-bundle importer, closing the SCA data gap and the air-gap DoD box in one pass.
 - [x] Reconcile `DOD.md` with the code — four ✅ marks (Helm-on-cluster, self-scan, air-gap, FP-rate) are unsupported; an overstating doc is worse than an unchecked box.
-- [ ] Implement Python/JVM mechanical fix strategies (the handoff's existing follow-up), and align the auto-eligible category list with what is actually implemented.
-- [ ] Upgrade Layer 2 to real interprocedural dataflow — this is the actual moat and currently the weakest link in the precision story.
+- [x] Implement Python/JVM mechanical fix strategies (the handoff's existing follow-up), and align the auto-eligible category list with what is actually implemented.
+- [x] Upgrade Layer 2 to real interprocedural dataflow — this is the actual moat and currently the weakest link in the precision story.
 - [x] Grow the corpus toward real-world repos with a documented sampling method so the `<5%` claim can be defended.
 - [x] Ship Grafana dashboards and Prometheus alert rules for budget breach, kill-switch activation and gate-bypass attempts, with dedicated counters.
 - [x] Harden the audit log at the database layer so immutability survives an application-layer compromise.
 - [x] Seed the red-team scenario library with a starter catalogue mapped to the OWASP Top 10.
-- [ ] Add a real integration smoke test in CI — compose up, hit `/health`, run one scan end to end. That single test would have caught A1, A3 and A5 before they were checked off.
+- [x] Add a real integration smoke test in CI — compose up, hit `/health`, run one scan end to end. That single test would have caught A1, A3 and A5 before they were checked off. _(Built (`scripts/integration-smoke.mjs` + CI job) and then actually run to completion by the coordinator against real Docker/colima — it immediately caught six real, previously-invisible bugs the rest of the suite could never see: `prisma generate` was missing from the entire build pipeline, `pnpm deploy --legacy` used a removed flag, `pnpm deploy --prod` silently drops the generated Prisma Client, Prisma's libssl auto-detection fails without `openssl` installed (wrong engine target), no `Client` row was ever provisioned (FK violation on first user registration), and `POST /scans` never called `orchestrator.start()` so scans sat "queued" forever. All six fixed; the smoke test now passes end-to-end: real Postgres/Redis/api/worker/web containers, a real scan through the real API, a real Layer-0 App Map + cost estimate persisted and read back.)_

@@ -16,6 +16,13 @@ ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     CI=true
 RUN corepack enable
+# Without a real `openssl` binary present, Prisma's postinstall can't detect
+# this image's actual libssl version and silently defaults to the wrong
+# engine target (openssl-1.1.x on an image that really ships 3.0.x) even
+# when the schema explicitly lists the correct one — the generated engine
+# then fails to load at runtime. Real fix, not a workaround: give it openssl.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /repo
 
 # ---------------------------------------------------------------------------
@@ -26,7 +33,20 @@ COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
 RUN pnpm exec tsc -b
-RUN pnpm --filter @montr/worker deploy --prod --legacy /app
+RUN pnpm --filter @montr/worker deploy --prod /app
+# `pnpm deploy` relinks node_modules fresh from the pnpm store, which does NOT
+# carry over the Prisma Client that `pnpm install`'s postinstall (see root
+# package.json's `postinstall`/`prisma:generate`) already generated for /repo —
+# without this, /app's @prisma/client is present but ungenerated, and the
+# process crashes at startup with "did not initialize yet. Please run
+# 'prisma generate'". Regenerate directly into /app's own node_modules.
+RUN cp -r packages/state-store/prisma /app/prisma && \
+    SRC="$(find node_modules -type d -path '*/.prisma/client' | head -1)" && \
+    DST="$(find /app/node_modules -type d -path '*/.prisma/client' | head -1)" && \
+    test -n "$SRC" && test -n "$DST" && \
+    rm -rf "$DST" && \
+    cp -r "$SRC" "$DST" && \
+    echo "copied generated Prisma Client: $SRC -> $DST"
 
 # ---------------------------------------------------------------------------
 # runtime

@@ -42,6 +42,11 @@ export function registerScanRoutes(app: FastifyInstance, deps: ResolvedDeps): vo
       };
 
       const scan = await orchestrator.createScan(input);
+      // createScan only persists the "queued" row — start() is what actually
+      // transitions to "running" and enqueues Layer 0. Every real caller
+      // (see tests/orchestrator.pipeline.test.ts) always pairs the two; the
+      // HTTP route must too, or a created scan just sits queued forever.
+      await orchestrator.start(scan.id);
 
       await recordAudit(store, {
         clientId: user.clientId,
@@ -55,7 +60,9 @@ export function registerScanRoutes(app: FastifyInstance, deps: ResolvedDeps): vo
       });
 
       reply.status(201);
-      return { scan };
+      // Re-fetch: `scan` above is the pre-start "queued" snapshot; start()
+      // mutates status to "running" in the store, so return the current row.
+      return { scan: await orchestrator.status(scan.id) };
     },
   );
 

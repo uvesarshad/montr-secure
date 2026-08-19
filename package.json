@@ -21,12 +21,15 @@
     "e2e": "node scripts/e2e-scan.mjs",
     "corpus:scan": "node scripts/corpus-scan.mjs",
     "selfscan": "node scripts/selfscan.mjs",
+    "smoke": "node scripts/integration-smoke.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "clean": "turbo run clean && rm -rf **/dist **/.tsbuildinfo node_modules/.cache",
     "prisma:validate": "pnpm --filter @montr/state-store exec prisma validate",
     "prisma:format": "pnpm --filter @montr/state-store exec prisma format",
-    "prepare": "husky || true"
+    "prisma:generate": "pnpm --filter @montr/state-store generate",
+    "prepare": "husky || true",
+    "postinstall": "pnpm run prisma:generate"
   },
   "devDependencies": {
     "@eslint/js": "^9.10.0",

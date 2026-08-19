@@ -111,6 +111,16 @@ export async function createProductionDeps(): Promise<ProductionDeps> {
     databaseUrl,
     logQueries: parseBoolEnv("MONTR_LOG_SQL", false),
   });
+  // Every row (User, Scan, AppMap, ...) has a required FK to Client, but
+  // nothing else provisions that row for an on-prem, single-tenant deploy —
+  // config.clientId IS the tenant identity here, not a value some separate
+  // admin flow assigns. Idempotent: self-heals on every boot regardless of
+  // whether the `--migrate` one-shot ran first.
+  await prisma.client.upsert({
+    where: { id: config.clientId },
+    update: {},
+    create: { id: config.clientId, name: config.clientId },
+  });
   const state: StateStore = createStateStoreFromClient(prisma, {
     ...(config.security.fieldEncryptionKeyRef
       ? { fieldEncryptionKey: config.security.fieldEncryptionKeyRef }
