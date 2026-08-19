@@ -95,6 +95,17 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
   set("MONTR_TELEMETRY_ENABLED", ["telemetry", "enabled"], parseBool);
   set("MONTR_FIELD_ENCRYPTION_KEY_REF", ["security", "fieldEncryptionKeyRef"]);
   set("MONTR_ALLOWED_EGRESS_HOSTS", ["security", "allowedEgressHosts"], parseList);
+  set("MONTR_KEY_SOURCE", ["security", "keySource"]);
+  // HashiCorp Vault connection (only consulted when MONTR_KEY_SOURCE=vault).
+  set("VAULT_ADDR", ["security", "vault", "addr"]);
+  set("VAULT_TOKEN", ["security", "vault", "token"]);
+  set("VAULT_NAMESPACE", ["security", "vault", "namespace"]);
+  set("VAULT_ROLE_ID", ["security", "vault", "roleId"]);
+  set("VAULT_SECRET_ID", ["security", "vault", "secretId"]);
+  set("VAULT_KV_MOUNT", ["security", "vault", "kvMount"]);
+  set("VAULT_SECRET_PATH", ["security", "vault", "secretPath"]);
+  set("VAULT_KV_FIELD", ["security", "vault", "field"]);
+  set("VAULT_REQUEST_TIMEOUT_MS", ["security", "vault", "requestTimeoutMs"], parseNum);
   return o;
 }
 

@@ -55,6 +55,22 @@ export {
   PostureRepositoryImpl,
 } from "./phase4.js";
 
+// OWASP-Top-10-mapped starter catalogue for the red-team scenario library
+// (build-plan §8, item A27) — static templates + idempotent seed helper.
+export {
+  REDTEAM_SCENARIO_CATALOGUE,
+  OWASP_TOP_10_2021,
+  ALL_OWASP_TOP_10_2021_IDS,
+  owaspCoverage,
+  instantiateScenario,
+  seedRedTeamCatalogue,
+  type OwaspTop10Id,
+  type RedTeamScenarioTemplate,
+  type InstantiateScenarioParams,
+  type SeedRedTeamCatalogueOptions,
+  type SeedRedTeamCatalogueResult,
+} from "./redteam-catalogue.js";
+
 // Versioned LLM prompt templates (§8.2, §15 regression-tuning loop).
 export { PromptVersionRepositoryImpl } from "./prompt-version.js";
 

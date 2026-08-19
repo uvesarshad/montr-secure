@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,11 @@ import {
   type LLMRequest,
 } from "@montr/contracts";
 import type { AuditLogClient } from "@montr/telemetry";
+
+// `validatePatch` now runs real `vitest` subprocesses (per candidate, and again
+// per independent re-validation below) — several sequential/parallel subprocess
+// runs per test comfortably exceed vitest's default 5s budget.
+vi.setConfig({ testTimeout: 30_000 });
 
 const VULN_ROOT = fileURLToPath(
   new URL("../packages/fixtures/sample-repos/vulnerable-nextjs", import.meta.url),
@@ -119,18 +124,23 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     expect(sqliFix.id).toBe(`fix_${CONFIRMED_SQLI_ID}`);
     expect(xssFix.id).toBe(`fix_${CONFIRMED_XSS_ID}`);
 
-    // Independently re-validate the emitted patches against the ORIGINAL source:
-    // patch applies AND the vulnerability is gone post-patch (proof-of-fix holds).
-    const sqli = validatePatch(read("app/api/users/route.ts"), sqliFix.patch, (s) =>
-      /\$queryRawUnsafe/.test(s),
-    );
+    // Independently re-validate the emitted patches against the ORIGINAL source,
+    // by REALLY EXECUTING the exact proof-of-fix test the pipeline shipped:
+    // patch applies AND a real vitest run proves the vulnerability is gone post-patch.
+    const sqli = await validatePatch(read("app/api/users/route.ts"), sqliFix.patch, {
+      filePath: "app/api/users/route.ts",
+      proofTestCode: sqliFix.proofOfFixTest.code,
+    });
+    expect(sqli.executionError).toBeUndefined();
     expect(sqli.applies).toBe(true);
     expect(sqli.passesPostPatch).toBe(true);
     expect(sqli.appliedSource).toContain("$queryRaw`");
 
-    const xss = validatePatch(read("app/search/page.tsx"), xssFix.patch, (s) =>
-      /dangerouslySetInnerHTML/.test(s),
-    );
+    const xss = await validatePatch(read("app/search/page.tsx"), xssFix.patch, {
+      filePath: "app/search/page.tsx",
+      proofTestCode: xssFix.proofOfFixTest.code,
+    });
+    expect(xss.executionError).toBeUndefined();
     expect(xss.applies).toBe(true);
     expect(xss.passesPostPatch).toBe(true);
   });
@@ -182,8 +192,13 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     const out = await generateFixes(baseInput({ confirmed: [XSS], gateway }));
     const fix = out.fixes[0]!;
 
-    // The patch is a genuine, validated fix (the XSS is removed)...
-    const v = validatePatch(original, fix.patch, (s) => /dangerouslySetInnerHTML/.test(s));
+    // The patch is a genuine, validated fix (the XSS is removed) — proven by
+    // REALLY EXECUTING the shipped proof-of-fix test against original vs. patched...
+    const v = await validatePatch(original, fix.patch, {
+      filePath: "app/search/page.tsx",
+      proofTestCode: fix.proofOfFixTest.code,
+    });
+    expect(v.executionError).toBeUndefined();
     expect(v.applies).toBe(true);
     expect(v.passesPostPatch).toBe(true);
     expect(v.appliedSource).toContain("crypto.createHash");
@@ -194,17 +209,29 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
 
   it("prefers a cleanly-validated model-proposed patch over the deterministic transform", async () => {
     const original = read("app/api/users/route.ts");
-    const findManyFix = original.replace(
+    // A genuinely different model proposal that must ALSO satisfy the real
+    // generated proof test — including its "uses the remediated pattern"
+    // assertion (`toMatch(/\$(?:queryRaw|executeRaw)\`/)`), not just the
+    // "vulnerability gone" one. `findMany({...})` (the pre-real-execution
+    // version of this fixture) genuinely does NOT satisfy that second
+    // assertion, so under real vitest execution it would (correctly) fail
+    // validation and fall through to the deterministic transform — real
+    // execution catching exactly the kind of gap this rework exists to close.
+    // This craft keeps the model's proposal in the same "parameterized
+    // tagged template" family (so it REALLY passes) while staying textually
+    // distinguishable from the deterministic transform's own output.
+    const modelFix = original.replace(
       /const rows = await prisma\.\$queryRawUnsafe\([\s\S]*?\);/,
-      "const rows = await prisma.user.findMany({ where: { name: q } });",
+      'const rows = await prisma.$queryRaw`SELECT * FROM "User" WHERE name = ${q}` /* model-proposed */;',
     );
-    expect(findManyFix).not.toContain("$queryRawUnsafe"); // sanity: the craft removes the vuln
+    expect(modelFix).not.toContain("$queryRawUnsafe"); // sanity: the craft removes the vuln
+    expect(modelFix).toContain("$queryRaw`"); // sanity: satisfies the strategy's "safe" pattern too
 
     const gateway = createFakeLlmGateway({
       cannedByPurpose: {
         fix_generation: JSON.stringify({
-          fixedSource: findManyFix,
-          rationale: "use the typed API",
+          fixedSource: modelFix,
+          rationale: "use a tagged-template parameterized query",
         }),
       },
     });
@@ -212,11 +239,14 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     const out = await generateFixes(baseInput({ confirmed: [SQLI], gateway }));
     const fix = out.fixes[0]!;
 
-    const v = validatePatch(original, fix.patch, (s) => /\$queryRawUnsafe/.test(s));
+    const v = await validatePatch(original, fix.patch, {
+      filePath: "app/api/users/route.ts",
+      proofTestCode: fix.proofOfFixTest.code,
+    });
+    expect(v.executionError).toBeUndefined();
     expect(v.applies).toBe(true);
     expect(v.passesPostPatch).toBe(true);
-    expect(v.appliedSource).toContain("findMany"); // the MODEL's patch was used
-    expect(v.appliedSource).not.toContain("$queryRaw`"); // not the deterministic one
+    expect(v.appliedSource).toContain("model-proposed"); // the MODEL's patch was used, not the deterministic one
     expect(fix.riskClass).toBe("auto-eligible");
     expect(fix.rationale).toContain("Model-proposed");
   });
@@ -344,39 +374,44 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     }
 
     const nosqli = out.fixes.find((f) => f.confirmedFindingId === "conf_nosqli_0001")!;
-    const nosqliCheck = validatePatch(
-      files["app/api/accounts/route.ts"]!,
-      nosqli.patch,
-      (s) =>
-        /(?<!String\()\breq\.(?:body|query|params)\.[A-Za-z0-9_]+/.test(s) && /\.findOne\(/.test(s),
-    );
+    const nosqliCheck = await validatePatch(files["app/api/accounts/route.ts"]!, nosqli.patch, {
+      filePath: "app/api/accounts/route.ts",
+      proofTestCode: nosqli.proofOfFixTest.code,
+    });
+    expect(nosqliCheck.executionError).toBeUndefined();
     expect(nosqliCheck.applies).toBe(true);
+    expect(nosqliCheck.passesPostPatch).toBe(true);
     expect(nosqliCheck.appliedSource).toContain("String(req.body.username)");
 
     const cookie = out.fixes.find((f) => f.confirmedFindingId === "conf_cookie_0001")!;
-    const cookieCheck = validatePatch(
-      files["app/api/preferences/route.ts"]!,
-      cookie.patch,
-      (s) => !/\bsecure\s*:/i.test(s),
-    );
+    const cookieCheck = await validatePatch(files["app/api/preferences/route.ts"]!, cookie.patch, {
+      filePath: "app/api/preferences/route.ts",
+      proofTestCode: cookie.proofOfFixTest.code,
+    });
+    expect(cookieCheck.executionError).toBeUndefined();
     expect(cookieCheck.applies).toBe(true);
+    expect(cookieCheck.passesPostPatch).toBe(true);
     expect(cookieCheck.appliedSource).toContain("secure: true");
     expect(cookieCheck.appliedSource).toContain("httpOnly: true");
 
     const headers = out.fixes.find((f) => f.confirmedFindingId === "conf_headers_0001")!;
-    const headersCheck = validatePatch(
-      files["next.config.js"]!,
-      headers.patch,
-      (s) => !/X-Content-Type-Options/.test(s),
-    );
+    const headersCheck = await validatePatch(files["next.config.js"]!, headers.patch, {
+      filePath: "next.config.js",
+      proofTestCode: headers.proofOfFixTest.code,
+    });
+    expect(headersCheck.executionError).toBeUndefined();
     expect(headersCheck.applies).toBe(true);
+    expect(headersCheck.passesPostPatch).toBe(true);
     expect(headersCheck.appliedSource).toContain("Strict-Transport-Security");
 
     const redirect = out.fixes.find((f) => f.confirmedFindingId === "conf_redirect_0001")!;
-    const redirectCheck = validatePatch(files["app/api/goto/route.ts"]!, redirect.patch, (s) =>
-      /\.redirect\(\s*(?!["'`])[A-Za-z_$][\w.]*\s*\)/.test(s),
-    );
+    const redirectCheck = await validatePatch(files["app/api/goto/route.ts"]!, redirect.patch, {
+      filePath: "app/api/goto/route.ts",
+      proofTestCode: redirect.proofOfFixTest.code,
+    });
+    expect(redirectCheck.executionError).toBeUndefined();
     expect(redirectCheck.applies).toBe(true);
+    expect(redirectCheck.passesPostPatch).toBe(true);
     expect(redirectCheck.appliedSource).toContain('.startsWith("/")');
   });
 });

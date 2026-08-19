@@ -64,8 +64,18 @@ WORKDIR /app
 ENV NODE_ENV=production \
     MONTR_WORKSPACE_DIR=/workspace \
     REDIS_URL=redis://redis:6379
-COPY --from=build --chown=node:node /app /app
-USER node
+# docker-compose.yml's `x-app-hardening` anchor forces `user: "65532:65532"`
+# (the distroless "nonroot" uid:gid) uniformly across api/worker/web. This base
+# image (node:20-bookworm-slim) only ships a `node` user at uid/gid 1000, so
+# create an explicit 65532:65532 user/group here and own both /app and the
+# /workspace mountpoint by it — matching the distroless convention api/web get
+# for free, and ensuring the volume is writable when the forced uid takes over.
+RUN groupadd --gid 65532 nonroot \
+ && useradd --uid 65532 --gid nonroot --no-create-home --shell /usr/sbin/nologin nonroot \
+ && mkdir -p /workspace \
+ && chown -R nonroot:nonroot /workspace
+COPY --from=build --chown=nonroot:nonroot /app /app
+USER nonroot
 # The worker has no HTTP port; liveness = it can reach Redis (its job broker).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["node", "-e", "const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect({host:u.hostname,port:Number(u.port)||6379});s.setTimeout(3000);s.on('connect',function(){s.end();process.exit(0)});s.on('error',function(){process.exit(1)});s.on('timeout',function(){process.exit(1)})"]

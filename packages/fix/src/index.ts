@@ -36,6 +36,7 @@ export {
   validatePatch,
   countChangedLines,
   type PatchValidation,
+  type ValidatePatchOptions,
 } from "./patch.js";
 
 export { createFsSourceReader, createMapSourceReader, type SourceReader } from "./source.js";

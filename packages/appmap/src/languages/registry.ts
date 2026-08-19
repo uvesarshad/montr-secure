@@ -18,9 +18,10 @@ import { emptyContribution } from "./types.js";
 import type { AnalyzerInput, AppMapContribution, LanguageAnalyzer } from "./types.js";
 
 /**
- * Registered stack analyzers, in a stable, deterministic order. Phase 1 ships
- * TypeScript; Python + JVM are pre-registered stubs (build-plan §7 Wave 4) that
- * their stack agents fill under `languages/<lang>/` WITHOUT editing this list.
+ * Registered stack analyzers, in a stable, deterministic order. TypeScript,
+ * Python, and JVM are all fully implemented (build-plan §7 Wave 4) — each
+ * uses real `web-tree-sitter` WASM parsing (not regex) under `languages/<lang>/`.
+ * A future stack is added by appending its analyzer here.
  */
 export const LANGUAGE_ANALYZERS: readonly LanguageAnalyzer[] = [
   typescriptAnalyzer,

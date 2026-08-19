@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "dev": "next dev --webpack",
-    "build": "tsc -b",
+    "build": "tsc -b && next build --webpack",
     "build:next": "next build --webpack",
     "start": "next start",
     "typecheck": "tsc -b",

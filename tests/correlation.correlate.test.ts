@@ -199,6 +199,99 @@ describe("@montr/correlation — Layer 2 correlate (the moat)", () => {
     expect(p.routeId).toBe("route_admin_0001");
   });
 
+  it("cites the ORM model actually implicated by the finding, not just appMap.ormModels[0]", async () => {
+    // Two models registered ("Order" sorts before "User"), two SQLi sinks on
+    // two different routes — the exploit hypothesis must name the model that
+    // matches THIS finding's route/sink, not always the first model in the map.
+    const multiModelMap = AppMapSchema.parse({
+      id: "appmap_multi_model",
+      clientId: CLIENT_ID,
+      scanId: SCAN_ID,
+      repo: "https://example.internal/montr/multi-model",
+      branch: "main",
+      commitSha: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+      createdAt: FIXED_NOW,
+      languages: ["typescript"],
+      frameworks: ["nextjs", "prisma"],
+      routes: [
+        {
+          id: "route_orders_0001",
+          path: "/api/orders",
+          method: "GET",
+          authState: "public",
+          isApiRoute: true,
+          handler: { file: "app/api/orders/route.ts", line: 5 },
+        },
+        {
+          id: "route_users_multi_0001",
+          path: "/api/users",
+          method: "GET",
+          authState: "public",
+          isApiRoute: true,
+          handler: { file: "app/api/users/route.ts", line: 5 },
+        },
+      ],
+      dataStores: [{ kind: "postgres", name: "app_db", accessedVia: "prisma" }],
+      ormModels: [
+        { name: "Order", dataStore: "app_db", file: "prisma/schema.prisma", fields: [] },
+        { name: "User", dataStore: "app_db", file: "prisma/schema.prisma", fields: [] },
+      ],
+      taintSources: [
+        {
+          kind: "query_param",
+          location: { file: "app/api/orders/route.ts", line: 6 },
+          description: "req.nextUrl.searchParams.get('q')",
+          routeId: "route_orders_0001",
+        },
+        {
+          kind: "query_param",
+          location: { file: "app/api/users/route.ts", line: 6 },
+          description: "req.nextUrl.searchParams.get('q')",
+          routeId: "route_users_multi_0001",
+        },
+      ],
+      taintSinks: [
+        {
+          kind: "orm_raw_query",
+          location: { file: "app/api/orders/route.ts", line: 9 },
+          description: "prisma.order.$queryRawUnsafe(`... ${q} ...`)",
+        },
+        {
+          kind: "orm_raw_query",
+          location: { file: "app/api/users/route.ts", line: 9 },
+          description: "prisma.user.$queryRawUnsafe(`... ${q} ...`)",
+        },
+      ],
+      stale: false,
+      rebuildPolicy: "rebuild_on_stale_commit",
+    });
+
+    const ordersCand: CandidateFinding = {
+      ...mockCandidateFindings[0]!,
+      id: "cand_orders_sqli",
+      location: { file: "app/api/orders/route.ts", line: 9 },
+    };
+    const usersCand: CandidateFinding = {
+      ...mockCandidateFindings[0]!,
+      id: "cand_users_sqli",
+      location: { file: "app/api/users/route.ts", line: 9 },
+    };
+
+    const out = await correlate({
+      ...base,
+      appMap: multiModelMap,
+      candidates: [ordersCand, usersCand],
+    });
+    const orders = out.probable.find((p) => p.routeId === "route_orders_0001")!;
+    const users = out.probable.find((p) => p.routeId === "route_users_multi_0001")!;
+    expect(orders).toBeDefined();
+    expect(users).toBeDefined();
+    expect(orders.exploitHypothesis).toContain("the Order model");
+    expect(orders.exploitHypothesis).not.toContain("the User model");
+    expect(users.exploitHypothesis).toContain("the User model");
+    expect(users.exploitHypothesis).not.toContain("the Order model");
+  });
+
   it("handles an empty candidate set", async () => {
     const out = await correlate({ ...base, appMap: mockAppMap, candidates: [] });
     expect(out.probable).toEqual([]);

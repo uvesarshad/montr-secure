@@ -19,6 +19,7 @@
     "typecheck": "tsc -b",
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",
+    "seed:redteam": "node scripts/seed-redteam-scenarios.mjs",
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {

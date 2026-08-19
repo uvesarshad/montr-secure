@@ -120,9 +120,50 @@ export const TelemetryConfigSchema = z.object({
 });
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>;
 
+/**
+ * Which backend resolves the AES-256-GCM field-encryption key:
+ *   - "env"/"file": the key bytes are already sitting in `fieldEncryptionKeyRef`,
+ *     placed there synchronously by the loader's env/secret-mount overlays.
+ *   - "vault": the key bytes are fetched at runtime from a HashiCorp Vault KV v2
+ *     secrets engine over HTTP (see {@link VaultKeySourceConfigSchema} and
+ *     `./key-source.ts`).
+ */
+export const KeySourceKindSchema = z.enum(["env", "file", "vault"]);
+export type KeySourceKind = z.infer<typeof KeySourceKindSchema>;
+
+/**
+ * HashiCorp Vault connection config for the "vault" key source. Populated from
+ * `VAULT_*` env vars by the loader (§ envOverlay). Auth is either a static
+ * token (`token`) or AppRole (`roleId` + `secretId`) — never both required.
+ */
+export const VaultKeySourceConfigSchema = z.object({
+  /** Vault server address, e.g. "https://vault.internal:8200". */
+  addr: z.string().url().optional(),
+  /** Static Vault token (`VAULT_TOKEN`). Prefer AppRole in production. */
+  token: z.string().optional(),
+  /** Vault Enterprise namespace, if any. */
+  namespace: z.string().optional(),
+  /** AppRole RoleID (`VAULT_ROLE_ID`) — alternative to a static token. */
+  roleId: z.string().optional(),
+  /** AppRole SecretID (`VAULT_SECRET_ID`) — alternative to a static token. */
+  secretId: z.string().optional(),
+  /** KV v2 mount point (default "secret"). */
+  kvMount: z.string().min(1).default("secret"),
+  /** Path within the KV mount holding the key, e.g. "montr/field-encryption-key". */
+  secretPath: z.string().optional(),
+  /** Field name inside the secret's `data` object holding the key bytes. */
+  field: z.string().min(1).default("value"),
+  requestTimeoutMs: z.number().int().positive().default(5000),
+});
+export type VaultKeySourceConfig = z.infer<typeof VaultKeySourceConfigSchema>;
+
 export const SecurityConfigSchema = z.object({
   /** Reference to the AES-256-GCM field-encryption key (KMS/Vault/k8s secret). */
   fieldEncryptionKeyRef: z.string().optional(),
+  /** Which backend resolves the field-encryption key. Default: env/file bytes. */
+  keySource: KeySourceKindSchema.default("env"),
+  /** Vault connection config, used only when `keySource` is "vault". */
+  vault: VaultKeySourceConfigSchema.default({}),
   /** ⛔ Default-deny egress; only the client's LLM endpoint is allowed. */
   egressPolicy: z.literal("default-deny").default("default-deny"),
   allowedEgressHosts: z.array(z.string()).default([]),

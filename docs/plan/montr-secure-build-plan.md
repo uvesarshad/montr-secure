@@ -51,7 +51,7 @@ Next.js/Prisma/TS-AST introspection = the moat.
 | Logging / metrics                        | `pino` (structured) + OpenTelemetry → Prometheus                                          |
 | Report UI                                | Next.js 14 (App Router) + Tailwind + shadcn/ui                                            |
 | Exports                                  | Puppeteer (PDF), SARIF JSON, CSV/JSON evidence                                            |
-| Auth                                     | JWT/session + argon2; RBAC middleware                                                     |
+| Auth                                     | JWT/session + scrypt (node:crypto); RBAC middleware                                       |
 | Secret storage                           | k8s Secret + optional Vault (`node-vault`); field encryption AES-256-GCM w/ KMS/Vault key |
 | Testing                                  | Vitest (unit/integration), Playwright (UI e2e), custom golden-corpus harness              |
 | Containers                               | distroless Node base, multi-stage; cosign (signing) + syft (SBOM)                         |
@@ -238,7 +238,7 @@ empty packages; deploy skeleton `docker compose config` and `helm template` succ
       (confirmation), Sonnet 5 `claude-sonnet-5` (default), Haiku 4.5 `claude-haiku-4-5-20251001` (cheap triage).
 - [x] Adapter: **AWS Bedrock** (`@aws-sdk/client-bedrock-runtime`).
 - [x] Adapter: **GCP Vertex** (`@google-cloud/vertexai`).
-- [x] Adapter: **Azure OpenAI** (`@azure/openai`).
+- [x] Adapter: **Azure OpenAI** (`openai`'s `AzureOpenAI` class).
 - [x] Provider selection + endpoint/key from `@montr/config`; BYO-key, never a Montr-owned relationship.
 - [x] **Model matrix + model floor (DECIDE-3):** publish recommended matrix; warn when client points at
       a sub-floor model that degrades confirmation. Floor = Sonnet-5-class for confirmation tier.
@@ -275,7 +275,7 @@ empty packages; deploy skeleton `docker compose config` and `helm template` succ
 
 ### 4.4 Auth & RBAC `[owner: WS-L]` 🔗DEP: contracts, state-store
 
-- [x] User model, registration/login, argon2 hashing, session/JWT.
+- [x] User model, registration/login, scrypt hashing, session/JWT.
 - [x] Roles: **operator, approver, viewer** (§10 RBAC).
 - [x] ⛔ Guards: **approver required** for the human gate AND for DAST authorization.
 - [x] API hardening: rate limits, CSRF (for web), secure headers, input validation via Zod.

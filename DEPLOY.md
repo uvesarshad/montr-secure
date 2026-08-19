@@ -18,16 +18,17 @@ VM), **Helm** (Kubernetes), and **air-gapped** (offline signed bundle).
 
 All configuration is via `@montr/config` (Zod-validated; invalid config is fatal). Key settings:
 
-| Setting                | Env / values.yaml                                      | Notes                                               |
-| ---------------------- | ------------------------------------------------------ | --------------------------------------------------- |
-| LLM provider           | `anthropic` \| `bedrock` \| `vertex` \| `azure-openai` | BYO-key                                             |
-| LLM endpoint + key     | `MONTR_LLM_*` / k8s Secret / Vault                     | never logged, never egressed except to its provider |
-| Model matrix           | triage / default / confirmation                        | warns below the floor                               |
-| Budget ceiling         | hard-halt (default)                                    | breach → partial report, never a silent burn        |
-| Auto-fix policy        | **OFF** by default                                     | ON opens PRs for `auto-eligible` fixes only         |
-| DAST allowlist + scope | **OFF** by default                                     | staging targets only; production blocked by policy  |
-| Retention              | scan/audit retention window                            |                                                     |
-| Telemetry              | **OFF** by default                                     | opt-in anonymized health metrics only               |
+| Setting                | Env / values.yaml                                                                      | Notes                                                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| LLM provider           | `anthropic` \| `bedrock` \| `vertex` \| `azure-openai`                                 | BYO-key                                                                                                        |
+| LLM endpoint + key     | `MONTR_LLM_*` / k8s Secret / Vault                                                     | never logged, never egressed except to its provider                                                            |
+| Field-encryption key   | `MONTR_KEY_SOURCE=env\|file\|vault` (+ `VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_SECRET_PATH`) | AES-256-GCM key for the LLM-key/token store; `vault` makes a real HTTP call to Vault's KV v2 engine at startup |
+| Model matrix           | triage / default / confirmation                                                        | warns below the floor                                                                                          |
+| Budget ceiling         | hard-halt (default)                                                                    | breach → partial report, never a silent burn                                                                   |
+| Auto-fix policy        | **OFF** by default                                                                     | ON opens PRs for `auto-eligible` fixes only                                                                    |
+| DAST allowlist + scope | **OFF** by default                                                                     | staging targets only; production blocked by policy                                                             |
+| Retention              | scan/audit retention window                                                            |                                                                                                                |
+| Telemetry              | **OFF** by default                                                                     | opt-in anonymized health metrics only                                                                          |
 
 The **hardened defaults are safety-first**: auto-fix OFF, DAST OFF, budget hard-halt ON, telemetry
 OFF, egress default-deny.

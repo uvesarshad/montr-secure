@@ -1,5 +1,5 @@
 > Source audit: [26-08-17-audit-build-state](./26-08-17-audit-build-state.md)
-> Updated: 26-08-19 · 25/42 done
+> Updated: 26-08-19 · 38/42 done
 
 # Tasks — Montr Secure build state
 
@@ -29,18 +29,18 @@
 
 ## P2 — nice to have
 
-- [ ] **(A19, P2)** Make `pnpm -w build` cover the web app. `@montr/web`'s `build` script is only `tsc -b`; the real Next build lives in `build:next`, so the "19/19 green" never compiled the console. (Verified `build:next` does succeed — 15 routes, webpack.)
-- [ ] **(A20, P2)** Correct build-plan §4.4: it specifies argon2, but `apps/api/src/auth/password.ts` uses `node:crypto` scrypt with a constant-time compare. Cryptographically fine — update the plan (or switch to argon2 if that was the intent).
-- [ ] **(A21, P2)** Correct the build-plan's Azure adapter entry: it names `@azure/openai`, the code uses the `openai` package's `AzureOpenAI` class (`openai@^6.45.0`). Functionally equivalent, factually divergent.
-- [ ] **(A22, P2)** Implement real Vault/KMS integration, or downgrade the claim. Key sourcing is currently env/file/secret-mount bytes only — a pluggable seam, not an integration.
-- [ ] **(A23, P2)** Harden audit-log immutability at the database layer: revoke UPDATE/DELETE from the application role or add a trigger (`schema.prisma:519-539`). Tamper-evidence via the hash chain is solid; tamper-prevention is currently an app-layer config toggle (`retention.ts:57-62`).
+- [x] **(A19, P2)** Make `pnpm -w build` cover the web app. `@montr/web`'s `build` script is only `tsc -b`; the real Next build lives in `build:next`, so the "19/19 green" never compiled the console. (Verified `build:next` does succeed — 15 routes, webpack.)
+- [x] **(A20, P2)** Correct build-plan §4.4: it specifies argon2, but `apps/api/src/auth/password.ts` uses `node:crypto` scrypt with a constant-time compare. Cryptographically fine — update the plan (or switch to argon2 if that was the intent).
+- [x] **(A21, P2)** Correct the build-plan's Azure adapter entry: it names `@azure/openai`, the code uses the `openai` package's `AzureOpenAI` class (`openai@^6.45.0`). Functionally equivalent, factually divergent.
+- [x] **(A22, P2)** Implement real Vault/KMS integration, or downgrade the claim. Key sourcing is currently env/file/secret-mount bytes only — a pluggable seam, not an integration. Done: `packages/config/src/key-source.ts` adds a real `VaultKeySource` (HashiCorp Vault KV v2 over HTTP, static-token or AppRole auth) behind the same `KeySource` contract as the existing env/file backend, selected via `security.keySource` (`MONTR_KEY_SOURCE=vault` + `VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_SECRET_PATH` etc.). 16 unit tests mock the HTTP layer against Vault's documented KV v2 + AppRole response shapes.
+- [x] **(A23, P2)** Harden audit-log immutability at the database layer: revoke UPDATE/DELETE from the application role or add a trigger (`schema.prisma:519-539`). Tamper-evidence via the hash chain is solid; tamper-prevention is currently an app-layer config toggle (`retention.ts:57-62`).
 - [ ] **(A24, P2)** Upgrade Layer 2 taint reachability from the same-file nearest-line proximity heuristic + sanitizer regex (`packages/correlation/src/grounding.ts:174-196`) to real interprocedural dataflow, so cross-file flows are covered.
-- [ ] **(A25, P2)** Fix `exploitHypothesis` always citing `appMap.ormModels[0]` regardless of the model actually involved (`packages/correlation/src/hypotheses.ts:105`).
-- [ ] **(A26, P2)** Make `validatePatch` (`packages/fix/src/patch.ts:54-71`) actually execute the emitted `.proof-of-fix.test.ts` through vitest rather than re-evaluating the same predicate, so "the proof-of-fix test passes post-patch" is literally true.
-- [ ] **(A27, P2)** Seed the red-team scenario library with actual content — today it is storage, versioning and a well-gated execution engine with zero shipped scenarios.
-- [ ] **(A28, P2)** Resolve the worker uid mismatch: `docker-compose.yml:21,148` forces `user: "65532:65532"` while the image is `node:20-bookworm-slim` chowned to `node` (~uid 1000). Verify on a real run and align.
-- [ ] **(A29, P2)** Update the stale comment at `packages/appmap/src/languages/registry.ts:22-23` calling Python/JVM "pre-registered stubs" — both analyzers are fully implemented.
-- [ ] **(A30, P2)** Add own test suites for `packages/contracts` and for `llm-gateway`'s retry/backoff, model-floor and key-tier logic (currently only egress guards are covered).
+- [x] **(A25, P2)** Fix `exploitHypothesis` always citing `appMap.ormModels[0]` regardless of the model actually involved (`packages/correlation/src/hypotheses.ts:105`).
+- [x] **(A26, P2)** Make `validatePatch` (`packages/fix/src/patch.ts:54-71`) actually execute the emitted `.proof-of-fix.test.ts` through vitest rather than re-evaluating the same predicate, so "the proof-of-fix test passes post-patch" is literally true.
+- [x] **(A27, P2)** Seed the red-team scenario library with actual content — today it is storage, versioning and a well-gated execution engine with zero shipped scenarios.
+- [x] **(A28, P2)** Resolve the worker uid mismatch: `docker-compose.yml:21,148` forces `user: "65532:65532"` while the image is `node:20-bookworm-slim` chowned to `node` (~uid 1000). Verify on a real run and align.
+- [x] **(A29, P2)** Update the stale comment at `packages/appmap/src/languages/registry.ts:22-23` calling Python/JVM "pre-registered stubs" — both analyzers are fully implemented.
+- [x] **(A30, P2)** Add own test suites for `packages/contracts` and for `llm-gateway`'s retry/backoff, model-floor and key-tier logic (currently only egress guards are covered).
 
 ## Suggested enhancements
 
@@ -53,6 +53,6 @@
 - [ ] Upgrade Layer 2 to real interprocedural dataflow — this is the actual moat and currently the weakest link in the precision story.
 - [x] Grow the corpus toward real-world repos with a documented sampling method so the `<5%` claim can be defended.
 - [x] Ship Grafana dashboards and Prometheus alert rules for budget breach, kill-switch activation and gate-bypass attempts, with dedicated counters.
-- [ ] Harden the audit log at the database layer so immutability survives an application-layer compromise.
-- [ ] Seed the red-team scenario library with a starter catalogue mapped to the OWASP Top 10.
+- [x] Harden the audit log at the database layer so immutability survives an application-layer compromise.
+- [x] Seed the red-team scenario library with a starter catalogue mapped to the OWASP Top 10.
 - [ ] Add a real integration smoke test in CI — compose up, hit `/health`, run one scan end to end. That single test would have caught A1, A3 and A5 before they were checked off.

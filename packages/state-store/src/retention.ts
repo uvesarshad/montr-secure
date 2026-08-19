@@ -2,11 +2,21 @@
  * Retention-policy enforcement (§10). Deletes expired scans and App Maps per
  * client (row-scoped — a retention run never touches another client's data).
  *
- * The AUDIT log is append-only and immutable by DEFAULT (`auditImmutable`,
- * hardened default ON): retention leaves it untouched so the hash chain stays
- * verifiable end-to-end. Deleting audit rows is only attempted when a deployment
- * explicitly opts out of immutability, and is documented as chain-truncating —
- * export/archive before enabling it (see notesForIntegration).
+ * The AUDIT log is append-only and immutable, ENFORCED AT THE DATABASE LAYER:
+ * migration `3_audit_immutability_trigger` installs a Postgres trigger on
+ * "AuditEvent" that rejects every UPDATE and DELETE, for every role, at the
+ * engine level — not just when the application chooses not to issue one. That
+ * makes deletion impossible regardless of which credential is asking, closing
+ * the gap where a compromised application-layer DB credential could rewrite
+ * history and defeat the hash chain's tamper-evidence.
+ *
+ * `auditImmutable` is therefore now a documented no-op: the field is kept on
+ * `RetentionPolicy` for backward config compatibility (existing deployments
+ * may still set it), but retention never attempts to delete audit rows, and
+ * setting it to `false` does NOT permit deletion any more — the DB trigger is
+ * the sole source of truth for that, not this flag. There is no legitimate
+ * app-layer path to truncate the audit log; export/archive old rows instead
+ * of deleting them if long-term storage growth becomes a concern.
  */
 import type { MontrPrismaClient } from "./prisma.js";
 
@@ -15,6 +25,12 @@ export interface RetentionPolicy {
   scanDays: number;
   appMapDays: number;
   auditDays: number;
+  /**
+   * @deprecated No-op, kept only for backward config compatibility. Audit-row
+   * deletion is now unconditionally rejected by a DB-level trigger (see the
+   * module doc above) regardless of this flag's value — it no longer gates
+   * anything in this class.
+   */
   auditImmutable: boolean;
 }
 
@@ -53,18 +69,15 @@ export class RetentionEnforcer {
       where: { clientId, createdAt: { lt: daysAgo(now, policy.appMapDays) } },
     });
 
-    let auditEventsDeleted = 0;
-    if (!policy.auditImmutable) {
-      const audit = await this.prisma.auditEvent.deleteMany({
-        where: { clientId, at: { lt: daysAgo(now, policy.auditDays) } },
-      });
-      auditEventsDeleted = audit.count;
-    }
-
+    // Audit rows are never deleted here, regardless of `policy.auditImmutable`
+    // (deprecated no-op — see module doc): a DB-level trigger from migration
+    // `3_audit_immutability_trigger` rejects every UPDATE/DELETE on
+    // "AuditEvent" unconditionally, so an attempt here could never succeed and
+    // this dead code path has been removed rather than left to hard-fail.
     return {
       scansDeleted: scans.count,
       appMapsDeleted: appMaps.count,
-      auditEventsDeleted,
+      auditEventsDeleted: 0,
     };
   }
 

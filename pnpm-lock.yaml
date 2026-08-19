@@ -358,6 +358,9 @@ importers:
       diff:
         specifier: ^9.0.0
         version: 9.0.0
+      execa:
+        specifier: ^9.6.1
+        version: 9.6.1
     devDependencies:
       '@types/diff':
         specifier: ^8.0.0

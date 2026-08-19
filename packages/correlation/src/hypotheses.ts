@@ -100,11 +100,40 @@ const EXPLOIT_TEMPLATES: Partial<Record<Category, (p: string, model: string) => 
     `Weaknesses in the authentication flow let an attacker impersonate a legitimate user.`,
 };
 
+/**
+ * Best-effort ORM model actually implicated by this finding, not just the
+ * first model in the whole App Map. Looks for the model's name inside the
+ * signals already available at this call site — the matched sink/source
+ * description (e.g. `prisma.user.findMany(...)`) and the route path (e.g.
+ * `/api/users`) — since neither taint sinks nor sources carry a direct model
+ * reference.
+ */
+function relevantModelName(g: Grounding, appMap: AppMap): string | undefined {
+  const models = appMap.ormModels;
+  if (models.length === 0) return undefined;
+  if (models.length === 1) return models[0]!.name;
+
+  const haystack = [g.matchedSink?.description, g.matchedSource?.description, g.route?.path]
+    .filter((s): s is string => Boolean(s))
+    .join(" ")
+    .toLowerCase();
+
+  const match = models.find((m) => {
+    const name = m.name.toLowerCase();
+    return haystack.includes(name) || haystack.includes(`${name}s`);
+  });
+  if (match) return match.name;
+
+  // Last-resort fallback: nothing at this call site ties the finding to a
+  // specific model, so cite the first (deterministically sorted by name in
+  // the App Map builder) rather than omitting a model reference entirely.
+  return models[0]!.name;
+}
+
 export function exploitHypothesis(cand: CandidateFinding, g: Grounding, appMap: AppMap): string {
   const p = paramName(g);
-  const model = appMap.ormModels[0]?.name
-    ? `the ${appMap.ormModels[0]?.name} model`
-    : "the database";
+  const modelName = relevantModelName(g, appMap);
+  const model = modelName ? `the ${modelName} model` : "the database";
   const template = EXPLOIT_TEMPLATES[cand.category];
   if (template) return template(p, model);
   return `If reachable, this ${humanize(cand.category)} weakness could compromise the confidentiality, integrity, or availability of the affected component.`;

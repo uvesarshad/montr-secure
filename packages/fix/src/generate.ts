@@ -258,9 +258,14 @@ async function generateOne(
       candidates.push({ fixedSource: deterministic, via: "deterministic" });
     }
 
+    // Generated once — every candidate is validated against the SAME proof
+    // test, and the winning candidate's Fix ships EXACTLY the code that was
+    // actually executed (never a re-derived copy).
+    const proofTestCode = strategy.proofTestCode(filePath, finding);
+
     for (const candidate of candidates) {
       const patch = buildUnifiedDiff(filePath, original, candidate.fixedSource);
-      const validation = validatePatch(original, patch, strategy.vulnerable);
+      const validation = await validatePatch(original, patch, { filePath, proofTestCode });
       if (validation.applies && validation.failsPrePatch && validation.passesPostPatch) {
         const risk = classifyConfirmedFindingRisk(
           finding,
@@ -278,7 +283,7 @@ async function generateOne(
           proofOfFixTest: {
             filePath: proofTestPath(filePath),
             framework: strategy.testFramework,
-            code: strategy.proofTestCode(filePath, finding),
+            code: proofTestCode,
             failsPrePatch: validation.failsPrePatch,
             passesPostPatch: validation.passesPostPatch,
           },
