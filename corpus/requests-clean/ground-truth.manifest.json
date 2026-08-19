@@ -1,0 +1,49 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored from https://github.com/psf/requests (Apache-2.0 license, the de-facto standard Python HTTP client — 52k+ stars) at pinned commit 8f8b212de8c2129d7954c6cd373762880375620a (2026-08-17), i.e. released version 2.34.2 per src/requests/__version__.py — well past the fix versions for requests' only two published CVEs (CVE-2018-18074 and CVE-2023-32681, both Proxy-Authorization header leakage on cross-origin redirect, fixed in 2.20.0 and 2.31.0 respectively), so this pinned snapshot carries no known CVE. Vendored the full `src/requests/` package (19 files) + LICENSE — no tests/docs. Hand-verified with a full-source grep sweep before inclusion (see corpus/README.md for the exact patterns swept and the sampling method): no SQL/DB code, no subprocess/eval, no hardcoded credentials, `verify=True` is the library default (never hardcoded False). The ONE class of pattern the sweep did turn up is `hashlib.md5()`/`hashlib.sha1()` in `auth.py`'s HTTP Digest Authentication implementation (RFC 2617/7616 MANDATE MD5 as the default Digest algorithm; requests' own maintainers mark each call `usedforsecurity=False`, i.e. explicitly flagged as not a security-sensitive use of the hash). These are listed below as `exploitable: false` (demoted) rather than omitted or silently included as confirmable: a naive weak-crypto pattern-matcher will legitimately match the text, but a correct scanner should NOT confirm it as an exploitable finding, so if the pipeline DOES confirm one, the scorer correctly counts it as a false positive. `kind: \"clean\"` with these markers is what makes this repo a genuine, non-trivial precision test rather than a repo with nothing to trip over.",
+  "repos": [
+    {
+      "name": "requests-clean",
+      "kind": "clean",
+      "path": "requests-clean",
+      "expectedFindings": [
+        {
+          "id": "gt_requests_digest_md5_1",
+          "category": "weak_crypto",
+          "cwe": ["CWE-327"],
+          "owasp": "A02:2021",
+          "file": "requests/auth.py",
+          "line": 179,
+          "severity": "low",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": false,
+          "description": "MD5 used inside HTTPDigestAuth's RFC 2617 challenge-response — the algorithm is mandated by the HTTP Digest spec (not a security choice requests makes), and the maintainers explicitly mark the call `usedforsecurity=False`. Not an actionable weakness in requests itself; present but should stay demoted."
+        },
+        {
+          "id": "gt_requests_digest_sha1_1",
+          "category": "weak_crypto",
+          "cwe": ["CWE-327"],
+          "owasp": "A02:2021",
+          "file": "requests/auth.py",
+          "line": 187,
+          "severity": "low",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": false,
+          "description": "SHA-1 used inside the same RFC 2617/7616 Digest challenge-response helper (`sha`/`sha-sess` algorithm variant), again explicitly marked `usedforsecurity=False`. Present but should stay demoted."
+        },
+        {
+          "id": "gt_requests_digest_sha1_2",
+          "category": "weak_crypto",
+          "cwe": ["CWE-327"],
+          "owasp": "A02:2021",
+          "file": "requests/auth.py",
+          "line": 237,
+          "severity": "low",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": false,
+          "description": "SHA-1 used to derive the client nonce (`cnonce`) for Digest Authentication — protocol-mandated randomness derivation, not a confidentiality-relevant hash, `usedforsecurity=False`. Present but should stay demoted."
+        }
+      ]
+    }
+  ]
+}

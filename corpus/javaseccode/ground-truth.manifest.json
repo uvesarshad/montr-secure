@@ -1,0 +1,73 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored from https://github.com/JoyChou93/java-sec-code (2.6k-star vulnerable-by-design Java/Spring Boot security demo, no upstream LICENSE file — used here strictly as a small unmodified source excerpt for internal security-QA testing, matching how the existing corpus vendors intentionally-vulnerable teaching code) at pinned commit 4711f4e186258c6e0dd5c3863e7c9592e7e9026a (2024-06-28). Trimmed to 4 of its ~30 one-vulnerability-class-per-file controllers (SQLI, SSRF, XXE, CommandInject) + pom.xml + application.properties — the other controllers (Fastjson, Shiro, SpEL, JWT, XStream, etc.) and supporting DAO/mapper/service classes were dropped as out of scope. Every finding below was hand-verified by reading this exact vendored source (see corpus/README.md for the sampling method). Do not \"fix\" these — they are the labels the precision/recall gate scores against.",
+  "repos": [
+    {
+      "name": "javaseccode",
+      "kind": "vulnerable",
+      "path": "javaseccode",
+      "expectedFindings": [
+        {
+          "id": "gt_javaseccode_sqli",
+          "category": "sql_injection",
+          "cwe": ["CWE-89"],
+          "owasp": "A03:2021",
+          "file": "src/main/java/org/joychou/controller/SQLI.java",
+          "line": 67,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "jdbc_sqli_vul string-concatenates the untrusted `username` request parameter into a raw SQL string and runs it via `Statement.executeQuery()` (classic JDBC SQL injection)."
+        },
+        {
+          "id": "gt_javaseccode_ssrf",
+          "category": "ssrf",
+          "cwe": ["CWE-918"],
+          "owasp": "A10:2021",
+          "file": "src/main/java/org/joychou/controller/SSRF.java",
+          "line": 46,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "URLConnectionVuln passes the untrusted `url` request parameter straight to a `URLConnection` helper with no scheme/host allowlist (SSRF; the sibling `/urlConnection/sec` endpoint shows the secured version with an `isHttp` + SSRF-hook check)."
+        },
+        {
+          "id": "gt_javaseccode_xxe",
+          "category": "xxe",
+          "cwe": ["CWE-611"],
+          "owasp": "A05:2021",
+          "file": "src/main/java/org/joychou/controller/XXE.java",
+          "line": 54,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "xmlReaderVuln parses the raw, unauthenticated request body with a default `XMLReaderFactory`-created `XMLReader` — external entity resolution is not disabled, so a crafted DOCTYPE achieves XXE."
+        },
+        {
+          "id": "gt_javaseccode_cmdi",
+          "category": "command_injection",
+          "cwe": ["CWE-78"],
+          "owasp": "A03:2021",
+          "file": "src/main/java/org/joychou/controller/CommandInject.java",
+          "line": 30,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "codeInject concatenates the untrusted `filepath` request parameter into a `sh -c` command line run via `ProcessBuilder` (OS command injection)."
+        },
+        {
+          "id": "gt_javaseccode_secret",
+          "category": "hardcoded_secret",
+          "cwe": ["CWE-798"],
+          "owasp": "A07:2021",
+          "file": "src/main/resources/application.properties",
+          "line": 4,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Hard-coded `spring.datasource.password` (a literal MySQL password, not an `${ENV}` reference) committed to source control; rotation requires a human."
+        }
+      ]
+    }
+  ]
+}

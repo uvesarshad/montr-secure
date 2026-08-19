@@ -48,6 +48,9 @@ export default tseslint.config(
       "**/*.tsbuildinfo",
       // Fixture sample repos contain INTENTIONALLY vulnerable code — never lint them.
       "packages/fixtures/sample-repos/**",
+      // Golden corpus (corpus/README.md) — vendored real-world + intentionally
+      // vulnerable snapshots, out-of-tree source styles. Never lint/format them.
+      "corpus/**",
       "deploy/**",
     ],
   },

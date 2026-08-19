@@ -1,0 +1,157 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored from https://github.com/adeyosemanputra/pygoat (OWASP PyGoat, MIT license) at pinned commit 19d17cc8874861142b330636d068bbde54e86b85 (2026-03-28). Trimmed to the `introduction` Django app (the OWASP Top-10 lab views) + project settings — the `challenge`, `chatbot`, and `dockerized_labs` sub-projects, migrations, and static assets were dropped as out of scope for static analysis. Every finding below was hand-verified by reading this exact vendored source, including the one template file needed to confirm the XSS sink (see corpus/README.md for the sampling method). `gt_pygoat_cmdi2` and `gt_pygoat_yaml_deser` were added after an initial real-pipeline scan surfaced them as apparent false positives in `introduction/mitre.py`/`introduction/views.py` (files already vendored for other findings) — re-reading both confirmed they are genuine, independently-exploitable vulnerabilities this pass had simply not catalogued yet, so they were added as true findings rather than left mislabelled. Do not \"fix\" these — they are the labels the precision/recall gate scores against.",
+  "repos": [
+    {
+      "name": "pygoat",
+      "kind": "vulnerable",
+      "path": "pygoat",
+      "expectedFindings": [
+        {
+          "id": "gt_pygoat_sqli",
+          "category": "sql_injection",
+          "cwe": ["CWE-89"],
+          "owasp": "A03:2021",
+          "file": "introduction/views.py",
+          "line": 162,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "sql_lab builds `sql_query` by string-concatenating untrusted POST `name`/`pass` fields and executes it via `login.objects.raw(sql_query)` (Django ORM raw-SQL injection, PyGoat's A03 SQLi lab)."
+        },
+        {
+          "id": "gt_pygoat_xss",
+          "category": "xss",
+          "cwe": ["CWE-79"],
+          "owasp": "A03:2021",
+          "file": "introduction/views.py",
+          "line": 101,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "xss_lab passes untrusted GET `q` to the template as `query`; `introduction/templates/Lab/XSS/xss_lab.html:27` renders it with the `|safe` filter, explicitly bypassing Django's autoescaping (reflected XSS, PyGoat's A03 XSS lab)."
+        },
+        {
+          "id": "gt_pygoat_cmdi",
+          "category": "command_injection",
+          "cwe": ["CWE-78"],
+          "owasp": "A03:2021",
+          "file": "introduction/views.py",
+          "line": 430,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "cmd_lab builds a `dig`/`nslookup` command string from untrusted POST `domain` and runs it via `subprocess.Popen(command, shell=True, ...)` (OS command injection; the upstream protocol-prefix strip does not block shell metacharacters like `;`/`|`)."
+        },
+        {
+          "id": "gt_pygoat_deser",
+          "category": "insecure_deserialization",
+          "cwe": ["CWE-502"],
+          "owasp": "A08:2021",
+          "file": "introduction/views.py",
+          "line": 214,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "insec_des_lab base64-decodes a client-supplied `token` cookie and feeds it straight to `pickle.loads()` with no integrity check — a crafted pickle payload achieves arbitrary code execution (PyGoat's A08 insecure-deserialization lab)."
+        },
+        {
+          "id": "gt_pygoat_xxe",
+          "category": "xxe",
+          "cwe": ["CWE-611"],
+          "owasp": "A05:2021",
+          "file": "introduction/views.py",
+          "line": 259,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "xxe_parse explicitly enables `feature_external_ges` (external general entities) on a SAX parser before parsing the raw, unauthenticated request body (classic XXE, PyGoat's XXE lab)."
+        },
+        {
+          "id": "gt_pygoat_ssrf",
+          "category": "ssrf",
+          "cwe": ["CWE-918"],
+          "owasp": "A10:2021",
+          "file": "introduction/views.py",
+          "line": 963,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "ssrf_lab2 issues a server-side `requests.get(url)` where `url` is taken verbatim from POST body with no allowlist/scheme check, and echoes the response body back to the caller (SSRF, PyGoat's `ssrf_lab2`; note the similarly-named `ssrf_lab` at line ~926 is actually local path traversal, labelled separately below — file was scored on code behaviour, not PyGoat's lab name)."
+        },
+        {
+          "id": "gt_pygoat_path_traversal",
+          "category": "path_traversal",
+          "cwe": ["CWE-22"],
+          "owasp": "A01:2021",
+          "file": "introduction/views.py",
+          "line": 926,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "ssrf_lab (mislabelled by upstream as an SSRF lab) joins an untrusted POST `blog` filename onto a local directory with `os.path.join` and opens it with no traversal sanitization — arbitrary local file read."
+        },
+        {
+          "id": "gt_pygoat_bac",
+          "category": "broken_access_control",
+          "cwe": ["CWE-284"],
+          "owasp": "A01:2021",
+          "file": "introduction/views.py",
+          "line": 758,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "a1_broken_access_lab_1 grants the admin-only secret whenever `request.COOKIES.get('admin') == \"1\"` — a client-forgeable cookie is trusted as the sole authorization decision, with no server-side session/role check."
+        },
+        {
+          "id": "gt_pygoat_secret",
+          "category": "hardcoded_secret",
+          "cwe": ["CWE-798"],
+          "owasp": "A07:2021",
+          "file": "pygoat/settings.py",
+          "line": 25,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "Hard-coded Django `SECRET_KEY` committed to source control; rotation requires a human."
+        },
+        {
+          "id": "gt_pygoat_debug",
+          "category": "sensitive_data_exposure",
+          "cwe": ["CWE-489"],
+          "owasp": "A02:2021",
+          "file": "pygoat/settings.py",
+          "line": 30,
+          "severity": "medium",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "`DEBUG = True` in the project's committed settings — leaks stack traces, source snippets, and installed-app/settings details to any client on an unhandled exception if deployed as-is."
+        },
+        {
+          "id": "gt_pygoat_cmdi2",
+          "category": "command_injection",
+          "cwe": ["CWE-78"],
+          "owasp": "A03:2021",
+          "file": "introduction/mitre.py",
+          "line": 233,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "mitre_lab_17_api builds `command = \"nmap \" + ip` from untrusted POST `ip` and runs it via `command_out()`'s `subprocess.Popen(command, shell=True, ...)` — a second, independent OS command injection sink (MITRE ATT&CK ping-sweep lab), distinct from `gt_pygoat_cmdi`'s `cmd_lab`."
+        },
+        {
+          "id": "gt_pygoat_yaml_deser",
+          "category": "insecure_deserialization",
+          "cwe": ["CWE-502"],
+          "owasp": "A08:2021",
+          "file": "introduction/views.py",
+          "line": 560,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "a9_lab loads an untrusted uploaded file with `yaml.load(file, yaml.Loader)` — PyYAML's full (non-safe) `Loader` reconstructs arbitrary Python objects from YAML tags (e.g. `!!python/object/apply`), a well-known arbitrary-code-execution footgun (PyGoat's A9 vulnerable-components lab, `get_version` on the next line even advertises \"pyyaml v5.1\"). Independent sink from `gt_pygoat_deser`'s pickle-based lab."
+        }
+      ]
+    }
+  ]
+}

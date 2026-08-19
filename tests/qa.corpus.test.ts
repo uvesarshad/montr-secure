@@ -26,11 +26,21 @@ describe("loadCorpus — merged golden corpus", () => {
         "jvm-vuln",
         "python-clean",
         "python-vuln",
+        // A17 — real-world vendored repos grown into the corpus.
+        "dvna",
+        "pygoat",
+        "javaseccode",
+        "log4shell-vulnerable-app",
+        "spring-petclinic",
+        "validatorjs-clean",
+        "requests-clean",
+        "gson-clean",
       ].sort(),
     );
     expect(corpus.repos.filter((r) => r.source === "fixtures")).toHaveLength(2);
-    // 2 shared OWASP + 4 standalone python/jvm repos all resolve as source "corpus".
-    expect(corpus.repos.filter((r) => r.source === "corpus")).toHaveLength(6);
+    // 2 shared OWASP + 4 standalone python/jvm + 8 A17 real-world repos all
+    // resolve as source "corpus".
+    expect(corpus.repos.filter((r) => r.source === "corpus")).toHaveLength(14);
     expect(corpus.warnings).toEqual([]);
   });
 
@@ -84,10 +94,16 @@ describe("loadCorpus — merged golden corpus", () => {
     }
   });
 
-  it("clean repos declare zero expected findings", async () => {
+  it("clean repos declare zero EXPLOITABLE expected findings", async () => {
+    // A17's requests-clean deliberately carries `exploitable: false` (demoted)
+    // markers — real weak-crypto-looking patterns a naive scanner might flag,
+    // that a correct scanner must NOT confirm. Those are intentional and
+    // scored as false positives if ever confirmed; only non-demoted entries
+    // would break the "clean" invariant.
     const corpus = await loadCorpus();
     for (const repo of corpus.repos.filter((r) => r.kind === "clean")) {
-      expect(repo.expectedFindings).toHaveLength(0);
+      const exploitable = repo.expectedFindings.filter((f) => f.exploitable !== false);
+      expect(exploitable).toHaveLength(0);
     }
   });
 

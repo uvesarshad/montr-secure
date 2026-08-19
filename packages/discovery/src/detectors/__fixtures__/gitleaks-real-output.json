@@ -1,0 +1,22 @@
+[
+  {
+    "RuleID": "stripe-access-token",
+    "Description": "Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.",
+    "StartLine": 2,
+    "EndLine": 2,
+    "StartColumn": 35,
+    "EndColumn": 79,
+    "Match": "REDACTED\"",
+    "Secret": "REDACTED",
+    "File": "lib/config.ts",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.7433004,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "Fingerprint": "lib/config.ts:stripe-access-token:2"
+  }
+]

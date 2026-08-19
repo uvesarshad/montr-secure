@@ -1,0 +1,4 @@
+{
+  "$comment": "Documented, narrowly-scoped exceptions for `scripts/selfscan.mjs` (the CI self-scan / dogfood blocking gate, .github/workflows/ci.yml). This is NOT a blanket suppression file — every entry MUST name the exact finding (category + file + line) and carry a written reason a reviewer can check against the source. Add an entry ONLY for a confirmed false positive or a reviewed, accepted low-risk case. Never widen `file`/`line` to a glob or range to cover more than the one finding it documents.",
+  "entries": []
+}

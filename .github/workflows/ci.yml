@@ -121,32 +121,54 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # Self-scan / dogfood (§4.8, §14, §19 DoD "scans itself clean"). Montr Secure
-  # runs its OWN detection tech (Semgrep SAST + Gitleaks secrets) against its own
-  # source. Intentionally-vulnerable corpus/fixtures are EXCLUDED (they plant
-  # vulns on purpose). Informational today (uploads SARIF); flips to a blocking
-  # gate once WS-N wires the real @montr pipeline self-scan (add a `selfscan`
-  # script — the hook below runs it automatically).
+  # Self-scan / dogfood (§4.8, §14, §19 DoD "scans itself clean"; fixes A7).
+  #
+  # Two complementary checks:
+  #
+  #   1. Raw Semgrep + Gitleaks CLI (SARIF → GitHub Security tab). Best-effort /
+  #      informational: different tuning (broader rulesets, tool-native severity)
+  #      than the product's own pipeline, so it is a visibility aid, not the gate.
+  #      Intentionally-vulnerable corpus/fixtures are excluded (they plant vulns
+  #      on purpose; see `.github/gitleaks.toml`'s allowlist for the same reasoning
+  #      applied to gitleaks).
+  #
+  #   2. `pnpm run selfscan` (scripts/selfscan.mjs) — THE real dogfood gate. Runs
+  #      the REAL apps/worker L0→L3 pipeline (real App Map, real semgrep/gitleaks
+  #      discovery, real correlation, real static confirmation — FAKE in-process
+  #      LLM gateway only, so no live LLM credentials needed, same pattern as
+  #      `apps/worker/src/e2e-scan.test.ts` / `scripts/corpus-scan.mjs`) against
+  #      THIS repo's own source tree and fails the build on any un-allowlisted
+  #      HIGH/CRITICAL confirmed finding (see `scripts/selfscan.allowlist.json`
+  #      for the narrowly-scoped, documented-exception mechanism — never a
+  #      blanket suppression). This is a BLOCKING gate (no `continue-on-error`):
+  #      the product genuinely scans itself with its own detection tech, and a
+  #      real finding against Montr Secure's own source fails CI.
   # ---------------------------------------------------------------------------
   self-scan:
-    name: self-scan (dogfood — Semgrep + Gitleaks)
+    name: self-scan (dogfood — real pipeline, blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Semgrep SAST (best-effort, informational)
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Semgrep SAST (best-effort, informational — SARIF for the Security tab)
         continue-on-error: true
         run: |
           python3 -m pip install --quiet --disable-pip-version-check semgrep \
             || { echo "semgrep unavailable — skipping (best-effort)"; exit 0; }
-          # No --error yet (informational); tighten to blocking once the tree is
-          # verified clean. Metrics off (§10: no vendor telemetry).
+          # Informational only — the REAL blocking gate is `pnpm run selfscan`
+          # below. Metrics off (§10: no vendor telemetry).
           semgrep scan --metrics=off \
             --config p/owasp-top-ten --config p/typescript --config p/react \
             --config p/javascript --config p/secrets \
             --exclude packages/fixtures/sample-repos --exclude corpus/repos \
             --sarif --output semgrep.sarif \
             || echo "semgrep reported findings/errors (see artifact; best-effort)"
-      - name: Gitleaks secret scan (best-effort, redacted)
+      - name: Gitleaks secret scan (best-effort, redacted — SARIF for the Security tab)
         continue-on-error: true
         run: |
           # --redact so no secret body is ever printed (golden rule #1 / §14).
@@ -156,23 +178,27 @@ jobs:
             --config /repo/.github/gitleaks.toml \
             --redact --report-format sarif --report-path /repo/gitleaks.sarif \
             || echo "gitleaks reported findings or is unavailable (see artifact; best-effort)"
-      - name: Montr self-scan hook (guarded — runs once WS-N ships a scanner)
-        continue-on-error: true
+      - name: Install semgrep (real SAST discovery for the pipeline self-scan)
+        run: python3 -m pip install --quiet --disable-pip-version-check semgrep
+      - name: Install gitleaks (real secrets discovery for the pipeline self-scan)
         run: |
-          if pnpm run 2>/dev/null | grep -qw selfscan; then
-            echo "Running montr self-scan (dogfood)…"
-            pnpm run selfscan
-          else
-            echo "No 'selfscan' script yet — pipeline not integrated; dogfood is informational."
-          fi
-      - name: Upload self-scan SARIF
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+      # ⛔ THE real dogfood gate — BLOCKING (no continue-on-error). Runs the real
+      # apps/worker pipeline against this repo's own source; fails on any
+      # un-allowlisted HIGH/CRITICAL confirmed finding. See scripts/selfscan.mjs.
+      - name: Montr self-scan (real pipeline vs. own source — blocking)
+        run: pnpm run selfscan
+      - name: Upload self-scan artifacts (SARIF + real-pipeline findings)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: self-scan-sarif
+          name: self-scan-results
           path: |
             semgrep.sarif
             gitleaks.sarif
+            selfscan.json
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------

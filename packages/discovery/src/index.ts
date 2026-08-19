@@ -246,6 +246,7 @@ export {
 export {
   detectSecretsAndConfig,
   defaultGitleaksRunner,
+  candidatesFromGitleaks,
   runCustomDetectors,
   type DetectSecretsOptions,
   type FileDetector,

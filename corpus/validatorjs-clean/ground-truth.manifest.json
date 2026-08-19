@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored in full (src/ + package.json + LICENSE, 114 files) from https://github.com/validatorjs/validator.js (MIT license, one of the most widely-used npm string-validation libraries — 25k+ stars) at pinned commit a79ff980ab14257e795332989e497bdff3218e87 (2026-08-16). Chosen as a real, popular, actively-maintained NEGATIVE example: it is a pure-function string-validation/-sanitization library with no database, filesystem, network, subprocess, deserialization, or credential-handling code, so it should produce zero confirmed findings for every scored category. Hand-verified with a full-source grep sweep before inclusion (see corpus/README.md for the exact patterns swept and the sampling method) — no eval/child_process/exec, no DB query building, no hardcoded credentials, no weak-crypto calls, no network I/O. `expectedFindings: []` — any confirmed finding here is a false positive by definition.",
+  "repos": [
+    {
+      "name": "validatorjs-clean",
+      "kind": "clean",
+      "path": "validatorjs-clean",
+      "expectedFindings": []
+    }
+  ]
+}

@@ -60,6 +60,12 @@ export type ScanIdParams = z.infer<typeof ScanIdParamsSchema>;
 
 export const GateNoteBodySchema = z.object({ note: z.string().max(1000).optional() }).optional();
 
+/** POST /scans/:id/kill — ⛔ kill switch. `reason` is always recorded (audit + orchestrator signal). */
+export const KillScanBodySchema = z.object({
+  reason: z.string().min(1).max(2000),
+});
+export type KillScanBody = z.infer<typeof KillScanBodySchema>;
+
 /* -------------------------------- DAST ------------------------------ */
 
 export const CreateDastTargetBodySchema = z.object({

@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored in full (src/main + pom.xml + LICENSE, 87 Java files) from https://github.com/google/gson (Apache-2.0 license, Google's widely-used JSON (de)serialization library for Java — 23k+ stars) at pinned commit dae37cf0fe12235b76fb09f01118a0a8c8823f42 (2026-08-14). Chosen as a real, popular, actively-maintained NEGATIVE example for the JVM stack, pairing with `corpus/jvm-clean` (which is a synthetic Spring app): gson is a pure JSON parsing/serialization library with no database, network, subprocess, or credential-handling code. Hand-verified with a full-source grep sweep before inclusion (see corpus/README.md for the exact patterns swept and the sampling method): no `Statement`/`createStatement`, no `Runtime.getRuntime`/`ProcessBuilder`, no hardcoded password/secret/api-key config, no `MessageDigest.getInstance(\"MD5\"|\"SHA-1\")` or weak `Cipher`, no CSRF-disable (not a web app). The internal `readObject(ObjectInputStream in)` methods in `internal/LinkedTreeMap.java`/`internal/LazilyParsedNumber.java`/`internal/UnsafeAllocator.java` are standard `java.io.Serializable` protocol method IMPLEMENTATIONS (invoked BY the JVM during deserialization of these internal collection helpers), not a call site that deserializes attacker-controlled network input, and were confirmed by reading each one — not a genuine insecure_deserialization sink. `expectedFindings: []` — any confirmed finding here is a false positive by definition.",
+  "repos": [
+    {
+      "name": "gson-clean",
+      "kind": "clean",
+      "path": "gson-clean",
+      "expectedFindings": []
+    }
+  ]
+}

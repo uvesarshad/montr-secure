@@ -76,7 +76,9 @@ export const defaultGitleaksRunner: GitleaksRunner = async ({ repoRoot, signal }
   }
 };
 
-function candidatesFromGitleaks(
+/** Map raw gitleaks report entries to candidates. Exported for direct unit
+ *  testing against real captured gitleaks JSON (see build-plan §A16). */
+export function candidatesFromGitleaks(
   ctx: DetectorContext,
   findings: GitleaksFinding[],
 ): CandidateFinding[] {

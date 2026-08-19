@@ -1,0 +1,109 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored from https://github.com/appsecco/dvna (Damn Vulnerable NodeJS Application, MIT license) at pinned commit 9ba473add536f66ac9007966acb2a775dd31277 (2023-11-08). Trimmed to the security-relevant Express/Sequelize source (config/, core/, models/, routes/, server.js, package.json) — views/, public/, docs/, docker files dropped as not relevant to static analysis. Every finding below was hand-verified by reading this exact vendored source (see corpus/README.md for the sampling method). Do not \"fix\" these — they are the labels the precision/recall gate scores against.",
+  "repos": [
+    {
+      "name": "dvna",
+      "kind": "vulnerable",
+      "path": "dvna",
+      "expectedFindings": [
+        {
+          "id": "gt_dvna_sqli",
+          "category": "sql_injection",
+          "cwe": ["CWE-89"],
+          "owasp": "A03:2021",
+          "file": "core/appHandler.js",
+          "line": 11,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "userSearch handler string-concatenates untrusted `req.body.login` into a raw SQL string and runs it via `db.sequelize.query()` (classic SQLi, DVNA's OWASP A1 lab)."
+        },
+        {
+          "id": "gt_dvna_cmdi",
+          "category": "command_injection",
+          "cwe": ["CWE-78"],
+          "owasp": "A03:2021",
+          "file": "core/appHandler.js",
+          "line": 39,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "ping handler concatenates untrusted `req.body.address` directly into a shell command passed to `child_process.exec()` (OS command injection)."
+        },
+        {
+          "id": "gt_dvna_redirect",
+          "category": "open_redirect",
+          "cwe": ["CWE-601"],
+          "owasp": "A01:2021",
+          "file": "core/appHandler.js",
+          "line": 188,
+          "severity": "medium",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "`redirect` handler calls `res.redirect(req.query.url)` with the destination taken directly from an unvalidated query parameter (open redirect, DVNA's unvalidated-redirect lab)."
+        },
+        {
+          "id": "gt_dvna_deser",
+          "category": "insecure_deserialization",
+          "cwe": ["CWE-502"],
+          "owasp": "A08:2021",
+          "file": "core/appHandler.js",
+          "line": 218,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "bulkProductsLegacy passes an uploaded file's raw bytes straight to `node-serialize`'s `unserialize()` — the well-known node-serialize gadget (CVE-2017-5941 class) allows arbitrary code execution via a crafted `_$$ND_FUNC$$_` payload."
+        },
+        {
+          "id": "gt_dvna_xxe",
+          "category": "xxe",
+          "cwe": ["CWE-611"],
+          "owasp": "A05:2021",
+          "file": "core/appHandler.js",
+          "line": 235,
+          "severity": "high",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "bulkProducts parses an uploaded XML file with `libxmljs.parseXmlString(..., {noent: true})` — `noent: true` explicitly enables external general-entity expansion on untrusted input (XXE)."
+        },
+        {
+          "id": "gt_dvna_weak_crypto",
+          "category": "weak_crypto",
+          "cwe": ["CWE-327"],
+          "owasp": "A02:2021",
+          "file": "core/authHandler.js",
+          "line": 49,
+          "severity": "medium",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "Password-reset token is `md5(login)` — a deterministic, unsalted hash of a public value, so any reset token is trivially guessable/computable from the username alone (weak/broken token scheme built on MD5)."
+        },
+        {
+          "id": "gt_dvna_bac",
+          "category": "broken_access_control",
+          "cwe": ["CWE-284"],
+          "owasp": "A01:2021",
+          "file": "routes/app.js",
+          "line": 42,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "`/admin/usersapi` is gated only by `isAuthenticated` (any logged-in user), never by `req.user.role === 'admin'` — missing function-level access control on an admin-only endpoint."
+        },
+        {
+          "id": "gt_dvna_data_exposure",
+          "category": "sensitive_data_exposure",
+          "cwe": ["CWE-200"],
+          "owasp": "A02:2021",
+          "file": "core/appHandler.js",
+          "line": 210,
+          "severity": "high",
+          "expectedRiskClass": "human-required",
+          "exploitable": true,
+          "description": "listUsersAPI (reachable via the broken-access-control endpoint above) serializes full Sequelize `User` records — including the `password` hash column (models/user.js) — into the JSON response with no attribute exclusion."
+        }
+      ]
+    }
+  ]
+}

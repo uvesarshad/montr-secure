@@ -1,0 +1,181 @@
+{
+  "version": "1.136.0",
+  "results": [
+    {
+      "check_id": "typescript.react.security.audit.react-dangerouslysetinnerhtml.react-dangerouslysetinnerhtml",
+      "path": "app/search/page.tsx",
+      "start": {
+        "line": 8,
+        "col": 47,
+        "offset": 317
+      },
+      "end": {
+        "line": 8,
+        "col": 48,
+        "offset": 318
+      },
+      "extra": {
+        "message": "Detection of dangerouslySetInnerHTML from non-constant definition. This can inadvertently expose users to cross-site scripting (XSS) attacks if this comes from user-provided input. If you have to use dangerouslySetInnerHTML, consider using a sanitization library such as DOMPurify to sanitize your HTML.",
+        "metadata": {
+          "cwe": [
+            "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+          ],
+          "owasp": [
+            "A07:2017 - Cross-Site Scripting (XSS)",
+            "A03:2021 - Injection",
+            "A05:2025 - Injection"
+          ],
+          "references": [
+            "https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html"
+          ],
+          "category": "security",
+          "confidence": "MEDIUM",
+          "technology": ["react"],
+          "cwe2022-top25": true,
+          "cwe2021-top25": true,
+          "subcategory": ["vuln"],
+          "likelihood": "MEDIUM",
+          "impact": "MEDIUM",
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Cross-Site-Scripting (XSS)"],
+          "source": "https://semgrep.dev/r/typescript.react.security.audit.react-dangerouslysetinnerhtml.react-dangerouslysetinnerhtml",
+          "shortlink": "https://sg.run/rAx6"
+        },
+        "severity": "WARNING",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key",
+      "path": "lib/config.ts",
+      "start": {
+        "line": 2,
+        "col": 34,
+        "offset": 93
+      },
+      "end": {
+        "line": 2,
+        "col": 66,
+        "offset": 125
+      },
+      "extra": {
+        "message": "Stripe API Key detected",
+        "metadata": {
+          "cwe": ["CWE-798: Use of Hard-coded Credentials"],
+          "source-rule-url": "https://github.com/dxa4481/truffleHogRegexes/blob/master/truffleHogRegexes/regexes.json",
+          "category": "security",
+          "technology": ["secrets", "stripe"],
+          "confidence": "LOW",
+          "owasp": [
+            "A07:2021 - Identification and Authentication Failures",
+            "A07:2025 - Authentication Failures"
+          ],
+          "references": [
+            "https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures"
+          ],
+          "cwe2022-top25": true,
+          "cwe2021-top25": true,
+          "subcategory": ["audit"],
+          "likelihood": "LOW",
+          "impact": "MEDIUM",
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Hard-coded Secrets"],
+          "source": "https://semgrep.dev/r/generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key",
+          "shortlink": "https://sg.run/dKd5"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": [
+      "README.md",
+      "app/api/users/route.ts",
+      "app/search/page.tsx",
+      "lib/config.ts",
+      "next.config.js",
+      "package.json",
+      "prisma/schema.prisma"
+    ]
+  },
+  "time": {
+    "rules": [],
+    "rules_parse_time": 1.1463391780853271,
+    "profiling_times": {
+      "config_time": 5.492543935775757,
+      "core_time": 3.2163357734680176,
+      "ignores_time": 0.0007948875427246094,
+      "total_time": 8.710335969924927
+    },
+    "parsing_time": {
+      "total_time": 0.0,
+      "per_file_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_files": []
+    },
+    "scanning_time": {
+      "total_time": 0.0584566593170166,
+      "per_file_time": {
+        "mean": 0.003076666279842979,
+        "std_dev": 2.334989571964619e-5
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_files": []
+    },
+    "matching_time": {
+      "total_time": 0.0,
+      "per_file_and_rule_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_rules_on_files": []
+    },
+    "tainting_time": {
+      "total_time": 0.0,
+      "per_def_and_rule_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_rules_on_defs": []
+    },
+    "fixpoint_timeouts": [],
+    "prefiltering": {
+      "project_level_time": 0.0,
+      "file_level_time": 0.0,
+      "rules_with_project_prefilters_ratio": 0.0,
+      "rules_with_file_prefilters_ratio": 0.9946902654867257,
+      "rules_selected_ratio": 0.017699115044247787,
+      "rules_matched_ratio": 0.017699115044247787
+    },
+    "targets": [],
+    "total_bytes": 0,
+    "max_memory_bytes": 761006784
+  },
+  "engine_requested": "OSS",
+  "skipped_rules": []
+}

@@ -20,6 +20,7 @@
     "test:turbo": "turbo run test",
     "e2e": "node scripts/e2e-scan.mjs",
     "corpus:scan": "node scripts/corpus-scan.mjs",
+    "selfscan": "node scripts/selfscan.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "clean": "turbo run clean && rm -rf **/dist **/.tsbuildinfo node_modules/.cache",

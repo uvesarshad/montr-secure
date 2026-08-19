@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored (src/main + pom.xml + LICENSE, mirroring the existing jvm-vuln/jvm-clean src-only convention) from https://github.com/spring-projects/spring-petclinic (Apache-2.0, the canonical reference Spring Boot application maintained by the Spring team) at pinned commit 88e37c15cf6fc8490b01bc3e8e2c800cec1ac272 (2026-07-30). This is NOT a teaching/intentionally-vulnerable app — it is added as a real, actively-maintained, production-grade codebase to test the scanner against genuine code rather than only vulnerable-by-design samples. It is labelled `vulnerable` (not `clean`) with exactly ONE real, hand-verified finding: `src/main/resources/application.properties` was actually grepped for hardcoded-secret/weak-crypto/SQL-concat/CSRF-disable/actuator-exposure patterns (see corpus/README.md for the full sweep) and turned up one genuine, narrow misconfiguration below. `spring.datasource.password=${MYSQL_PASS:petclinic}` in the sibling `application-mysql.properties`/`application-postgres.properties` was checked and is NOT a finding — it is an externalized `${ENV:default}` placeholder, not a literal committed secret. Do not \"fix\" the labelled finding — it is what the precision/recall gate scores against.",
+  "repos": [
+    {
+      "name": "spring-petclinic",
+      "kind": "vulnerable",
+      "path": "spring-petclinic",
+      "expectedFindings": [
+        {
+          "id": "gt_petclinic_actuator",
+          "category": "sensitive_data_exposure",
+          "cwe": ["CWE-16"],
+          "owasp": "A02:2021",
+          "file": "src/main/resources/application.properties",
+          "line": 21,
+          "severity": "medium",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "`management.endpoints.web.exposure.include=*` exposes every Spring Boot Actuator endpoint (including /env, /heapdump, /threaddump) if deployed with this default config. The file's own adjacent comment (\"Don't do this in production, only for development and testing\") confirms upstream's own security team considers this real, deployment-scoped misconfiguration and not intended production guidance."
+        }
+      ]
+    }
+  ]
+}

