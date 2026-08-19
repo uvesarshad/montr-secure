@@ -2,9 +2,9 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CustomRule, CustomRuleValidation, Language, RuleEngine } from "@montr/contracts";
-import { API_BASE, ACTOR_ID_HEADER, ACTOR_ROLE_HEADER } from "../../lib/api/config.js";
+import { API_BASE } from "../../lib/api/config.js";
+import { csrfHeaders, mockActorHeaders } from "../../lib/api/auth-headers.js";
 import { useActor } from "../../components/role-context.js";
-import type { Actor } from "../../lib/api/types.js";
 
 /**
  * Data hooks for the custom-rule authoring page. Self-contained (co-located with
@@ -41,15 +41,14 @@ export class RuleApiError extends Error {
   }
 }
 
-function actorHeaders(actor: Actor): Record<string, string> {
-  return { [ACTOR_ID_HEADER]: actor.id, [ACTOR_ROLE_HEADER]: actor.role };
-}
-
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, {
       ...init,
+      // These endpoints are real-API-only (no MSW handler) — always send the
+      // session cookie regardless of mock mode.
+      credentials: "include",
       headers: { Accept: "application/json", ...(init?.headers ?? {}) },
     });
   } catch {
@@ -88,7 +87,11 @@ export function useCreateRule() {
     mutationFn: (draft: RuleDraft) =>
       req<RuleMutationResult>(base, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...actorHeaders(actor) },
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
         body: JSON.stringify(draft),
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: RULES_KEY }),
@@ -102,7 +105,11 @@ export function useUpdateRule() {
     mutationFn: (vars: { id: string; draft: RuleDraft }) =>
       req<RuleMutationResult>(`${base}/${vars.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", ...actorHeaders(actor) },
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
         body: JSON.stringify(vars.draft),
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: RULES_KEY }),
@@ -116,7 +123,7 @@ export function useDeleteRule() {
     mutationFn: (id: string) =>
       req<{ ok: boolean; id: string }>(`${base}/${id}`, {
         method: "DELETE",
-        headers: actorHeaders(actor),
+        headers: { ...mockActorHeaders(actor), ...csrfHeaders() },
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: RULES_KEY }),
   });

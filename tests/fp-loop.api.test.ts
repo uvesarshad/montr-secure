@@ -57,7 +57,7 @@ describe("POST /findings/:id/false-positive", () => {
 
     const res = await app.inject({
       method: "POST",
-      url: `/findings/${FINDING.id}/false-positive`,
+      url: `/api/v1/findings/${FINDING.id}/false-positive`,
       headers: { authorization: `Bearer ${tokenFor(app, "operator")}` },
       payload: { reason: "reviewed: query is parameterized upstream" },
     });
@@ -98,7 +98,7 @@ describe("POST /findings/:id/false-positive", () => {
     const { app } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: `/findings/${FINDING.id}/false-positive`,
+      url: `/api/v1/findings/${FINDING.id}/false-positive`,
       headers: { authorization: `Bearer ${tokenFor(app, "approver")}` },
       payload: { reason: "approved as benign" },
     });
@@ -109,7 +109,7 @@ describe("POST /findings/:id/false-positive", () => {
     const { app, captured } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: `/findings/${FINDING.id}/false-positive`,
+      url: `/api/v1/findings/${FINDING.id}/false-positive`,
       headers: { authorization: `Bearer ${tokenFor(app, "viewer")}` },
       payload: { reason: "should not be allowed" },
     });
@@ -121,7 +121,7 @@ describe("POST /findings/:id/false-positive", () => {
     const { app } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: `/findings/${FINDING.id}/false-positive`,
+      url: `/api/v1/findings/${FINDING.id}/false-positive`,
       payload: { reason: "no token" },
     });
     expect(res.statusCode).toBe(401);
@@ -133,7 +133,7 @@ describe("POST /findings/:id/false-positive", () => {
 
     const missing = await app.inject({
       method: "POST",
-      url: `/findings/does-not-exist/false-positive`,
+      url: `/api/v1/findings/does-not-exist/false-positive`,
       headers: auth,
       payload: { reason: "x" },
     });
@@ -141,7 +141,7 @@ describe("POST /findings/:id/false-positive", () => {
 
     const bad = await app.inject({
       method: "POST",
-      url: `/findings/${FINDING.id}/false-positive`,
+      url: `/api/v1/findings/${FINDING.id}/false-positive`,
       headers: auth,
       payload: { reason: "" },
     });

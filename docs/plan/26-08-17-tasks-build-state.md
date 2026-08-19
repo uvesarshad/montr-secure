@@ -1,13 +1,13 @@
 > Source audit: [26-08-17-audit-build-state](./26-08-17-audit-build-state.md)
-> Updated: 26-08-19 · 1/42 done
+> Updated: 26-08-19 · 5/42 done
 
 # Tasks — Montr Secure build state
 
 ## P0 — broken / at-risk
 
 - [x] **(A1, P0)** Add real entrypoints for `apps/api` and `apps/worker`: a `main.ts` in each that actually calls `createApiServer(...).listen()` / `worker.start()`, with graceful shutdown and signal handling. Add `start` scripts to both `package.json`s, point the Docker `CMD`s at the new entry (`Dockerfile.api:57`, `Dockerfile.worker:67`), and replace the `createInMemoryDeps()` / `createStubOrchestrator` wiring with real dependency construction for production. Also implement the `--migrate` argv path the compose `migrate` service invokes, or drop that service.
-- [ ] **(A2, P0)** Make the golden-corpus CI gate score real pipeline output. Have the E2E scan emit a `scan.json` of confirmed findings and change `.github/workflows/ci.yml:84` to `qa:corpus -- --findings scan.json`. Keep `perfectScanner` only as an explicitly-labelled plumbing self-check, never as the release gate.
-- [ ] **(A3, P0)** Converge the web↔API contract. Pick one URL scheme (recommend versioning the API under `/api/v1`) and one auth mechanism (JWT cookie/bearer), align `apps/web/src/lib/api/config.ts:10-30` with the routes in `apps/api/src/routes/`, delete the `x-montr-actor-id` / `x-montr-actor-role` header shim, and flip the MSW default in `apps/web/src/components/providers.tsx:10` to off.
+- [x] **(A2, P0)** Make the golden-corpus CI gate score real pipeline output. Have the E2E scan emit a `scan.json` of confirmed findings and change `.github/workflows/ci.yml:84` to `qa:corpus -- --findings scan.json`. Keep `perfectScanner` only as an explicitly-labelled plumbing self-check, never as the release gate.
+- [x] **(A3, P0)** Converge the web↔API contract. Pick one URL scheme (recommend versioning the API under `/api/v1`) and one auth mechanism (JWT cookie/bearer), align `apps/web/src/lib/api/config.ts:10-30` with the routes in `apps/api/src/routes/`, delete the `x-montr-actor-id` / `x-montr-actor-role` header shim, and flip the MSW default in `apps/web/src/components/providers.tsx:10` to off.
 - [x] **(A4, P0)** Fix the osv-scanner download in `deploy/docker/Dockerfile.worker:53-54` — the real v1.9.1 asset is `osv-scanner_linux_amd64` (no version in the filename); the current versioned URL 404s and breaks the image build and the CI docker job. Add a checksum verification step while there.
 - [x] **(A5, P0)** Remove or correct `args: ["dist/index.js"]` in `deploy/helm/montr-secure/templates/deployment-web.yaml:42` — the web image only contains the Next standalone tree, so it must run `apps/web/server.js` (or simply inherit the image `CMD`). Currently the pod crash-loops on `Cannot find module`.
 

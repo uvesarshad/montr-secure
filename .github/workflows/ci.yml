@@ -63,6 +63,16 @@ jobs:
   # ---------------------------------------------------------------------------
   # Golden-corpus regression gate (§4.7). Blocks the release on any regression
   # of precision / recall / FP-rate vs the committed corpus/baseline.json.
+  #
+  # ⛔ REAL-MODE (A2 fix): this job runs the REAL apps/worker pipeline (real
+  # App Map, real semgrep/gitleaks discovery, real correlation, real static
+  # confirmation — FAKE in-process LLM gateway only, same offline pattern as
+  # `apps/worker/src/e2e-scan.test.ts`, so no live LLM credentials needed)
+  # against every golden-corpus repo via `scripts/corpus-scan.mjs`, then scores
+  # that REAL scan.json against ground truth via `qa:corpus -- --findings`.
+  # It NEVER falls back to the synthetic `perfectScanner` self-check (that
+  # tautologically echoes ground truth back at itself and can never fail — see
+  # `qa:corpus:selfcheck` for that plumbing smoke test, which is NOT this gate).
   # ---------------------------------------------------------------------------
   golden-corpus:
     name: golden-corpus regression gate
@@ -75,13 +85,38 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # `qa:corpus` builds @montr/qa (+contracts+fixtures), loads the golden corpus
-      # and scores confirmed findings vs ground truth, exiting NON-ZERO on any
-      # regression (0 OK · 1 REGRESSION · 2 USAGE · 3 CORPUS_ERROR · 4 RUNTIME).
-      # Today it self-checks with a perfect scanner (wiring smoke test); at
-      # integration the real Layer-3 output is scored via `-- --findings scan.json`.
+
+      # Real Layer-1 discovery tools. Best-effort: a missing binary degrades
+      # that detector to empty + a warning (never a hard failure) rather than
+      # silently falling back to a synthetic candidate pile — so a missing
+      # scanner shows up as lower recall in the score below, not as green CI.
+      - name: Install semgrep (real SAST discovery)
+        run: python3 -m pip install --quiet --disable-pip-version-check semgrep
+      - name: Install gitleaks (real secrets discovery)
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+
+      # Runs the real L0→L3 pipeline over corpus/repos, corpus/<stack>-vuln|clean,
+      # and the @montr/fixtures seed repos (vitest against source — no build
+      # step needed), and writes the aggregated confirmed findings to scan.json.
+      - name: Real-pipeline scan of the golden corpus
+        run: node scripts/corpus-scan.mjs --out scan.json
+
+      # Score the REAL scan.json (never the no-arg self-check) against ground
+      # truth, exiting NON-ZERO on any regression (0 OK · 1 REGRESSION ·
+      # 2 USAGE · 3 CORPUS_ERROR · 4 RUNTIME).
       - name: Precision/recall/FP-rate gate (non-zero on regression)
-        run: pnpm --filter @montr/qa qa:corpus
+        run: pnpm --filter @montr/qa qa:corpus -- --findings ${{ github.workspace }}/scan.json
+
+      - name: Upload real scan.json (debugging a regression)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-corpus-scan
+          path: scan.json
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Self-scan / dogfood (§4.8, §14, §19 DoD "scans itself clean"). Montr Secure

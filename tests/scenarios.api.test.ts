@@ -77,7 +77,7 @@ describe("POST /scenarios — author (disabled-by-default)", () => {
     const { app, store } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios",
+      url: "/api/v1/scenarios",
       headers: { authorization: `Bearer ${token(app, "operator")}` },
       payload: {
         name: "recon",
@@ -96,7 +96,7 @@ describe("POST /scenarios — author (disabled-by-default)", () => {
     const { app } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios",
+      url: "/api/v1/scenarios",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
       payload: {
         name: "bad",
@@ -116,7 +116,7 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
 
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios/scn_seed/run",
+      url: "/api/v1/scenarios/scn_seed/run",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
     });
     expect(res.statusCode).toBe(200);
@@ -139,7 +139,7 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
 
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios/scn_seed/run",
+      url: "/api/v1/scenarios/scn_seed/run",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
     });
     expect(res.statusCode).toBe(403);
@@ -156,7 +156,7 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
 
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios/scn_seed/run",
+      url: "/api/v1/scenarios/scn_seed/run",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
     });
     expect(res.statusCode).toBe(403);
@@ -168,7 +168,7 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
 
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios/scn_seed/run",
+      url: "/api/v1/scenarios/scn_seed/run",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
     });
     expect(res.statusCode).toBe(403);
@@ -180,7 +180,7 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
 
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios/scn_seed/run",
+      url: "/api/v1/scenarios/scn_seed/run",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
     });
     expect(res.statusCode).toBe(403);
@@ -193,7 +193,7 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
     for (const role of ["operator", "viewer"] as const) {
       const res = await app.inject({
         method: "POST",
-        url: "/scenarios/scn_seed/run",
+        url: "/api/v1/scenarios/scn_seed/run",
         headers: { authorization: `Bearer ${token(app, role)}` },
       });
       expect(res.statusCode).toBe(403);
@@ -210,7 +210,7 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
 
     const res = await app.inject({
       method: "POST",
-      url: "/scenarios/scn_seed/run",
+      url: "/api/v1/scenarios/scn_seed/run",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
     });
     expect(res.statusCode).toBe(200);

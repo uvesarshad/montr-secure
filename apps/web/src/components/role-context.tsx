@@ -1,13 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Role } from "@montr/contracts";
 import { api } from "../lib/api/client.js";
 import { qk } from "../lib/api/keys.js";
 import type { CurrentUser } from "../lib/rbac.js";
 import type { Actor } from "../lib/api/types.js";
 import { ShieldIcon } from "./icons.js";
+import { LoginGate } from "./login-gate.js";
 
 interface RoleContextValue {
   currentUser: CurrentUser;
@@ -31,6 +32,7 @@ function Splash({ label, tone = "muted" }: { label: string; tone?: "muted" | "da
 }
 
 export function RoleProvider({ children }: { children: React.ReactNode }) {
+  const qc = useQueryClient();
   const { data, isLoading, isError } = useQuery({ queryKey: qk.session, queryFn: api.getSession });
   const [activeUserId, setActiveUserId] = React.useState<string | null>(null);
 
@@ -51,7 +53,12 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   }, [data, activeUserId]);
 
   if (isLoading) return <Splash label="Loading session…" />;
-  if (isError || !value) return <Splash label="Failed to load session." tone="danger" />;
+  // No valid session (GET /auth/me came back 401, or the mock is unreachable)
+  // — show the real login form. On success, re-fetch the session query so the
+  // app renders normally with the now-authenticated user.
+  if (isError || !value) {
+    return <LoginGate onSuccess={() => void qc.invalidateQueries({ queryKey: qk.session })} />;
+  }
 
   return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>;
 }

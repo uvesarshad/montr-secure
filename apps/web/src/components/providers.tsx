@@ -2,12 +2,13 @@
 
 import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { isMswEnabled } from "../lib/api/config.js";
 import { RoleProvider } from "./role-context.js";
 import { ShieldIcon } from "./icons.js";
 
-/** MSW is on unless explicitly disabled — the console is mock-first until
- * apps/api is wired (WS-L / integration). */
-const useMsw = process.env.NEXT_PUBLIC_USE_MSW !== "false";
+/** The console talks to the real apps/api by default — MSW is opt-in dev/test
+ * tooling only, enabled via NEXT_PUBLIC_USE_MSW=true. */
+const useMsw = isMswEnabled;
 
 function StartupSplash({ label }: { label: string }) {
   return (

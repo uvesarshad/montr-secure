@@ -28,14 +28,14 @@ describe("POST /auth/logout — records an auth.logout audit event", () => {
     // Bootstrap user (first registrant) + login for a bearer session.
     const reg = await app.inject({
       method: "POST",
-      url: "/auth/register",
+      url: "/api/v1/auth/register",
       payload: { email: EMAIL, password: PASSWORD },
     });
     expect(reg.statusCode).toBe(201);
 
     const login = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/api/v1/auth/login",
       payload: { email: EMAIL, password: PASSWORD },
     });
     expect(login.statusCode).toBe(200);
@@ -43,7 +43,7 @@ describe("POST /auth/logout — records an auth.logout audit event", () => {
 
     const logout = await app.inject({
       method: "POST",
-      url: "/auth/logout",
+      url: "/api/v1/auth/logout",
       headers: { authorization: `Bearer ${token}` },
     });
     expect(logout.statusCode).toBe(204);
@@ -62,7 +62,7 @@ describe("POST /auth/logout — records an auth.logout audit event", () => {
       (e) => e.action === "auth.logout",
     ).length;
 
-    const logout = await app.inject({ method: "POST", url: "/auth/logout" });
+    const logout = await app.inject({ method: "POST", url: "/api/v1/auth/logout" });
     expect(logout.statusCode).toBe(204);
 
     const after = (await deps.store.audit.list(deps.config.clientId)).filter(

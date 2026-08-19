@@ -1176,13 +1176,24 @@ export const db = {
   },
 
   markFalsePositive(
-    scanId: string,
     findingId: string,
     actor: AuditActor,
     reason: string,
-  ): { finding: ConfirmedFinding; audit: AuditEvent } | undefined {
-    const finding = (confirmedByScan[scanId] ?? []).find((f) => f.id === findingId);
-    if (!finding) return undefined;
+  ): { scanId: string; finding: ConfirmedFinding; audit: AuditEvent } | undefined {
+    // The real API looks up a confirmed finding by id alone (findings are not
+    // addressed by scanId in the URL — see apps/api/src/routes/findings.ts);
+    // mirror that here by searching across every scan's confirmed findings.
+    let scanId: string | undefined;
+    let finding: ConfirmedFinding | undefined;
+    for (const [sid, findings] of Object.entries(confirmedByScan)) {
+      const match = findings.find((f) => f.id === findingId);
+      if (match) {
+        scanId = sid;
+        finding = match;
+        break;
+      }
+    }
+    if (!finding || !scanId) return undefined;
     falsePositives.add(findingId);
     const audit = appendAudit({
       scanId,
@@ -1194,6 +1205,6 @@ export const db = {
       metadata: { reason },
       at: new Date().toISOString(),
     });
-    return { finding, audit };
+    return { scanId, finding, audit };
   },
 } as const;

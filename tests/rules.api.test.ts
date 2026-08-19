@@ -54,7 +54,7 @@ describe("POST /rules — validate before enable", () => {
     const { app, store } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "operator")}` },
       payload: { ...VALID_SECRET, enabled: true },
     });
@@ -80,7 +80,7 @@ describe("POST /rules — validate before enable", () => {
     const { app, store } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "operator")}` },
       payload: {
         name: "bad",
@@ -98,7 +98,7 @@ describe("POST /rules — validate before enable", () => {
     const { app } = await setup();
     const res = await app.inject({
       method: "POST",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "operator")}` },
       payload: {
         name: "draft",
@@ -118,12 +118,12 @@ describe("POST /rules — validate before enable", () => {
     const { app } = await setup();
     const viewer = await app.inject({
       method: "POST",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "viewer")}` },
       payload: { ...VALID_SECRET, enabled: true },
     });
     expect(viewer.statusCode).toBe(403);
-    const anon = await app.inject({ method: "POST", url: "/rules", payload: VALID_SECRET });
+    const anon = await app.inject({ method: "POST", url: "/api/v1/rules", payload: VALID_SECRET });
     expect(anon.statusCode).toBe(401);
   });
 });
@@ -133,7 +133,7 @@ describe("PUT /rules/:id — versioning", () => {
     const { app, store } = await setup();
     const created = await app.inject({
       method: "POST",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "approver")}` },
       payload: { ...VALID_SECRET, enabled: true },
     });
@@ -141,7 +141,7 @@ describe("PUT /rules/:id — versioning", () => {
 
     const updated = await app.inject({
       method: "PUT",
-      url: `/rules/${id}`,
+      url: `/api/v1/rules/${id}`,
       headers: { authorization: `Bearer ${token(app, "approver")}` },
       payload: { ...VALID_SECRET, name: "Custom key v2", enabled: true },
     });
@@ -159,7 +159,7 @@ describe("DELETE /rules/:id", () => {
     const { app, store } = await setup();
     const created = await app.inject({
       method: "POST",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "operator")}` },
       payload: { ...VALID_SECRET, enabled: false },
     });
@@ -167,14 +167,14 @@ describe("DELETE /rules/:id", () => {
 
     const del = await app.inject({
       method: "DELETE",
-      url: `/rules/${id}`,
+      url: `/api/v1/rules/${id}`,
       headers: { authorization: `Bearer ${token(app, "operator")}` },
     });
     expect(del.statusCode).toBe(200);
 
     const gone = await app.inject({
       method: "GET",
-      url: `/rules/${id}`,
+      url: `/api/v1/rules/${id}`,
       headers: { authorization: `Bearer ${token(app, "operator")}` },
     });
     expect(gone.statusCode).toBe(404);
@@ -188,13 +188,13 @@ describe("per-client isolation (§8.3)", () => {
     const { app } = await setup();
     await app.inject({
       method: "POST",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "operator", "client_a")}` },
       payload: { ...VALID_SECRET, enabled: false },
     });
     const otherList = await app.inject({
       method: "GET",
-      url: "/rules",
+      url: "/api/v1/rules",
       headers: { authorization: `Bearer ${token(app, "operator", "client_b")}` },
     });
     expect((otherList.json() as { rules: unknown[] }).rules).toHaveLength(0);

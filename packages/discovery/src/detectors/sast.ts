@@ -44,7 +44,11 @@ export const defaultSemgrepRunner: SemgrepRunner = async ({ repoRoot, rulesets, 
     const res = await execa("semgrep", args, {
       cwd: repoRoot,
       reject: false,
-      signal,
+      // execa v9 renamed `signal` → `cancelSignal` (the old `signal` key is
+      // silently rejected, which previously made every live-scanner run
+      // throw and degrade to empty — see the golden-corpus REAL-MODE fix,
+      // build-plan §4.7 / A2).
+      cancelSignal: signal,
       timeout: 300_000,
       maxBuffer: 64 * 1024 * 1024,
     });

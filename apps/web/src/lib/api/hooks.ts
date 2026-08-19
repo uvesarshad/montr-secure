@@ -141,7 +141,7 @@ export function useMarkFalsePositive(scanId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (vars: { findingId: string; reason: string }) =>
-      api.markFalsePositive(scanId, vars.findingId, actor, vars.reason),
+      api.markFalsePositive(vars.findingId, actor, vars.reason),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.report(scanId) });
       void qc.invalidateQueries({ queryKey: qk.audit() });

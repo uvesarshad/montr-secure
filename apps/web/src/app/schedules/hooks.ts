@@ -2,9 +2,9 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ScanMode, ScanSchedule } from "@montr/contracts";
-import { API_BASE, ACTOR_ID_HEADER, ACTOR_ROLE_HEADER } from "../../lib/api/config.js";
+import { API_BASE } from "../../lib/api/config.js";
+import { csrfHeaders, mockActorHeaders } from "../../lib/api/auth-headers.js";
 import { useActor } from "../../components/role-context.js";
-import type { Actor } from "../../lib/api/types.js";
 
 /**
  * Data hooks for the scheduled-scans page. Self-contained (co-located with the
@@ -44,15 +44,14 @@ export class ScheduleApiError extends Error {
   }
 }
 
-function actorHeaders(actor: Actor): Record<string, string> {
-  return { [ACTOR_ID_HEADER]: actor.id, [ACTOR_ROLE_HEADER]: actor.role };
-}
-
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, {
       ...init,
+      // These endpoints are real-API-only (no MSW handler) — always send the
+      // session cookie regardless of mock mode.
+      credentials: "include",
       headers: { Accept: "application/json", ...(init?.headers ?? {}) },
     });
   } catch {
@@ -91,7 +90,11 @@ export function useCreateSchedule() {
     mutationFn: (draft: ScheduleDraft) =>
       req<{ schedule: ScanSchedule }>(base, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...actorHeaders(actor) },
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
         body: JSON.stringify(draft),
       }).then((r) => r.schedule),
     onSuccess: () => void qc.invalidateQueries({ queryKey: SCHED_KEY }),
@@ -105,7 +108,11 @@ export function useUpdateSchedule() {
     mutationFn: (vars: { id: string; draft: ScheduleDraft }) =>
       req<{ schedule: ScanSchedule }>(`${base}/${vars.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", ...actorHeaders(actor) },
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
         body: JSON.stringify(vars.draft),
       }).then((r) => r.schedule),
     onSuccess: () => void qc.invalidateQueries({ queryKey: SCHED_KEY }),
@@ -119,7 +126,7 @@ export function useDeleteSchedule() {
     mutationFn: (id: string) =>
       req<{ id: string; deleted: boolean }>(`${base}/${id}`, {
         method: "DELETE",
-        headers: actorHeaders(actor),
+        headers: { ...mockActorHeaders(actor), ...csrfHeaders() },
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: SCHED_KEY }),
   });

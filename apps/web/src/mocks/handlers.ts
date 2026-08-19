@@ -1,14 +1,20 @@
 import { http, HttpResponse, type PathParams } from "msw";
 import type { ErrorEnvelope, ExportArtifact, ExportFormat, Role } from "@montr/contracts";
-import { routePatterns, ACTOR_ID_HEADER, ACTOR_ROLE_HEADER } from "../lib/api/config.js";
+import { routePatterns, MOCK_ACTOR_ID_HEADER, MOCK_ACTOR_ROLE_HEADER } from "../lib/api/config.js";
 import type { Actor } from "../lib/api/types.js";
 import { db } from "./data.js";
 
 /**
  * MSW request handlers — the mock API. Mirrors the contract-typed endpoints in
- * lib/api/config.ts so the console is fully navigable before apps/api is wired.
- * RBAC is ALSO enforced here (defense in depth): approver-only gates reject other
- * roles with 403, matching the client-side guards (§10, §11).
+ * lib/api/config.ts so the console is fully navigable before/without a live
+ * apps/api. Response envelopes match the REAL API's actual shapes (`{ scan }`,
+ * `{ scans }`, `{ report }`, ...) so the shared lib/api/client.ts works
+ * identically against either backend.
+ *
+ * RBAC is ALSO enforced here (defense in depth): approver-only gates reject
+ * other roles with 403, matching the client-side guards (§10, §11). The actor
+ * is read from a mock-only header (never sent to the real API — see
+ * lib/api/auth-headers.ts) that drives the dev role-switcher demo.
  */
 
 function str(v: PathParams[string]): string {
@@ -16,8 +22,8 @@ function str(v: PathParams[string]): string {
 }
 
 function getActor(request: Request): Actor | null {
-  const id = request.headers.get(ACTOR_ID_HEADER);
-  const role = request.headers.get(ACTOR_ROLE_HEADER);
+  const id = request.headers.get(MOCK_ACTOR_ID_HEADER);
+  const role = request.headers.get(MOCK_ACTOR_ROLE_HEADER);
   if (!id || (role !== "operator" && role !== "approver" && role !== "viewer")) return null;
   return { id, role };
 }
@@ -57,12 +63,18 @@ export const handlers = [
     }),
   ),
 
+  // Mock mode never requires a real login (the console is fully navigable
+  // without one), but these are stubbed so a "Log out" affordance or an
+  // explicit login attempt against the mock server doesn't error.
+  http.post(routePatterns.login, () => HttpResponse.json({ user: db.users.operator })),
+  http.post(routePatterns.logout, () => new HttpResponse(null, { status: 204 })),
+
   /* -------------------------------- reads -------------------------------- */
-  http.get(routePatterns.scans, () => HttpResponse.json(db.listScans())),
+  http.get(routePatterns.scans, () => HttpResponse.json({ scans: db.listScans() })),
 
   http.get(routePatterns.scan, ({ params }) => {
     const scan = db.getScan(str(params.scanId));
-    return scan ? HttpResponse.json(scan) : notFound("Scan");
+    return scan ? HttpResponse.json({ scan }) : notFound("Scan");
   }),
 
   http.get(routePatterns.progress, ({ params }) =>
@@ -82,7 +94,7 @@ export const handlers = [
   http.get(routePatterns.report, ({ params }) => {
     const report = db.getReport(str(params.scanId));
     return report
-      ? HttpResponse.json(report)
+      ? HttpResponse.json({ report })
       : error(409, "GATE_NOT_PASSED", "Report is not available until the scan completes.");
   }),
 
@@ -178,14 +190,10 @@ export const handlers = [
         "Operator or approver role required to mark a finding as false positive.",
       );
     }
+    const findingId = str(params.findingId);
     const reason = (await readReason(request)) || "operator judgement";
-    const result = db.markFalsePositive(
-      str(params.scanId),
-      str(params.findingId),
-      toAuditActor(actor),
-      reason,
-    );
-    return result ? HttpResponse.json(result) : notFound("Finding");
+    const result = db.markFalsePositive(findingId, toAuditActor(actor), reason);
+    return result ? HttpResponse.json({ ok: true, findingId, ...result }) : notFound("Finding");
   }),
 
   http.post(routePatterns.export, ({ request, params }) => {

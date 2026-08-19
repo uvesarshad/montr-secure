@@ -26,6 +26,14 @@ const USAGE = `montr-qa — golden-corpus precision/recall gate
 Usage:
   montr-qa [options]
 
+⛔ Without --findings this is the SYNTHETIC SELF-CHECK (perfectScanner echoes
+   ground truth back at itself — precision/FP-rate are tautologically perfect;
+   it only proves the corpus/scorer/baseline/exit-code plumbing works). It is
+   NOT the release gate. Run it explicitly via \`qa:corpus:selfcheck\` when
+   that is what you want. The release gate MUST pass --findings pointing at a
+   real pipeline's output (see scripts/corpus-scan.mjs), e.g.:
+     qa:corpus -- --findings scan.json
+
 Options:
   --findings <path>       Score a scan-results JSON file (default: self-check with a perfect scanner).
   --baseline <path>       Baseline thresholds JSON (default: corpus/baseline.json, else built-in DoD defaults).
@@ -58,6 +66,13 @@ function parseArgs(argv: string[]): ParsedArgs {
       if (v === undefined) throw new UsageError(`option ${arg} requires a value`);
       return v;
     };
+    // `pnpm --filter <pkg> run <script> -- <args>` forwards a literal `--`
+    // ahead of <args> when the script itself is a compound command (e.g. this
+    // package's `qa:corpus`: `tsc -b && node dist/cli.js`) — pnpm 9.x does not
+    // strip its own separator in that shape. Skip any leading `--` no-ops
+    // rather than erroring, so the documented invocation
+    // (`qa:corpus -- --findings scan.json`, corpus/README.md) actually works.
+    if (arg === "--") continue;
     switch (arg) {
       case "--findings":
         args.findings = needValue();

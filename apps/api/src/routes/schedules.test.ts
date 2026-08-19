@@ -65,12 +65,12 @@ async function token(
 ): Promise<string> {
   await app.inject({
     method: "POST",
-    url: "/auth/register",
+    url: "/api/v1/auth/register",
     payload: { email, password: PASSWORD, ...(role ? { role } : {}) },
   });
   const login = await app.inject({
     method: "POST",
-    url: "/auth/login",
+    url: "/api/v1/auth/login",
     payload: { email, password: PASSWORD },
   });
   return (login.json() as { token: string }).token;
@@ -98,7 +98,7 @@ describe("scan-schedule routes", () => {
   it("creates an enabled schedule: computes nextRunAt, keeps the hard budget ceiling, audits", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/schedules",
+      url: "/api/v1/schedules",
       headers: auth(operator),
       payload: { repo: "acme/app", cron: "0 0 * * *", budgetCeiling: 7.5, enabled: true },
     });
@@ -121,7 +121,7 @@ describe("scan-schedule routes", () => {
   it("⛔ rejects an invalid cron with 400 (validate before enable)", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/schedules",
+      url: "/api/v1/schedules",
       headers: auth(operator),
       payload: { repo: "acme/app", cron: "99 * * * *", budgetCeiling: 5, enabled: true },
     });
@@ -131,7 +131,7 @@ describe("scan-schedule routes", () => {
   it("⛔ refuses to enable a cron that never fires", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/schedules",
+      url: "/api/v1/schedules",
       headers: auth(operator),
       payload: { repo: "acme/app", cron: "0 0 30 2 *", budgetCeiling: 5, enabled: true },
     });
@@ -141,7 +141,7 @@ describe("scan-schedule routes", () => {
   it("creates a DISABLED schedule with no nextRunAt (even if cron is unusual)", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/schedules",
+      url: "/api/v1/schedules",
       headers: auth(operator),
       payload: { repo: "acme/api", cron: "0 0 30 2 *", budgetCeiling: 3, enabled: false },
     });
@@ -154,23 +154,31 @@ describe("scan-schedule routes", () => {
   it("lists, gets, updates (enable->disable) and deletes; each mutation is audited", async () => {
     const create = await app.inject({
       method: "POST",
-      url: "/schedules",
+      url: "/api/v1/schedules",
       headers: auth(operator),
       payload: { repo: "acme/web", cron: "*/30 * * * *", budgetCeiling: 4, enabled: true },
     });
     const id = (create.json() as { schedule: { id: string } }).schedule.id;
 
-    const list = await app.inject({ method: "GET", url: "/schedules", headers: auth(viewer) });
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/v1/schedules",
+      headers: auth(viewer),
+    });
     expect(list.statusCode).toBe(200);
     expect((list.json() as { schedules: unknown[] }).schedules.length).toBeGreaterThan(0);
 
-    const get = await app.inject({ method: "GET", url: `/schedules/${id}`, headers: auth(viewer) });
+    const get = await app.inject({
+      method: "GET",
+      url: `/api/v1/schedules/${id}`,
+      headers: auth(viewer),
+    });
     expect(get.statusCode).toBe(200);
 
     // Disable via PUT: nextRunAt clears, enabledChanged recorded.
     const put = await app.inject({
       method: "PUT",
-      url: `/schedules/${id}`,
+      url: `/api/v1/schedules/${id}`,
       headers: auth(operator),
       payload: { repo: "acme/web", cron: "*/30 * * * *", budgetCeiling: 4, enabled: false },
     });
@@ -181,13 +189,13 @@ describe("scan-schedule routes", () => {
 
     const del = await app.inject({
       method: "DELETE",
-      url: `/schedules/${id}`,
+      url: `/api/v1/schedules/${id}`,
       headers: auth(operator),
     });
     expect(del.statusCode).toBe(200);
     const after = await app.inject({
       method: "GET",
-      url: `/schedules/${id}`,
+      url: `/api/v1/schedules/${id}`,
       headers: auth(viewer),
     });
     expect(after.statusCode).toBe(404);
@@ -203,7 +211,7 @@ describe("scan-schedule routes", () => {
   it("⛔ is read-only for viewers (create/update/delete forbidden)", async () => {
     const create = await app.inject({
       method: "POST",
-      url: "/schedules",
+      url: "/api/v1/schedules",
       headers: auth(viewer),
       payload: { repo: "acme/app", cron: "0 0 * * *", budgetCeiling: 5, enabled: true },
     });
@@ -211,7 +219,7 @@ describe("scan-schedule routes", () => {
 
     const put = await app.inject({
       method: "PUT",
-      url: "/schedules/whatever",
+      url: "/api/v1/schedules/whatever",
       headers: auth(viewer),
       payload: { repo: "acme/app", cron: "0 0 * * *", budgetCeiling: 5, enabled: false },
     });
@@ -219,7 +227,7 @@ describe("scan-schedule routes", () => {
 
     const del = await app.inject({
       method: "DELETE",
-      url: "/schedules/whatever",
+      url: "/api/v1/schedules/whatever",
       headers: auth(viewer),
     });
     expect(del.statusCode).toBe(403);
@@ -228,7 +236,7 @@ describe("scan-schedule routes", () => {
   it("returns 404 for an unknown schedule", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/schedules/does-not-exist",
+      url: "/api/v1/schedules/does-not-exist",
       headers: auth(operator),
     });
     expect(res.statusCode).toBe(404);

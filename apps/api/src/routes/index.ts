@@ -18,22 +18,33 @@ import { registerScenarioRoutes } from "./scenarios.js";
 import { registerScheduleRoutes } from "./schedules.js";
 
 export function registerRoutes(app: FastifyInstance, deps: ResolvedDeps): void {
+  // Unprefixed liveness probe — k8s/docker-compose/Dockerfile HEALTHCHECK all
+  // target plain `/health` (see deploy/docker/Dockerfile.api, docker-compose.yml,
+  // deploy/helm values.api.probes.path). Keep it outside the /api/v1 prefix.
   app.get(
     "/health",
     { schema: { tags: ["system"], summary: "Liveness probe" }, config: { rateLimit: false } },
     async () => ({ status: "ok" }),
   );
 
-  registerAuthRoutes(app, deps);
-  registerScanRoutes(app, deps);
-  registerGateRoutes(app, deps);
-  registerDastRoutes(app, deps);
-  registerFindingRoutes(app, deps);
-  registerAuditRoutes(app, deps);
+  // Every other route is versioned under /api/v1 (the web console's contract).
+  // Route paths inside each routes/*.ts file are unchanged — only the mount
+  // point moves — so this is purely additive from each route module's view.
+  void app.register(
+    async (api) => {
+      registerAuthRoutes(api, deps);
+      registerScanRoutes(api, deps);
+      registerGateRoutes(api, deps);
+      registerDastRoutes(api, deps);
+      registerFindingRoutes(api, deps);
+      registerAuditRoutes(api, deps);
 
-  // Phase-4 (Wave 5) — scale & intelligence stubs.
-  registerAnalyticsRoutes(app, deps);
-  registerRuleRoutes(app, deps);
-  registerScenarioRoutes(app, deps);
-  registerScheduleRoutes(app, deps);
+      // Phase-4 (Wave 5) — scale & intelligence stubs.
+      registerAnalyticsRoutes(api, deps);
+      registerRuleRoutes(api, deps);
+      registerScenarioRoutes(api, deps);
+      registerScheduleRoutes(api, deps);
+    },
+    { prefix: "/api/v1" },
+  );
 }

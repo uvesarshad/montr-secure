@@ -2,9 +2,9 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { RedTeamCategory, RedTeamScenario, RedTeamStep } from "@montr/contracts";
-import { API_BASE, ACTOR_ID_HEADER, ACTOR_ROLE_HEADER } from "../../lib/api/config.js";
+import { API_BASE } from "../../lib/api/config.js";
+import { csrfHeaders, mockActorHeaders } from "../../lib/api/auth-headers.js";
 import { useActor } from "../../components/role-context.js";
-import type { Actor } from "../../lib/api/types.js";
 
 /**
  * Data hooks for the red-team scenario library page. Self-contained (co-located
@@ -64,15 +64,14 @@ export class ScenarioApiError extends Error {
   }
 }
 
-function actorHeaders(actor: Actor): Record<string, string> {
-  return { [ACTOR_ID_HEADER]: actor.id, [ACTOR_ROLE_HEADER]: actor.role };
-}
-
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, {
       ...init,
+      // These endpoints are real-API-only (no MSW handler) — always send the
+      // session cookie regardless of mock mode.
+      credentials: "include",
       headers: { Accept: "application/json", ...(init?.headers ?? {}) },
     });
   } catch {
@@ -111,7 +110,11 @@ export function useCreateScenario() {
     mutationFn: (draft: ScenarioDraft) =>
       req<{ scenario: RedTeamScenario }>(base, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...actorHeaders(actor) },
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
         body: JSON.stringify(draft),
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: SCN_KEY }),
@@ -125,7 +128,11 @@ export function useUpdateScenario() {
     mutationFn: (vars: { id: string; draft: ScenarioDraft }) =>
       req<{ scenario: RedTeamScenario }>(`${base}/${vars.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", ...actorHeaders(actor) },
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
         body: JSON.stringify(vars.draft),
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: SCN_KEY }),
@@ -139,7 +146,7 @@ export function useDeleteScenario() {
     mutationFn: (id: string) =>
       req<{ ok: boolean; id: string }>(`${base}/${id}`, {
         method: "DELETE",
-        headers: actorHeaders(actor),
+        headers: { ...mockActorHeaders(actor), ...csrfHeaders() },
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: SCN_KEY }),
   });
@@ -153,7 +160,11 @@ export function useRunScenario() {
     mutationFn: (id: string) =>
       req<{ run: ScenarioRun }>(`${base}/${id}/run`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...actorHeaders(actor) },
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
       }).then((r) => r.run),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["audit", "all"] }),
   });

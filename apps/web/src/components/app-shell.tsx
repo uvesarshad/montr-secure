@@ -3,7 +3,10 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { navForRole, ROLE_LABEL, ROLE_DESCRIPTION } from "../lib/rbac.js";
+import { api } from "../lib/api/client.js";
+import { qk } from "../lib/api/keys.js";
 import { useRoleContext } from "./role-context.js";
 import { NAV_ICONS, ShieldIcon, UserIcon, ChevronDownIcon } from "./icons.js";
 import {
@@ -66,6 +69,19 @@ function NavLinks({ role, onNavigate }: { role: Role; onNavigate?: () => void })
 
 function RoleSwitcher() {
   const { currentUser, availableUsers, setRole } = useRoleContext();
+  const qc = useQueryClient();
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+    } finally {
+      // Session cookie is cleared server-side regardless of outcome (logout
+      // never fails on a missing/expired credential — see auth.ts); always
+      // drop the client-side session cache so RoleProvider re-prompts to log in.
+      void qc.invalidateQueries({ queryKey: qk.session });
+    }
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -77,17 +93,32 @@ function RoleSwitcher() {
       <DropdownMenuContent>
         <DropdownMenuLabel>Signed in as {currentUser.email}</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>Switch role (demo)</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={currentUser.role} onValueChange={(v) => setRole(v as Role)}>
-          {availableUsers.map((user) => (
-            <DropdownMenuRadioItem key={user.id} value={user.role}>
-              <div>
-                <p className="font-medium">{ROLE_LABEL[user.role]}</p>
-                <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTION[user.role]}</p>
-              </div>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
+        {availableUsers.length > 1 ? (
+          <>
+            <DropdownMenuLabel>Switch role (demo)</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={currentUser.role}
+              onValueChange={(v) => setRole(v as Role)}
+            >
+              {availableUsers.map((user) => (
+                <DropdownMenuRadioItem key={user.id} value={user.role}>
+                  <div>
+                    <p className="font-medium">{ROLE_LABEL[user.role]}</p>
+                    <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTION[user.role]}</p>
+                  </div>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void handleLogout()}
+          className="w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+        >
+          Log out
+        </button>
       </DropdownMenuContent>
     </DropdownMenu>
   );

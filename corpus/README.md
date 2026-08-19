@@ -41,13 +41,27 @@ confirmed) — confirming one is a false positive. Access-control fixes
 ## Running the gate
 
 ```bash
-pnpm --filter @montr/qa qa:corpus                 # self-check (perfect scanner) — wiring smoke test
-pnpm --filter @montr/qa qa:corpus -- --findings scan.json   # score real Layer-3 output
+# 1. Run the REAL apps/worker pipeline over every corpus repo (real App Map,
+#    real semgrep/gitleaks discovery, real correlation + static confirmation;
+#    FAKE in-process LLM gateway, so no live LLM credentials needed) and write
+#    the aggregated confirmed findings to scan.json:
+pnpm corpus:scan                                             # == node scripts/corpus-scan.mjs --out scan.json
+
+# 2. Score that REAL scan against ground truth — THIS is the release gate:
+pnpm --filter @montr/qa qa:corpus -- --findings scan.json
+
+# Synthetic self-check (perfectScanner echoes ground truth back at itself —
+# precision/FP-rate are tautologically perfect; proves the corpus/scorer/
+# baseline/exit-code PLUMBING works, nothing about detection quality). NOT the
+# release gate — that always requires --findings from a real scan (above).
+pnpm --filter @montr/qa qa:corpus:selfcheck
+
 pnpm --filter @montr/qa qa:variance               # model-variance matrix (fake adapter)
 ```
 
 Exit codes: `0` OK · `1` REGRESSION · `2` USAGE · `3` CORPUS_ERROR · `4` RUNTIME_ERROR.
-CI blocks a release on any non-zero code from `qa:corpus`.
+CI (`.github/workflows/ci.yml`'s `golden-corpus` job) runs both steps above in
+order and blocks a release on any non-zero code from `qa:corpus`.
 
 ## Adding a case
 

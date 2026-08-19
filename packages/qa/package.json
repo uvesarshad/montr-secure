@@ -23,6 +23,7 @@
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",
     "qa:corpus": "tsc -b && node dist/cli.js",
+    "qa:corpus:selfcheck": "tsc -b && node dist/cli.js",
     "qa:variance": "tsc -b && node dist/cli.js --variance",
     "clean": "rm -rf dist .tsbuildinfo"
   },
