@@ -100,3 +100,17 @@ pnpm + Turborepo · TypeScript strict · Node 20. Package boundaries and the 10 
 ## License
 
 Proprietary — Montr AI Labs.
+
+## Documentation
+
+Full project documentation lives in /docs and is written for both humans and AI coding agents.
+
+Start here: [docs/overview.md](docs/overview.md)
+
+The overview contains the project's tech stack, architecture decisions, directory map of all doc files, and a glossary of domain terms. All other doc files are linked from there.
+
+To UPDATE the docs after a change, read docs/maintenance.md.
+
+AI agents (Claude Code, Gemini CLI, Codex, Cursor, etc.) should read docs/overview.md before making any changes to this codebase.
+
+AGENT NOTE: If you are an AI agent reading this README, stop here and open docs/overview.md before proceeding with any task.
