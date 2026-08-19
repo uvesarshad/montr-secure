@@ -55,6 +55,9 @@ export {
   PostureRepositoryImpl,
 } from "./phase4.js";
 
+// Versioned LLM prompt templates (§8.2, §15 regression-tuning loop).
+export { PromptVersionRepositoryImpl } from "./prompt-version.js";
+
 // Audit log (Prisma-backed AuditLogClient) + export helpers.
 export { PrismaAuditLogClient, exportAuditLog, type AuditExportFormat } from "./audit.js";
 

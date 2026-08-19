@@ -6,6 +6,7 @@ import {
   type CostEstimate,
   type CostRollup,
 } from "@montr/contracts";
+import { getMetrics } from "@montr/telemetry";
 import { roundUsd } from "./pricing.js";
 import type { BudgetCheck } from "./meter.js";
 
@@ -63,6 +64,8 @@ export function buildCostRollup(
  */
 export function enforceBudget(check: BudgetCheck, policy: BudgetPolicy): BudgetCheck {
   if (check.exceeded && policy.enforcement === "hard_halt") {
+    // Observability: the headline budget-breach counter (§10 alerting).
+    getMetrics().recordBudgetBreach(1, { enforcement: policy.enforcement });
     throw new BudgetExceededError("Budget ceiling exceeded — hard halt", {
       spentUsd: check.spentUsd,
       spentTokens: check.spentTokens,

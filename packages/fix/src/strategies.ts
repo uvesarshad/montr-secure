@@ -151,12 +151,164 @@ const hardcodedSecretStrategy = makeStrategy({
     "hard-coding but does not invalidate the already-leaked credential.",
 });
 
+/**
+ * NoSQL injection — MongoDB-style filter operator injection. A raw
+ * `req.body`/`req.query`/`req.params` value used directly as a query filter
+ * value lets an attacker submit an object (e.g. `{"$ne": null}`) that is
+ * interpreted as a Mongo query operator instead of a literal to match. Coercing
+ * the tainted value to `String(...)` neutralizes operator injection because a
+ * string can never be parsed as a `$operator` object. Scoped to the filter
+ * object literal of a Mongo-style call so unrelated code in the file is untouched.
+ */
+const MONGO_METHODS =
+  "find|findOne|findOneAndUpdate|findOneAndDelete|updateOne|updateMany|deleteOne|deleteMany|count|countDocuments";
+const MONGO_CALL_RE = new RegExp(`\\.(?:${MONGO_METHODS})\\(\\s*\\{[^{}]*\\}`, "g");
+const RAW_TAINT_RE = /(?<!String\()\breq\.(?:body|query|params)\.[A-Za-z0-9_]+/g;
+
+const nosqlInjectionStrategy = makeStrategy({
+  category: "nosql_injection",
+  vulnerable: new RegExp(
+    `\\.(?:${MONGO_METHODS})\\(\\s*\\{[^{}]*(?<!String\\()\\breq\\.(?:body|query|params)\\.[A-Za-z0-9_]+[^{}]*\\}`,
+  ),
+  safe: /String\(req\.(?:body|query|params)\.[A-Za-z0-9_]+\)/,
+  transform: (source) =>
+    source.replace(MONGO_CALL_RE, (call) =>
+      call.replace(RAW_TAINT_RE, (taint) => `String(${taint})`),
+    ),
+  rationale:
+    "Coerced the tainted request value(s) used as a MongoDB filter to `String(...)`, so an attacker " +
+    'can no longer submit a `$operator` object (e.g. `{"$ne": null}`) to bypass the query filter.',
+});
+
+/**
+ * Insecure cookie — a `.cookie(name, value[, options])` call missing one or
+ * more of the `Secure` / `HttpOnly` / `SameSite` flags. Purely additive: any
+ * existing options are preserved and only the missing flags are appended, so
+ * the transform never weakens an already-correct configuration.
+ */
+const COOKIE_CALL_RE =
+  /\.cookie\(\s*((?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`))\s*,\s*([^,()]+(?:\([^)]*\))?)\s*(?:,\s*(\{[^{}]*\}))?\s*\)/g;
+
+function cookieMissingFlags(opts: string | undefined): {
+  secure: boolean;
+  httpOnly: boolean;
+  sameSite: boolean;
+} {
+  return {
+    secure: opts ? /\bsecure\s*:/i.test(opts) : false,
+    httpOnly: opts ? /\bhttpOnly\s*:/i.test(opts) : false,
+    sameSite: opts ? /\bsameSite\s*:/i.test(opts) : false,
+  };
+}
+
+const insecureCookieStrategy = makeStrategy({
+  category: "insecure_cookie",
+  // Matches a `.cookie(...)` call where at least one of the three flags is
+  // absent (alternation of negative lookaheads = "any one of these is missing").
+  vulnerable:
+    /\.cookie\((?:(?![^)]*\bsecure\s*:)|(?![^)]*\bhttpOnly\s*:)|(?![^)]*\bsameSite\s*:))[^)]*\)/i,
+  // Matches only when ALL three flags are present (order-independent).
+  safe: /\.cookie\((?=[^)]*\bsecure\s*:)(?=[^)]*\bhttpOnly\s*:)(?=[^)]*\bsameSite\s*:)[^)]*\)/i,
+  transform: (source) =>
+    source.replace(COOKIE_CALL_RE, (match, nameLit: string, valueExpr: string, opts?: string) => {
+      const has = cookieMissingFlags(opts);
+      if (has.secure && has.httpOnly && has.sameSite) return match;
+      const additions: string[] = [];
+      if (!has.secure) additions.push("secure: true");
+      if (!has.httpOnly) additions.push("httpOnly: true");
+      if (!has.sameSite) additions.push('sameSite: "lax"');
+      const optsOut = opts
+        ? (() => {
+            const inner = opts.trim().slice(1, -1).trim();
+            return inner.length > 0
+              ? `{ ${inner}, ${additions.join(", ")} }`
+              : `{ ${additions.join(", ")} }`;
+          })()
+        : `{ ${additions.join(", ")} }`;
+      return `.cookie(${nameLit}, ${valueExpr}, ${optsOut})`;
+    }),
+  rationale:
+    "Added the missing `Secure`, `HttpOnly`, and/or `SameSite` cookie flags (preserving any existing " +
+    "options), so the cookie can no longer be sent over plain HTTP, read by client-side script, or " +
+    "attached to cross-site requests.",
+});
+
+/**
+ * Missing security headers — a Next.js config object (`next.config.js` /
+ * `.mjs` / `.ts`) with no standard security-header set. Only fires when the
+ * config object has NO `headers()` export at all (detected via the absence of
+ * `X-Content-Type-Options` anywhere in the file) — a config that already
+ * defines a partial header set is left alone rather than guessed at, and falls
+ * through to human review instead.
+ */
+const CONFIG_OPEN_RE = /(?:module\.exports|const\s+\w+(?:\s*:\s*[\w.]+)?)\s*=\s*\{/;
+const SECURITY_HEADERS_BLOCK = `
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+    ];
+  },`;
+
+const missingSecurityHeadersStrategy = makeStrategy({
+  category: "missing_security_headers",
+  vulnerable: new RegExp(CONFIG_OPEN_RE.source + "(?![\\s\\S]*X-Content-Type-Options)"),
+  safe: /X-Content-Type-Options/i,
+  transform: (source) =>
+    /X-Content-Type-Options/i.test(source)
+      ? source
+      : source.replace(CONFIG_OPEN_RE, (m) => `${m}${SECURITY_HEADERS_BLOCK}`),
+  rationale:
+    "Injected a standard `headers()` block (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, " +
+    "Strict-Transport-Security, Permissions-Policy) into the Next.js config so every response carries " +
+    "baseline hardening headers.",
+});
+
+/**
+ * Open redirect — `.redirect(<bareExpr>)` where the target is a simple, tainted
+ * property-access expression (never a string literal — those are static and
+ * already safe). Scoped deliberately narrow: only a dotted identifier chain
+ * with no calls/side-effects qualifies, so the guarded expression can be
+ * repeated safely. Anything more complex (a function call, a template, string
+ * concatenation) does not match and falls through to human review instead of
+ * guessing.
+ */
+const REDIRECT_CALL_RE = /\.redirect\(\s*(?!["'`])([A-Za-z_$][\w.]*)\s*\)/g;
+
+const openRedirectStrategy = makeStrategy({
+  category: "open_redirect",
+  vulnerable: /\.redirect\(\s*(?!["'`])([A-Za-z_$][\w.]*)\s*\)/,
+  safe: /\.startsWith\("\/"\)\s*&&\s*!/,
+  transform: (source) =>
+    source.replace(
+      REDIRECT_CALL_RE,
+      (_m, expr: string) =>
+        `.redirect(${expr}.startsWith("/") && !${expr}.startsWith("//") ? ${expr} : "/")`,
+    ),
+  rationale:
+    "Guarded the redirect target to same-origin relative paths only (must start with a single `/`), so " +
+    "an attacker-controlled absolute or protocol-relative URL can no longer be used to redirect users " +
+    "off-site.",
+});
+
 /** All deterministic strategies, keyed by category via {@link pickStrategy}. */
 export const FIX_STRATEGIES: readonly FixStrategy[] = [
   sqlInjectionStrategy,
   xssStrategy,
   permissiveCorsStrategy,
   hardcodedSecretStrategy,
+  nosqlInjectionStrategy,
+  insecureCookieStrategy,
+  missingSecurityHeadersStrategy,
+  openRedirectStrategy,
 ];
 
 /** The deterministic strategy for a category, if one exists. */

@@ -485,6 +485,10 @@ model Report {
 }
 
 /// Prompt registry/versioning (§15) — feeds regression tuning. Global (clientId null) or per-client.
+/// `version` is a monotonic counter PER `name` across ALL clients (see the unique
+/// index below). Exactly one row per (name, clientId) scope should carry
+/// `isActive: true` at a time — enforced in the repository, not the DB, since
+/// Prisma has no partial-unique-index support here.
 model PromptVersion {
   id        String   @id @default(cuid())
   clientId  String?
@@ -492,10 +496,12 @@ model PromptVersion {
   version   Int
   layer     LayerId?
   template  String
+  isActive  Boolean  @default(false)
   createdAt DateTime @default(now())
 
   @@unique([name, version])
   @@index([clientId])
+  @@index([name, clientId, isActive])
 }
 
 /// DAST allowlist + scope contract (§11). Nothing may be probed unless enabled + approved.

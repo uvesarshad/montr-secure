@@ -288,4 +288,95 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     expect(fix.riskClass).toBe("human-required");
     expect(fix.rationale.toLowerCase()).toContain("source unavailable");
   });
+
+  // A14 — full pipeline coverage for the newly-implemented mechanical strategies
+  // (nosql_injection, insecure_cookie, missing_security_headers, open_redirect):
+  // each must come out auto-eligible with a validated, fail-before/pass-after patch.
+  it("emits validated, auto-eligible fixes for the newly-implemented mechanical categories", async () => {
+    const files: Record<string, string> = {
+      "app/api/accounts/route.ts": `export async function POST(req) {\n  const user = await db.collection("users").findOne({ username: req.body.username, password: req.body.password });\n  return user;\n}\n`,
+      "app/api/preferences/route.ts": `export function setSessionCookie(res, token) {\n  res.cookie("session", token);\n}\n`,
+      "next.config.js": `/** @type {import('next').NextConfig} */\nconst nextConfig = {\n  reactStrictMode: true,\n};\nmodule.exports = nextConfig;\n`,
+      "app/api/goto/route.ts": `export function handler(req, res) {\n  return res.redirect(req.query.next);\n}\n`,
+    };
+
+    const findings: ConfirmedFinding[] = [
+      {
+        ...SQLI,
+        id: "conf_nosqli_0001",
+        category: "nosql_injection",
+        title: "NoSQL operator injection in login",
+        location: { ...SQLI.location, file: "app/api/accounts/route.ts" },
+      },
+      {
+        ...SQLI,
+        id: "conf_cookie_0001",
+        category: "insecure_cookie",
+        title: "Session cookie missing Secure/HttpOnly/SameSite",
+        location: { ...SQLI.location, file: "app/api/preferences/route.ts" },
+      },
+      {
+        ...SQLI,
+        id: "conf_headers_0001",
+        category: "missing_security_headers",
+        title: "No baseline security headers configured",
+        location: { ...SQLI.location, file: "next.config.js" },
+      },
+      {
+        ...SQLI,
+        id: "conf_redirect_0001",
+        category: "open_redirect",
+        title: "Open redirect via ?next=",
+        location: { ...SQLI.location, file: "app/api/goto/route.ts" },
+      },
+    ];
+
+    const out = await generateFixes(
+      baseInput({ confirmed: findings, source: createMapSourceReader(files) }),
+    );
+
+    expect(out.fixes).toHaveLength(findings.length);
+    for (const fix of out.fixes) {
+      expect(fix.riskClass, fix.confirmedFindingId).toBe("auto-eligible");
+      expect(fix.patch.length).toBeGreaterThan(0);
+      expect(fix.proofOfFixTest.failsPrePatch).toBe(true);
+      expect(fix.proofOfFixTest.passesPostPatch).toBe(true);
+    }
+
+    const nosqli = out.fixes.find((f) => f.confirmedFindingId === "conf_nosqli_0001")!;
+    const nosqliCheck = validatePatch(
+      files["app/api/accounts/route.ts"]!,
+      nosqli.patch,
+      (s) =>
+        /(?<!String\()\breq\.(?:body|query|params)\.[A-Za-z0-9_]+/.test(s) && /\.findOne\(/.test(s),
+    );
+    expect(nosqliCheck.applies).toBe(true);
+    expect(nosqliCheck.appliedSource).toContain("String(req.body.username)");
+
+    const cookie = out.fixes.find((f) => f.confirmedFindingId === "conf_cookie_0001")!;
+    const cookieCheck = validatePatch(
+      files["app/api/preferences/route.ts"]!,
+      cookie.patch,
+      (s) => !/\bsecure\s*:/i.test(s),
+    );
+    expect(cookieCheck.applies).toBe(true);
+    expect(cookieCheck.appliedSource).toContain("secure: true");
+    expect(cookieCheck.appliedSource).toContain("httpOnly: true");
+
+    const headers = out.fixes.find((f) => f.confirmedFindingId === "conf_headers_0001")!;
+    const headersCheck = validatePatch(
+      files["next.config.js"]!,
+      headers.patch,
+      (s) => !/X-Content-Type-Options/.test(s),
+    );
+    expect(headersCheck.applies).toBe(true);
+    expect(headersCheck.appliedSource).toContain("Strict-Transport-Security");
+
+    const redirect = out.fixes.find((f) => f.confirmedFindingId === "conf_redirect_0001")!;
+    const redirectCheck = validatePatch(files["app/api/goto/route.ts"]!, redirect.patch, (s) =>
+      /\.redirect\(\s*(?!["'`])[A-Za-z_$][\w.]*\s*\)/.test(s),
+    );
+    expect(redirectCheck.applies).toBe(true);
+    expect(redirectCheck.appliedSource).toContain('.startsWith("/")');
+  });
 });

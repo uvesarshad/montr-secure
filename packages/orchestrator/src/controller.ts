@@ -41,7 +41,7 @@ import {
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
 import type { StateStore } from "@montr/state-store";
-import type { Logger } from "@montr/telemetry";
+import { getMetrics, type Logger } from "@montr/telemetry";
 import type { CostMeter } from "@montr/cost-meter";
 import { EventBus, events } from "./events.js";
 import { KillRegistry } from "./kill-switch.js";
@@ -338,6 +338,8 @@ class OrchestratorController implements Orchestrator {
       this.kills.abortAll(signal.reason);
       await this.scheduler.publishKill(signal);
       for (const scanId of ids) await this.blockKilled(scanId, signal, at);
+      // Observability: kill-switch activation counter (§11 alerting).
+      getMetrics().recordKillSwitchActivation(1, { scope: "global" });
       await this.safeAudit({
         clientId: this.config.clientId,
         action: "dast.kill_switch",
@@ -351,6 +353,8 @@ class OrchestratorController implements Orchestrator {
     this.kills.abortScan(signal.scanId, signal.reason);
     await this.scheduler.publishKill(signal);
     await this.blockKilled(signal.scanId, signal, at);
+    // Observability: kill-switch activation counter (§11 alerting).
+    getMetrics().recordKillSwitchActivation(1, { scope: "scan" });
   }
 
   status(scanId: string): Promise<Scan> {

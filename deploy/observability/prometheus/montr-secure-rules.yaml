@@ -1,0 +1,122 @@
+# Prometheus recording + alerting rules for Montr Secure.
+#
+# Source metrics: @montr/telemetry OTel counters/histograms (packages/telemetry/src/metrics.ts),
+# scraped via the Prometheus exporter (packages/telemetry/src/otel.ts, default port 9464,
+# path /metrics — OFF by default, opt in via config.telemetry.enabled).
+#
+# The OTel Prometheus exporter converts instrument names' dots to underscores and appends
+# "_total" for counters, e.g. instrument "montr.budget.breach" -> series "montr_budget_breach_total".
+#
+# Include this file via Prometheus `rule_files:` — see ../README.md.
+groups:
+  # ---------------------------------------------------------------------------
+  # Recording rules — precompute the headline rates used by the Grafana
+  # dashboard (montr-secure-dashboard.json) and by the alerts below.
+  # ---------------------------------------------------------------------------
+  - name: montr-secure.recording
+    interval: 30s
+    rules:
+      - record: montr:budget_breach:rate5m
+        expr: sum(rate(montr_budget_breach_total[5m]))
+
+      - record: montr:kill_switch_activation:rate5m
+        expr: sum by (scope) (rate(montr_kill_switch_activation_total[5m]))
+
+      - record: montr:gate_bypass_attempt:rate5m
+        expr: sum by (route, role) (rate(montr_gate_bypass_attempt_total[5m]))
+
+      - record: montr:errors:rate5m
+        expr: sum by (code) (rate(montr_errors_total[5m]))
+
+      - record: montr:layer_duration_ms:p95_5m
+        expr: histogram_quantile(0.95, sum by (le, layer) (rate(montr_layer_duration_ms_bucket[5m])))
+
+  # ---------------------------------------------------------------------------
+  # Alerting rules — one per new safety counter (§10/§11 build-plan alerting
+  # requirement), plus a couple of pipeline-health alerts for context.
+  # ---------------------------------------------------------------------------
+  - name: montr-secure.alerts
+    rules:
+      - alert: MontrBudgetBreach
+        expr: increase(montr_budget_breach_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: montr-secure
+        annotations:
+          summary: "Montr Secure: budget ceiling breached (hard-halt fired)"
+          description: >-
+            montr_budget_breach_total increased by {{ $value }} in the last 5 minutes
+            (enforcement={{ $labels.enforcement }}). A scan was hard-halted because its
+            cost ceiling was exceeded (build-plan DECIDE-4, packages/cost-meter/src/variance.ts).
+            Check the scan's CostRollup and whether the budget policy needs adjusting.
+
+      - alert: MontrKillSwitchActivated
+        expr: increase(montr_kill_switch_activation_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: montr-secure
+        annotations:
+          summary: "Montr Secure: kill switch activated ({{ $labels.scope }})"
+          description: >-
+            montr_kill_switch_activation_total increased by {{ $value }} in the last 5
+            minutes (scope={{ $labels.scope }}). Every active scan's AbortController was
+            triggered (packages/orchestrator/src/kill-switch.ts, controller.ts `kill()`).
+            Confirm this was an intentional operator/approver action (§11 golden rule).
+
+      - alert: MontrGateBypassAttempt
+        expr: increase(montr_gate_bypass_attempt_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: montr-secure
+        annotations:
+          summary: "Montr Secure: gate-bypass attempt on {{ $labels.route }}"
+          description: >-
+            montr_gate_bypass_attempt_total increased by {{ $value }} in the last 5 minutes
+            on route {{ $labels.route }} by a caller with role={{ $labels.role }}. The
+            `requireApprover` guard (apps/api/src/plugins/auth-plugin.ts) rejected an
+            attempt to act on an approver-only gate (human fix gate / DAST authorization,
+            §11 golden rule #3/#4). Investigate the actor for a possible RBAC
+            misconfiguration or a deliberate bypass attempt.
+
+      - alert: MontrGateBypassAttemptBurst
+        expr: increase(montr_gate_bypass_attempt_total[15m]) >= 5
+        for: 0m
+        labels:
+          severity: critical
+          service: montr-secure
+        annotations:
+          summary: "Montr Secure: repeated gate-bypass attempts ({{ $labels.route }})"
+          description: >-
+            5 or more gate-bypass attempts on {{ $labels.route }} in 15 minutes by
+            role={{ $labels.role }}. This pattern suggests probing rather than a one-off
+            misconfigured client — treat as a potential security incident.
+
+      - alert: MontrErrorRateHigh
+        expr: sum(rate(montr_errors_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: montr-secure
+        annotations:
+          summary: "Montr Secure: elevated pipeline error rate"
+          description: >-
+            Overall montr_errors_total rate has been above 0.5/s for 5 minutes
+            (current: {{ $value | printf "%.2f" }}/s). See the "Errors by code" panel
+            on the montr-secure-dashboard for a breakdown.
+
+      - alert: MontrLayerP95LatencyHigh
+        expr: >-
+          histogram_quantile(0.95, sum by (le, layer) (rate(montr_layer_duration_ms_bucket[10m]))) > 300000
+        for: 10m
+        labels:
+          severity: warning
+          service: montr-secure
+        annotations:
+          summary: "Montr Secure: layer {{ $labels.layer }} p95 duration > 5m"
+          description: >-
+            p95 wall-clock duration for {{ $labels.layer }} has exceeded 300000ms (5
+            minutes) for 10 minutes (current: {{ $value | printf "%.0f" }}ms). Check for
+            a stuck/slow layer runner or an upstream dependency (LLM gateway, DAST target).

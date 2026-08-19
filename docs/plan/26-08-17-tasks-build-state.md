@@ -1,5 +1,5 @@
 > Source audit: [26-08-17-audit-build-state](./26-08-17-audit-build-state.md)
-> Updated: 26-08-19 · 5/42 done
+> Updated: 26-08-19 · 18/42 done
 
 # Tasks — Montr Secure build state
 
@@ -13,19 +13,19 @@
 
 ## P1 — should fix
 
-- [ ] **(A6, P1)** Build the air-gap tooling that `DEPLOY.md:88,91` already documents: `deploy/airgap/build-bundle.sh --sign` and `deploy/airgap/import-bundle.sh <file>`. Neither exists — the directory holds only a README and a JSON schema. Either ship the scripts or correct `DEPLOY.md` and the `DOD.md` ✅.
+- [x] **(A6, P1)** Build the air-gap tooling that `DEPLOY.md:88,91` already documents: `deploy/airgap/build-bundle.sh --sign` and `deploy/airgap/import-bundle.sh <file>`. Neither exists — the directory holds only a README and a JSON schema. Either ship the scripts or correct `DEPLOY.md` and the `DOD.md` ✅.
 - [ ] **(A7, P1)** Make the CI dogfood real: add the missing `selfscan` script so the "Montr self-scan hook" (`ci.yml:122-129`) actually runs the product against its own source, and drop `continue-on-error: true` once the tree is clean so it becomes a blocking gate.
-- [ ] **(A8, P1)** Replace the three-entry hardcoded advisory array in `packages/discovery/src/advisories.ts:1-9` with a real OSV/GHSA offline mirror. The matcher and import-graph reachability check are already sound; only the data is missing.
-- [ ] **(A9, P1)** Wire the prompt registry. `PromptVersion` exists in `schema.prisma` but has zero readers/writers in `packages/state-store/src` or `packages/llm-gateway/src`; the §15 regression-tuning loop has no versioned prompt to tune against.
-- [ ] **(A10, P1)** Add a unit test suite to `packages/cost-meter` (currently `--passWithNoTests` with no test files), covering the estimate formula, live metering, the `BudgetExceededError` hard halt (`variance.ts:64-74`), and the ±15% variance calculation.
-- [ ] **(A11, P1)** Build the dashboards and alerting checked off in build-plan §10 lines 485-486: Grafana dashboard JSON, Prometheus recording/alert rules, and dedicated counters for budget breach, kill-switch activation and gate-bypass attempts (none exist in `packages/telemetry/src/metrics.ts` today).
-- [ ] **(A12, P1)** Make the NetworkPolicy genuinely default-deny. `deploy/helm/montr-secure/values.yaml:242` ships `cidr: "0.0.0.0/0"` on port 443, permitting egress anywhere on install. Require an explicit LLM-endpoint CIDR (fail the install if unset) rather than defaulting open.
+- [x] **(A8, P1)** Replace the three-entry hardcoded advisory array in `packages/discovery/src/advisories.ts:1-9` with a real OSV/GHSA offline mirror. The matcher and import-graph reachability check are already sound; only the data is missing.
+- [x] **(A9, P1)** Wire the prompt registry. `PromptVersion` exists in `schema.prisma` but has zero readers/writers in `packages/state-store/src` or `packages/llm-gateway/src`; the §15 regression-tuning loop has no versioned prompt to tune against.
+- [x] **(A10, P1)** Add a unit test suite to `packages/cost-meter` (currently `--passWithNoTests` with no test files), covering the estimate formula, live metering, the `BudgetExceededError` hard halt (`variance.ts:64-74`), and the ±15% variance calculation.
+- [x] **(A11, P1)** Build the dashboards and alerting checked off in build-plan §10 lines 485-486: Grafana dashboard JSON, Prometheus recording/alert rules, and dedicated counters for budget breach, kill-switch activation and gate-bypass attempts (none exist in `packages/telemetry/src/metrics.ts` today).
+- [x] **(A12, P1)** Make the NetworkPolicy genuinely default-deny. `deploy/helm/montr-secure/values.yaml:242` ships `cidr: "0.0.0.0/0"` on port 443, permitting egress anywhere on install. Require an explicit LLM-endpoint CIDR (fail the install if unset) rather than defaulting open.
 - [ ] **(A13, P1)** Fill the Wave-5 stub UI seams: `apps/web/src/app/dashboards/page.tsx` is explicitly "intentionally data-free", and the `rules` / `scenarios` / `schedules` pages hit routes registered as declared stub seams (`apps/api/src/routes/rules.ts`). The backing contracts and `PostureRepositoryImpl` are real — connect them.
-- [ ] **(A14, P1)** Reconcile `AUTO_ELIGIBLE_CATEGORIES` (`packages/fix/src/risk.ts:28-37`, 8 categories) with `FIX_STRATEGIES` (`strategies.ts:155-160`, 4 implemented). Either implement the missing mechanical strategies or trim the list so the advertised auto-fix surface matches reality. Fails safe today, so this is accuracy not safety.
+- [x] **(A14, P1)** Reconcile `AUTO_ELIGIBLE_CATEGORIES` (`packages/fix/src/risk.ts:28-37`, 8 categories) with `FIX_STRATEGIES` (`strategies.ts:155-160`, 4 implemented). Either implement the missing mechanical strategies or trim the list so the advertised auto-fix surface matches reality. Fails safe today, so this is accuracy not safety.
 - [ ] **(A15, P1)** Add the missing `POST /scans/:id/kill` route to `apps/api/src/routes/` — the orchestrator kill switch and the web client's `killSwitch` endpoint both exist, but the ⛔ kill switch is unreachable over HTTP.
 - [ ] **(A16, P1)** Exercise the Semgrep/gitleaks integration against the real binaries. `parseSemgrepJson` and `candidatesFromGitleaks` have only ever seen hand-built fixture JSON; add a CI job (or container-based test) that runs the actual tools so the live-discovery path is proven. Blocked on A4.
 - [ ] **(A17, P1)** Grow the golden corpus beyond its current 8 repos / 19 labelled findings, with a documented sampling method and real-world code, so the `<5%` FP claim is defensible rather than illustrative.
-- [ ] **(A18, P1)** Add `thresholds` to the coverage block in `vitest.config.ts:33-37` and enforce them in CI — build-plan §4.7 checks off "coverage thresholds" but none are configured, so coverage can drop silently.
+- [x] **(A18, P1)** Add `thresholds` to the coverage block in `vitest.config.ts:33-37` and enforce them in CI — build-plan §4.7 checks off "coverage thresholds" but none are configured, so coverage can drop silently.
 
 ## P2 — nice to have
 
@@ -44,15 +44,15 @@
 
 ## Suggested enhancements
 
-- [ ] Add real entrypoints for api and worker with graceful shutdown, `start` scripts and corrected Docker CMDs — the single unblocking change.
-- [ ] Wire the corpus gate to real scan output so the headline FP metric stops being decorative.
-- [ ] Pick one web↔API contract and converge on it: version the API under `/api/v1`, move the web client to JWT/cookie auth, delete the actor-header shim.
-- [ ] Ship the real OSV/GHSA offline mirror together with the signed-bundle importer, closing the SCA data gap and the air-gap DoD box in one pass.
+- [x] Add real entrypoints for api and worker with graceful shutdown, `start` scripts and corrected Docker CMDs — the single unblocking change.
+- [x] Wire the corpus gate to real scan output so the headline FP metric stops being decorative.
+- [x] Pick one web↔API contract and converge on it: version the API under `/api/v1`, move the web client to JWT/cookie auth, delete the actor-header shim.
+- [x] Ship the real OSV/GHSA offline mirror together with the signed-bundle importer, closing the SCA data gap and the air-gap DoD box in one pass.
 - [ ] Reconcile `DOD.md` with the code — four ✅ marks (Helm-on-cluster, self-scan, air-gap, FP-rate) are unsupported; an overstating doc is worse than an unchecked box.
 - [ ] Implement Python/JVM mechanical fix strategies (the handoff's existing follow-up), and align the auto-eligible category list with what is actually implemented.
 - [ ] Upgrade Layer 2 to real interprocedural dataflow — this is the actual moat and currently the weakest link in the precision story.
 - [ ] Grow the corpus toward real-world repos with a documented sampling method so the `<5%` claim can be defended.
-- [ ] Ship Grafana dashboards and Prometheus alert rules for budget breach, kill-switch activation and gate-bypass attempts, with dedicated counters.
+- [x] Ship Grafana dashboards and Prometheus alert rules for budget breach, kill-switch activation and gate-bypass attempts, with dedicated counters.
 - [ ] Harden the audit log at the database layer so immutability survives an application-layer compromise.
 - [ ] Seed the red-team scenario library with a starter catalogue mapped to the OWASP Top 10.
-- [ ] Add a real integration smoke test in CI — compose up, hit `/health`, run one scan end to end. That single test would have caught A1, A3 and A5 before they were checked off.m
+- [ ] Add a real integration smoke test in CI — compose up, hit `/health`, run one scan end to end. That single test would have caught A1, A3 and A5 before they were checked off.

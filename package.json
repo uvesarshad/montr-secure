@@ -16,6 +16,7 @@
     "lint": "turbo run lint",
     "lint:root": "eslint .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:turbo": "turbo run test",
     "e2e": "node scripts/e2e-scan.mjs",
     "corpus:scan": "node scripts/corpus-scan.mjs",
@@ -29,6 +30,7 @@
   "devDependencies": {
     "@eslint/js": "^9.10.0",
     "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "2.1.9",
     "eslint": "^9.10.0",
     "eslint-config-prettier": "^9.1.0",
     "globals": "^15.9.0",

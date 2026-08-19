@@ -23,6 +23,11 @@ import { applyKeyTierGuard, detectKeyTier } from "./keytier.js";
 import { buildCallLog, logCall } from "./logging.js";
 import { contentToString } from "./mapping.js";
 import {
+  resolvePromptTemplate,
+  type PromptVersionSource,
+  type ResolvePromptOptions,
+} from "./prompts.js";
+import {
   DEFAULT_RETRY_POLICY,
   runWithTimeout,
   withIteratorTimeout,
@@ -54,6 +59,14 @@ export interface CreateGatewayOptions {
   timeoutMs?: number;
   /** Hard-fail (throw ModelBelowFloorError) instead of warning on a sub-floor confirmation model. */
   strictModelFloor?: boolean;
+  /**
+   * Versioned-prompt lookup (§8.2, §15) — typically `store.promptVersions`
+   * from @montr/state-store, injected structurally (see prompts.ts) so this
+   * package doesn't take a build-time dependency on @montr/state-store.
+   * Omit to make {@link MontrLlmGateway.resolvePrompt} a pure pass-through
+   * to each call's hardcoded fallback (today's behavior, unchanged).
+   */
+  promptSource?: PromptVersionSource;
 }
 
 /**
@@ -73,6 +86,8 @@ export class MontrLlmGateway implements LLMGateway {
   private readonly timeoutMs: number;
   private readonly descriptors: ModelDescriptor[];
   private readonly warnedFloorModels = new Set<string>();
+  /** Versioned-prompt lookup (§8.2, §15) — undefined means "no DB, use hardcoded". */
+  private readonly promptSource?: PromptVersionSource;
 
   /**
    * ⛔ Default-deny egress guard (golden rule #1, §4.8). Compiled + validated at
@@ -90,6 +105,7 @@ export class MontrLlmGateway implements LLMGateway {
       opts.logger ??
       createLogger({ name: "llm-gateway", bindings: { clientId: opts.config.clientId } });
     this.costMeter = opts.costMeter;
+    this.promptSource = opts.promptSource;
     this.onCall = opts.onCall;
     this.now = opts.now ?? (() => new Date());
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -144,6 +160,30 @@ export class MontrLlmGateway implements LLMGateway {
 
   resolveModel(tierOrId: ModelTier | string): ModelDescriptor {
     return resolveDescriptor(this.config, tierOrId);
+  }
+
+  /**
+   * Resolve prompt `name`'s live template (§8.2, §15): the active
+   * DB-versioned template when a `promptSource` was configured at
+   * construction and has one for this client/global scope; otherwise
+   * `fallback` unchanged — so a caller migrating from a hardcoded prompt
+   * constant to `gateway.resolvePrompt("fix.system", FIX_SYSTEM_PROMPT)`
+   * behaves identically until a version is actually created + activated in
+   * the DB. A lookup failure is logged and treated as "no active version" —
+   * never thrown, never blocks the call.
+   */
+  async resolvePrompt(
+    name: string,
+    fallback: string,
+    opts: ResolvePromptOptions = {},
+  ): Promise<string> {
+    return resolvePromptTemplate(
+      this.promptSource,
+      name,
+      fallback,
+      { clientId: opts.clientId ?? this.config.clientId },
+      (err) => this.logger.warn("llm.prompt_resolve_failed", { name, error: String(err) }),
+    );
   }
 
   estimateTokens(request: LLMRequest): Promise<number> {

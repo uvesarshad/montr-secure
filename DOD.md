@@ -21,14 +21,14 @@ Repo gates (all green): `pnpm -w typecheck` **0 errors** · `pnpm -w build` **19
 
 ## Full-scope extras (Phases 2–4) — delivered
 
-| Area                                                 | Status | Evidence                                                                                                                                                                       |
-| ---------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Live DAST (Layer 3b), fully guardrailed              | ✅     | `packages/confirm` — allowlist + production-blocked + approver-auth + kill-switch + rate/blast caps + egress guard; OFF by default.                                            |
-| Auto-eligible PR flow (PR-only, never direct commit) | ✅     | `packages/report` auto-fix flow (Octokit/GitLab), gate-enforced.                                                                                                               |
-| All four LLM providers behind one gateway            | ✅     | `@montr/llm-gateway` adapters (Anthropic/Bedrock/Vertex/Azure) + conformance test; no provider SDK imported elsewhere (lint-enforced).                                         |
-| Air-gapped install path                              | ✅     | `deploy/airgap` signed offline bundle (rulesets + CVE/OSV DB).                                                                                                                 |
-| Python (Django/FastAPI) + JVM (Spring) stacks        | ✅     | `appmap` language plugins + rulesets + heuristics; 8-repo corpus; **stack-agnostic invariant proven** (correlation/fix/report unforked).                                       |
-| Phase-4 intelligence                                 | ✅     | Cross-scan trends + RBAC-scoped posture dashboards, custom rule authoring (validated+versioned), red-team scenario library (gated), scheduled scans (gate + budget respected). |
+| Area                                                 | Status | Evidence                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Live DAST (Layer 3b), fully guardrailed              | ✅     | `packages/confirm` — allowlist + production-blocked + approver-auth + kill-switch + rate/blast caps + egress guard; OFF by default.                                                                                                                                                                                                                                     |
+| Auto-eligible PR flow (PR-only, never direct commit) | ✅     | `packages/report` auto-fix flow (Octokit/GitLab), gate-enforced.                                                                                                                                                                                                                                                                                                        |
+| All four LLM providers behind one gateway            | ✅     | `@montr/llm-gateway` adapters (Anthropic/Bedrock/Vertex/Azure) + conformance test; no provider SDK imported elsewhere (lint-enforced).                                                                                                                                                                                                                                  |
+| Air-gapped install path                              | ⚠️     | `deploy/airgap/build-bundle.sh` + `import-bundle.sh` are real (schema-conformant manifest, real hashes, cosign-or-checksum verification, refuses unverified imports). Scope is deterministic rulesets/advisory data only (no container images); only gitleaks ships real ruleset content today, no runtime consumer of imported artifacts exists yet. See caveat (iii). |
+| Python (Django/FastAPI) + JVM (Spring) stacks        | ✅     | `appmap` language plugins + rulesets + heuristics; 8-repo corpus; **stack-agnostic invariant proven** (correlation/fix/report unforked).                                                                                                                                                                                                                                |
+| Phase-4 intelligence                                 | ✅     | Cross-scan trends + RBAC-scoped posture dashboards, custom rule authoring (validated+versioned), red-team scenario library (gated), scheduled scans (gate + budget respected).                                                                                                                                                                                          |
 
 ## Honest caveats (non-blocking)
 
@@ -39,6 +39,12 @@ Repo gates (all green): `pnpm -w typecheck` **0 errors** · `pnpm -w build` **19
   are on PATH — they are baked into the worker image (`deploy/docker/Dockerfile.worker`). On a bare
   local host without them, discovery falls back to seeded candidates (the L2→L5 pipeline still runs on
   real data). Container/Helm deploys are unaffected.
+- **(iii) Air-gap bundle scope.** `deploy/airgap/{build,import}-bundle.sh` are fully working and
+  schema-validated (real SHA-256/size manifests, cosign-or-checksum verification, refuse-by-default on
+  an unverified bundle) — but the bundle format only covers deterministic rulesets/advisory data, not
+  container images, and of those, only `gitleaks-rules` has real source content in this repo today
+  (Semgrep still resolves live Registry packs; the OSV/GHSA "database" is a 3-entry seed pending a real
+  mirror). No runtime code yet reads what `import-bundle.sh` installs. See `deploy/airgap/README.md`.
 
 ## Follow-up (safe, non-blocking)
 

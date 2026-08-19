@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/copy-advisories-data.mjs",
     "typecheck": "tsc -b",
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",

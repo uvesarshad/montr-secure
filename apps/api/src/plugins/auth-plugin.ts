@@ -10,6 +10,7 @@ import fastifyCookie from "@fastify/cookie";
 import fastifyJwt from "@fastify/jwt";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Role } from "@montr/contracts";
+import { getMetrics } from "@montr/telemetry";
 import { forbidden, unauthorized } from "../errors.js";
 import type { AuthenticatedUser, ResolvedDeps } from "../types.js";
 import { CSRF_COOKIE, CSRF_HEADER, safeEqual, verifyCsrfToken } from "../auth/csrf.js";
@@ -69,6 +70,12 @@ export async function registerAuth(app: FastifyInstance, deps: ResolvedDeps): Pr
       const user = req.authUser;
       if (!user) throw unauthorized();
       if (user.role !== "approver") {
+        // Observability: a non-approver hit an approver-gated route — a
+        // potential gate-bypass attempt (§11 alerting).
+        getMetrics().recordGateBypassAttempt(1, {
+          route: req.routeOptions?.url ?? req.url,
+          role: user.role,
+        });
         throw forbidden("Approver role required", { required: ["approver"], actual: user.role });
       }
     },

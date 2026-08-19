@@ -158,14 +158,25 @@ describe("discovery/runDiscovery over the vulnerable sample", () => {
 });
 
 describe("discovery/runDiscovery over the clean sample", () => {
-  it("produces zero candidates (supports the <5% FP posture)", async () => {
+  it("SAST + secrets/config produce zero candidates (supports the <5% FP posture)", async () => {
+    // clean-nextjs is "clean" for SAST/secrets (mocked to emit nothing here,
+    // matching the sample's real content) — that half of the FP-posture
+    // invariant is what this asserts. It is NOT clean for SCA against the
+    // real, current OSV mirror: the sample pins lodash@4.17.21 and
+    // next@14.2.15, both since superseded by real published advisories (see
+    // discovery.detectors.test.ts). Those are genuine matches, not false
+    // positives, so every surviving candidate here must be `vulnerable_dependency`.
     const output = await runDiscovery(
       vulnInput({
         repoRoot: CLEAN_REPO,
         deps: { now: () => FIXED_NOW, semgrep: emptySemgrep, gitleaks: noGitleaks },
       }),
     );
-    expect(output.candidates).toEqual([]);
+    expect(output.candidates.length).toBeGreaterThan(0);
+    for (const c of output.candidates) {
+      expect(c.category).toBe("vulnerable_dependency");
+      expect(["osv", "ghsa"]).toContain(c.source);
+    }
   });
 });
 

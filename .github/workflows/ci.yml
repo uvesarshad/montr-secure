@@ -53,6 +53,8 @@ jobs:
         run: pnpm run typecheck
       - name: Unit tests
         run: pnpm run test
+      - name: Coverage thresholds (build-plan §4.7 — fails on regression below vitest.config.ts thresholds)
+        run: pnpm run test:coverage
       - name: Build (all packages)
         run: pnpm exec turbo run build
       - name: Prisma schema validate

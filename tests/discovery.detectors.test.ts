@@ -103,22 +103,49 @@ describe("discovery/semver", () => {
 });
 
 describe("discovery/advisories", () => {
-  it("matches lodash 4.17.11 (vulnerable) but not 4.17.21 (patched)", () => {
+  // The mirror is now the real OSV/GHSA bulk export (curated + refreshed by
+  // `scripts/refresh-advisories.mjs`, see README.md), not a 3-entry stub —
+  // so a package can legitimately match many real advisories at once. These
+  // assertions check the well-known headline CVEs are present/absent at the
+  // right boundary rather than asserting an exact match count, so the suite
+  // stays green as the mirror is refreshed with newly-published advisories.
+  it("matches lodash 4.17.11 (vulnerable) but not the headline CVE once patched at 4.17.12", () => {
     const vuln = matchAdvisories("lodash", "4.17.11");
-    expect(vuln.map((a) => a.id)).toContain("GHSA-jf85-cpcp-j695");
-    expect(vuln[0]?.cwe).toContain("CWE-1321");
-    expect(matchAdvisories("lodash", "4.17.21")).toHaveLength(0);
+    const protoPollution = vuln.find((a) => a.id === "GHSA-jf85-cpcp-j695");
+    expect(protoPollution).toBeDefined();
+    expect(protoPollution?.cwe).toContain("CWE-1321");
+    // Patched against THIS specific CVE at 4.17.12 — the real mirror also
+    // knows about later, unrelated lodash CVEs (fixed in later releases),
+    // which is real/correct and exercised separately below.
+    expect(matchAdvisories("lodash", "4.17.21").map((a) => a.id)).not.toContain(
+      "GHSA-jf85-cpcp-j695",
+    );
   });
 
-  it("matches minimist and axios ranges from the seed DB", () => {
-    expect(matchAdvisories("minimist", "1.2.5")).toHaveLength(1);
+  it("matches minimist and axios ranges from the real mirror (headline CVEs)", () => {
+    expect(matchAdvisories("minimist", "1.2.5").map((a) => a.id)).toContain(
+      "GHSA-xvch-5gv4-984h", // real GHSA id for CVE-2021-44906 (prototype pollution)
+    );
     expect(matchAdvisories("minimist", "1.2.6")).toHaveLength(0);
     expect(matchAdvisories("axios", "0.21.1").map((a) => a.id)).toContain("GHSA-cph5-m8f7-6c5x");
-    expect(matchAdvisories("axios", "0.21.2")).toHaveLength(0);
+    expect(matchAdvisories("axios", "0.21.2").map((a) => a.id)).not.toContain(
+      "GHSA-cph5-m8f7-6c5x",
+    );
   });
 
-  it("seed DB is offline-only npm data", () => {
-    expect(ADVISORY_DB.every((a) => a.ecosystem === "npm")).toBe(true);
+  it("mirror spans npm, PyPI, and Maven with a meaningfully large record count", () => {
+    const ecosystems = new Set(ADVISORY_DB.map((a) => a.ecosystem));
+    expect(ecosystems.has("npm")).toBe(true);
+    expect(ecosystems.has("PyPI")).toBe(true);
+    expect(ecosystems.has("Maven")).toBe(true);
+    expect(ADVISORY_DB.length).toBeGreaterThan(500);
+  });
+
+  it("matchAdvisories defaults to npm (the only ecosystem the Phase-1 SCA detector resolves)", () => {
+    // "django" only exists in the PyPI slice of the mirror; the default
+    // (npm) match must not leak cross-ecosystem records.
+    expect(matchAdvisories("django", "1.0")).toEqual([]);
+    expect(matchAdvisories("django", "1.0", ADVISORY_DB, "PyPI").length).toBeGreaterThan(0);
   });
 });
 
@@ -391,17 +418,31 @@ describe("discovery/sca reachability", () => {
     expect(imported.has("lodash")).toBe(false);
   });
 
-  it("emits exactly one lodash candidate on the vulnerable sample, tagged unreachable", async () => {
+  it("emits lodash candidates on the vulnerable sample, all tagged unreachable", async () => {
     const ctx = makeCtx({ files: fsFileProvider(VULN_REPO) });
     const candidates = await detectDependencies(ctx);
     const dep = candidates.filter((c) => c.category === "vulnerable_dependency");
-    expect(dep).toHaveLength(1);
-    expect(dep[0]?.source).toBe("ghsa");
-    expect(dep[0]?.ruleId).toBe("GHSA-jf85-cpcp-j695");
-    expect(dep[0]?.cwe).toContain("CWE-1321");
-    expect(dep[0]?.location).toMatchObject({ file: "package.json", line: 14 });
-    expect(dep[0]?.metadata?.["reachable"]).toBe(false);
-    expect(dep[0]?.metadata?.["package"]).toBe("lodash");
+    // The real mirror surfaces EVERY advisory affecting the sample's pinned
+    // dependencies, not just the original seed's single lodash entry — the
+    // sample also pins an outdated "next", which real, current OSV data now
+    // flags too (genuinely, not a false positive — see the "next" assertion
+    // below). Scope the per-package assertions to lodash specifically.
+    const lodashDep = dep.filter((c) => c.metadata?.["package"] === "lodash");
+    expect(lodashDep.length).toBeGreaterThan(0);
+    expect(lodashDep.every((c) => c.metadata?.["reachable"] === false)).toBe(true);
+    expect(
+      lodashDep.every((c) => c.location.file === "package.json" && c.location.line === 14),
+    ).toBe(true);
+    const protoPollution = lodashDep.find((c) => c.ruleId === "GHSA-jf85-cpcp-j695");
+    expect(protoPollution).toBeDefined();
+    expect(protoPollution?.source).toBe("ghsa");
+    expect(protoPollution?.cwe).toContain("CWE-1321");
+
+    // "next" is declared AND imported by the sample (§ reachability test
+    // above) — its real matches must be tagged reachable: true.
+    const nextDep = dep.filter((c) => c.metadata?.["package"] === "next");
+    expect(nextDep.length).toBeGreaterThan(0);
+    expect(nextDep.every((c) => c.metadata?.["reachable"] === true)).toBe(true);
   });
 
   it("marks a vuln reachable when the package is actually imported", async () => {
@@ -414,9 +455,26 @@ describe("discovery/sca reachability", () => {
     expect(candidates[0]?.metadata?.["reachable"]).toBe(true);
   });
 
-  it("clean sample (lodash patched) yields no SCA candidates", async () => {
+  it("clean sample (lodash 4.17.21) is patched against every ORIGINAL seed CVE", async () => {
+    // clean-nextjs pins lodash@4.17.21, which was fully patched against the
+    // toy 3-entry stub's CVEs. The real, current OSV mirror is honest about
+    // more than that: it also knows about advisories published AFTER 4.17.21
+    // shipped (fixed in the later 4.18.0 release), and about the sample's
+    // separately-pinned, now-outdated "next" — a live mirror surfacing those
+    // is correct behavior, not a false positive, and is exactly the
+    // improvement this mirror ships over the old static stub.
     const ctx = makeCtx({ files: fsFileProvider(CLEAN_REPO) });
-    expect(await detectDependencies(ctx)).toEqual([]);
+    const candidates = await detectDependencies(ctx);
+    expect(candidates.length).toBeGreaterThan(0); // the post-4.17.21 CVEs, asserted below
+    expect(candidates.find((c) => c.ruleId === "GHSA-jf85-cpcp-j695")).toBeUndefined();
+    const lodashDep = candidates.filter((c) => c.metadata?.["package"] === "lodash");
+    expect(lodashDep.length).toBeGreaterThan(0);
+    for (const c of lodashDep) expect(c.metadata?.["fixedVersion"]).toBe("4.18.0");
+    // Every candidate must be attributable to a real dependency the fixture
+    // actually declares — nothing invented, nothing off-contract.
+    for (const c of candidates) {
+      expect(["lodash", "next"]).toContain(c.metadata?.["package"]);
+    }
   });
 
   it("degrades gracefully when there is no manifest at all", async () => {

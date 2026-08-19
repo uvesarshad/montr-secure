@@ -10,6 +10,8 @@
  *   - false-positive feedback count        (counter)              — §15 FP loop
  *   - per-layer wall-clock duration        (histogram)
  *   - audit events / LLM calls / errors    (counters)
+ *   - budget breaches / kill-switch activations / gate-bypass attempts
+ *                                           (counters)              — §10, §11 alerting
  */
 import { metrics, ValueType, type Counter, type Histogram, type Meter } from "@opentelemetry/api";
 import type { AuditAction, LayerId } from "@montr/contracts";
@@ -27,6 +29,9 @@ export interface MetricsSnapshot {
   auditEvents: number;
   llmCalls: number;
   errors: number;
+  budgetBreaches: number;
+  killSwitchActivations: number;
+  gateBypassAttempts: number;
 }
 
 type Attrs = Record<string, string | number | boolean>;
@@ -52,6 +57,9 @@ export class MontrMetrics {
   private readonly auditCounter: Counter;
   private readonly llmCounter: Counter;
   private readonly errorCounter: Counter;
+  private readonly budgetBreachCounter: Counter;
+  private readonly killSwitchActivationCounter: Counter;
+  private readonly gateBypassAttemptCounter: Counter;
 
   private readonly layerDuration: Histogram;
   private readonly demotionRatio: Histogram;
@@ -66,6 +74,9 @@ export class MontrMetrics {
   private tAudit = 0;
   private tLlm = 0;
   private tErrors = 0;
+  private tBudgetBreaches = 0;
+  private tKillSwitchActivations = 0;
+  private tGateBypassAttempts = 0;
 
   constructor(meter: Meter = metrics.getMeter(METER_NAME, METER_VERSION)) {
     this.meter = meter;
@@ -99,6 +110,19 @@ export class MontrMetrics {
     });
     this.errorCounter = this.meter.createCounter("montr.errors", {
       description: "Errors by code",
+      valueType: ValueType.INT,
+    });
+    this.budgetBreachCounter = this.meter.createCounter("montr.budget.breach", {
+      description: "Budget ceiling breaches (hard-halt enforcement, DECIDE-4)",
+      valueType: ValueType.INT,
+    });
+    this.killSwitchActivationCounter = this.meter.createCounter("montr.kill_switch.activation", {
+      description: "Kill-switch activations, scoped or global (§11, golden rule)",
+      valueType: ValueType.INT,
+    });
+    this.gateBypassAttemptCounter = this.meter.createCounter("montr.gate.bypass_attempt", {
+      description:
+        "Rejected attempts to act on an approver-gated action without the approver role (§11)",
       valueType: ValueType.INT,
     });
     this.layerDuration = this.meter.createHistogram("montr.layer.duration_ms", {
@@ -156,6 +180,24 @@ export class MontrMetrics {
     this.tErrors += count;
   }
 
+  /** A budget ceiling was breached and hard-halt enforcement fired (DECIDE-4). */
+  recordBudgetBreach(count = 1, attrs: Attrs = {}): void {
+    this.budgetBreachCounter.add(count, attrs);
+    this.tBudgetBreaches += count;
+  }
+
+  /** The kill switch was activated for a scan (scoped) or every scan (global). */
+  recordKillSwitchActivation(count = 1, attrs: Attrs = {}): void {
+    this.killSwitchActivationCounter.add(count, attrs);
+    this.tKillSwitchActivations += count;
+  }
+
+  /** A caller without the approver role attempted an approver-gated action (§11). */
+  recordGateBypassAttempt(count = 1, attrs: Attrs = {}): void {
+    this.gateBypassAttemptCounter.add(count, attrs);
+    this.tGateBypassAttempts += count;
+  }
+
   observeLayerDuration(layer: LayerId, ms: number, attrs: Attrs = {}): void {
     this.layerDuration.record(ms, { layer, ...attrs });
   }
@@ -185,6 +227,9 @@ export class MontrMetrics {
       auditEvents: this.tAudit,
       llmCalls: this.tLlm,
       errors: this.tErrors,
+      budgetBreaches: this.tBudgetBreaches,
+      killSwitchActivations: this.tKillSwitchActivations,
+      gateBypassAttempts: this.tGateBypassAttempts,
     };
   }
 
@@ -198,6 +243,9 @@ export class MontrMetrics {
     this.tAudit = 0;
     this.tLlm = 0;
     this.tErrors = 0;
+    this.tBudgetBreaches = 0;
+    this.tKillSwitchActivations = 0;
+    this.tGateBypassAttempts = 0;
   }
 }
 

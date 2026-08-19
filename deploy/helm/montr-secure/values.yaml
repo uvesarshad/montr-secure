@@ -236,10 +236,14 @@ networkPolicy:
   dns:
     enabled: true
   llmEndpoint:
-    # ⛔ MUST be scoped to the client's LLM endpoint (or internal proxy) in
-    # production. 0.0.0.0/0 allows any host on `port` — acceptable only until
-    # the real CIDR is known.
-    cidr: "0.0.0.0/0"
+    # ⛔ REQUIRED. No default is shipped — helm install/template fails fast
+    # (see templates/networkpolicy.yaml) if this is left empty or set to
+    # 0.0.0.0/0, rather than silently permitting egress to any host on
+    # `port`. Resolve your configured LLM provider's egress IP range (e.g.
+    # your cloud LLM vendor's published IP ranges, or your internal LLM
+    # proxy's address) and set it here — see DEPLOY.md for how to determine
+    # it and pass it via --set networkPolicy.llmEndpoint.cidr=<CIDR>.
+    cidr: ""
     port: 443
     # Optionally carve internal ranges out of a broad LLM CIDR so the egress
     # rule cannot reach in-cluster/private services (leave empty for an

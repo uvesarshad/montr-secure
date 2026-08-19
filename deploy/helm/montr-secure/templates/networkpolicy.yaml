@@ -9,6 +9,10 @@ release (api/worker/web/postgres/redis). The ONLY egress permitted is:
     DB/Redis when the bundled datastores are disabled).
 Everything else is denied — no client source can leave except inside the LLM call.
 */ -}}
+{{- $llmCidr := required "networkPolicy.llmEndpoint.cidr is required. Resolve your configured LLM provider's egress IP range and set it via --set networkPolicy.llmEndpoint.cidr=<CIDR> or a values override — see DEPLOY.md." .Values.networkPolicy.llmEndpoint.cidr }}
+{{- if eq $llmCidr "0.0.0.0/0" }}
+{{- fail "networkPolicy.llmEndpoint.cidr must not be 0.0.0.0/0 — that would permit egress to ANY host on the LLM port, defeating the default-deny egress guarantee (§4.6). Set it to your LLM provider's real CIDR — see DEPLOY.md." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -37,7 +41,7 @@ spec:
     # ⛔ Client LLM endpoint — the only permitted external egress.
     - to:
         - ipBlock:
-            cidr: {{ .Values.networkPolicy.llmEndpoint.cidr | quote }}
+            cidr: {{ $llmCidr | quote }}
             {{- with .Values.networkPolicy.llmEndpoint.except }}
             except:
               {{- toYaml . | nindent 14 }}

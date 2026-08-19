@@ -181,6 +181,57 @@ export interface PostureRepository {
   latestForRepo(clientId: string, repo: string): Promise<PostureSnapshot | null>;
 }
 
+/* --------------------------------------------------------------------------- *
+ * Versioned LLM prompt templates (§8.2, §15 regression-tuning loop).
+ * --------------------------------------------------------------------------- */
+
+/** Input to create a new (inactive) prompt version. */
+export interface PromptVersionInput {
+  /** The prompt's stable key, e.g. "correlation.system" or "fix.system". */
+  name: string;
+  template: string;
+  layer?: LayerId;
+  /** Per-client override/tuning candidate; omit for a global (shared) version. */
+  clientId?: string | null;
+}
+
+/** A stored prompt version. */
+export interface PromptVersionRecord {
+  id: string;
+  /** `null` for a global (shared) version. */
+  clientId: string | null;
+  name: string;
+  version: number;
+  layer: LayerId | null;
+  template: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+/**
+ * Versioned prompt templates. `clientId: null` denotes a global/shared
+ * version; `version` is a monotonic counter per `name` across ALL clients
+ * (see the schema doc comment). Not part of {@link Repository} because the
+ * model can be intentionally cross-tenant (a global prompt has no owning
+ * client) — every method takes its scope explicitly instead.
+ */
+export interface PromptVersionRepository {
+  /** Create the next version for `name`, inactive until {@link markActive}. */
+  createVersion(input: PromptVersionInput): Promise<PromptVersionRecord>;
+  /**
+   * Versions for `name`, newest first. When `clientId` is given, includes
+   * that client's versions plus the global (`clientId: null`) versions.
+   */
+  listVersions(name: string, clientId?: string | null): Promise<PromptVersionRecord[]>;
+  /**
+   * The active version for `name`: a `clientId`-scoped active row wins over
+   * the global active row; `null` when neither exists.
+   */
+  getActive(name: string, clientId?: string | null): Promise<PromptVersionRecord | null>;
+  /** Promote `id` to active, deactivating any other active row in its scope. */
+  markActive(id: string): Promise<PromptVersionRecord>;
+}
+
 /** The aggregate persistence surface handed to the orchestrator and layers. */
 export interface StateStore {
   scans: ScanRepository;
@@ -201,5 +252,7 @@ export interface StateStore {
   redTeamScenarios: RedTeamScenarioRepository;
   scanSchedules: ScanScheduleRepository;
   posture: PostureRepository;
+  /** Versioned LLM prompt templates (§8.2, §15 regression-tuning loop). */
+  promptVersions: PromptVersionRepository;
   disconnect(): Promise<void>;
 }

@@ -50,7 +50,10 @@ async function main(): Promise<void> {
 
   // ⛔ The one LLM egress path (golden rule #2). BYO-key, sourced from
   // @montr/config (MONTR_LLM_* env vars — see deploy/docker/.env.example).
-  const gateway = createLlmGateway({ config, logger });
+  // `promptSource` (§8.2, §15) lets the gateway resolve a versioned prompt
+  // from the DB via `store.promptVersions`; with none active yet it falls
+  // back to each caller's hardcoded template, unchanged.
+  const gateway = createLlmGateway({ config, logger, promptSource: store.promptVersions });
 
   const runtimeDeps: WorkerRuntimeDeps = {
     store,

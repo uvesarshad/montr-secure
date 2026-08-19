@@ -15,6 +15,13 @@ export {
 } from "./gateway.js";
 
 export {
+  resolvePromptTemplate,
+  type PromptVersionSource,
+  type PromptVersionSourceRecord,
+  type ResolvePromptOptions,
+} from "./prompts.js";
+
+export {
   createAdapter,
   AnthropicAdapter,
   BedrockAdapter,

@@ -34,6 +34,16 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "lcov"],
       exclude: ["**/dist/**", "**/*.test.ts", "packages/fixtures/sample-repos/**"],
+      // Floor set ~2pp below the measured baseline (2026-08-19, 632 tests):
+      // statements 57.03% · branches 70.58% · functions 63.92% · lines 57.03%.
+      // Catches real regressions without failing CI on already-committed work.
+      // Vitest exits non-zero automatically when a threshold isn't met.
+      thresholds: {
+        statements: 55,
+        branches: 68,
+        functions: 61,
+        lines: 55,
+      },
     },
   },
 });

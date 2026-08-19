@@ -1,22 +1,36 @@
 /**
  * OFFLINE advisory mirror (OSV + GHSA) for the SCA agent (§5.2, §9.3).
  *
- * This seed set is intentionally small and deterministic. In a real deployment
- * it is REPLACED by the full signed OSV/GHSA offline bundle imported via the
- * air-gap tooling (build-plan §9.3) — the matcher below (`matchAdvisories`) is
- * the stable interface that bundle plugs into. No network is ever required.
+ * The mirror is a set of static JSON files under `./advisories-data/` — one
+ * per ecosystem (`npm.json`, `pypi.json`, `maven.json`) — generated from the
+ * real OSV.dev bulk export by `../scripts/refresh-advisories.mjs` (filtered to
+ * a curated allow-list of popular/high-impact packages; see that script and
+ * `README.md` for how to regenerate). GHSA advisories are already merged into
+ * OSV's per-ecosystem data, so this single source covers both. They are
+ * loaded ONCE at module init via a synchronous `fs.readFileSync` — no network
+ * call is ever made at scan time, matching this package's offline contract.
+ *
+ * `matchAdvisories` below (unchanged interface) is the stable seam the mirror
+ * plugs into — swapping the data source never requires touching the matcher
+ * or its callers (`detectors/sca.ts`).
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import type { CweId, Severity } from "@montr/contracts";
 import { satisfies } from "./semver.js";
+
+/** OSV ecosystem tags this mirror ships data for. */
+export type AdvisoryEcosystem = "npm" | "PyPI" | "Maven";
 
 export interface Advisory {
   /** Primary id — GHSA-… or CVE-… (also decides the tool source tag). */
   id: string;
   aliases?: string[];
-  /** npm package name (scoped names allowed). */
+  /** Package name in its native ecosystem form (npm name, PyPI project, or Maven `groupId:artifactId`). */
   package: string;
-  ecosystem: "npm";
-  /** Semver range of AFFECTED versions. */
+  ecosystem: AdvisoryEcosystem;
+  /** Semver-ish range of AFFECTED versions (comparator groups, `||`-joined — see `semver.ts`). */
   vulnerableRange: string;
   /** First fixed version, if known (used by the fix layer / report). */
   fixedVersion?: string;
@@ -27,59 +41,52 @@ export interface Advisory {
   source: "osv" | "ghsa";
 }
 
+const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "advisories-data");
+
+/** Load + loosely validate one ecosystem's mirror file. Never throws: a
+ * missing/corrupt file degrades to an empty list (fail-safe, same posture as
+ * every other detector in this package) rather than crashing discovery. */
+function loadEcosystemFile(filename: string): Advisory[] {
+  try {
+    const raw = readFileSync(path.join(DATA_DIR, filename), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (r): r is Advisory =>
+        !!r &&
+        typeof r === "object" &&
+        typeof (r as Advisory).id === "string" &&
+        typeof (r as Advisory).package === "string" &&
+        typeof (r as Advisory).vulnerableRange === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Seed advisories. `lodash <4.17.12` is the one exercised by the vulnerable
- * sample repo (prototype pollution, CWE-1321 / GHSA-jf85-cpcp-j695). The rest
- * exercise the range matcher without touching the sample corpus.
+ * The full offline mirror across every shipped ecosystem. Built once at
+ * import time from `advisories-data/*.json` (see module doc above). The
+ * Phase-1 SCA detector only resolves npm packages today (`detectDependencies`
+ * in `detectors/sca.ts`), so `matchAdvisories` defaults its ecosystem filter
+ * to `"npm"` — the PyPI/Maven rows ship ready for the Python/JVM lockfile
+ * resolvers declared in `rulesets/{python,java}` (build-plan §7 Wave 4) to
+ * consume via the same `matchAdvisories(pkg, version, db, ecosystem)` seam.
  */
 export const ADVISORY_DB: readonly Advisory[] = [
-  {
-    id: "GHSA-jf85-cpcp-j695",
-    aliases: ["CVE-2019-10744"],
-    package: "lodash",
-    ecosystem: "npm",
-    vulnerableRange: "<4.17.12",
-    fixedVersion: "4.17.12",
-    cwe: ["CWE-1321"],
-    // Kept at medium to match the sample ground-truth's finding-level severity;
-    // reachability (below) is what actually decides promotion vs demotion.
-    severity: "medium",
-    summary: "Prototype pollution in lodash (defaultsDeep).",
-    source: "ghsa",
-  },
-  {
-    id: "GHSA-vh95-rmgr-6w4m",
-    aliases: ["CVE-2021-44906"],
-    package: "minimist",
-    ecosystem: "npm",
-    vulnerableRange: "<1.2.6",
-    fixedVersion: "1.2.6",
-    cwe: ["CWE-1321"],
-    severity: "high",
-    summary: "Prototype pollution in minimist.",
-    source: "ghsa",
-  },
-  {
-    id: "GHSA-cph5-m8f7-6c5x",
-    aliases: ["CVE-2021-3749"],
-    package: "axios",
-    ecosystem: "npm",
-    vulnerableRange: ">=0.8.1 <0.21.2",
-    fixedVersion: "0.21.2",
-    cwe: ["CWE-918"],
-    severity: "high",
-    summary: "Inefficient regular expression / SSRF in axios.",
-    source: "osv",
-  },
+  ...loadEcosystemFile("npm.json"),
+  ...loadEcosystemFile("pypi.json"),
+  ...loadEcosystemFile("maven.json"),
 ];
 
-/** All advisories affecting `pkg@version` in the given DB (default: the seed DB). */
+/** All advisories affecting `pkg@version` in the given DB + ecosystem (default: the full mirror, npm). */
 export function matchAdvisories(
   pkg: string,
   version: string,
   db: readonly Advisory[] = ADVISORY_DB,
+  ecosystem: AdvisoryEcosystem = "npm",
 ): Advisory[] {
   return db.filter(
-    (a) => a.package === pkg && a.ecosystem === "npm" && satisfies(version, a.vulnerableRange),
+    (a) => a.package === pkg && a.ecosystem === ecosystem && satisfies(version, a.vulnerableRange),
   );
 }

@@ -30,6 +30,7 @@ import {
   RedTeamScenarioRepositoryImpl,
   ScanScheduleRepositoryImpl,
 } from "./phase4.js";
+import { PromptVersionRepositoryImpl } from "./prompt-version.js";
 import { RetentionEnforcer } from "./retention.js";
 import type { StateStore } from "./types.js";
 
@@ -78,6 +79,8 @@ function buildStateStore(
     redTeamScenarios: new RedTeamScenarioRepositoryImpl(prisma, cipher),
     scanSchedules: new ScanScheduleRepositoryImpl(prisma),
     posture: new PostureRepositoryImpl(prisma),
+    // Versioned LLM prompt templates (§8.2, §15 regression-tuning loop).
+    promptVersions: new PromptVersionRepositoryImpl(prisma),
     disconnect: async () => {
       if (ownsClient) await prisma.$disconnect();
     },

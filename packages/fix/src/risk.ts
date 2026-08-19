@@ -24,7 +24,23 @@ export const ALWAYS_HUMAN_REQUIRED_CATEGORIES: readonly Category[] = [
   "insecure_deserialization",
 ];
 
-/** Mechanical, low-blast-radius categories eligible for auto-fix PRs. */
+/**
+ * Mechanical, low-blast-radius categories eligible for auto-fix PRs. Every
+ * entry here MUST have a real, implemented `FixStrategy` in strategies.ts
+ * (`FIX_STRATEGIES`) — this list is the advertised auto-fix surface, not an
+ * aspiration, so it is kept 1:1 with what is actually implemented.
+ *
+ * `vulnerable_dependency` is deliberately NOT here even though it sounds
+ * mechanical ("bump the version"): a safe bump requires knowing the first
+ * *patched* version, which requires looking up an external vulnerability
+ * database (npm registry / OSV / GHSA advisory). `ConfirmedFinding` carries no
+ * such structured target-version field (only free-text `title`/`impact`), and
+ * this package has no network egress path other than the LLM gateway (§11) —
+ * so there is no deterministic, offline way to know what version is actually
+ * safe to bump to. Guessing (e.g. "bump to latest") is not mechanical, is not
+ * guaranteed to fix the CVE, and can introduce breaking changes — the fail-safe
+ * choice is to route it to human review instead of forcing a fake strategy.
+ */
 export const AUTO_ELIGIBLE_CATEGORIES: readonly Category[] = [
   "sql_injection",
   "nosql_injection",
@@ -32,7 +48,6 @@ export const AUTO_ELIGIBLE_CATEGORIES: readonly Category[] = [
   "permissive_cors",
   "insecure_cookie",
   "missing_security_headers",
-  "vulnerable_dependency",
   "open_redirect",
 ];
 

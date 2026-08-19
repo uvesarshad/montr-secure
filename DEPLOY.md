@@ -81,17 +81,30 @@ the bundled subcharts per `values.yaml`.
 
 For a true air-gap, Montr needs no inbound internet at runtime and only the (possibly internal) LLM
 endpoint outbound. Deterministic tool rulesets and the CVE/OSV database update **offline** via a
-**signed bundle**:
+bundle built and imported with the scripts in `deploy/airgap/`:
 
 ```bash
 # on a connected host: build + sign the bundle (Semgrep rulesets + OSV/CVE DB)
 deploy/airgap/build-bundle.sh --sign
 
-# on the air-gapped host: verify signature + import
-deploy/airgap/import-bundle.sh montr-bundle-<date>.tar.gz.sig
+# on the air-gapped host: verify signature/checksum + import
+deploy/airgap/import-bundle.sh montr-bundle-<date>.tar.gz
 ```
 
 Point the LLM gateway at an internal model proxy; the egress guard permits only that host.
+
+**Current scope, honestly:** the bundle format covers deterministic scanner rulesets and advisory
+mirror data (per `deploy/airgap/manifest.schema.json`) — it does not package container images (mirror
+`api`/`web`/`worker` separately, e.g. `docker save`/`docker load` or a private registry). `--sign`
+produces a real `cosign` signature when `cosign` is installed and a key is available; without cosign it
+falls back to a SHA-256 checksum file and prints an explicit warning that this is integrity-only, not a
+cryptographic signature — `import-bundle.sh` refuses to import an unverified bundle unless you pass
+`--insecure-skip-verify`. As of this writing the only ruleset with real offline content is gitleaks
+(`.github/gitleaks.toml`); Semgrep still runs against live Semgrep Registry packs and the OSV/GHSA
+advisory data is a small hardcoded seed pending a real offline mirror (tracked separately) — see
+`deploy/airgap/README.md` for the full breakdown and `--semgrep-rules-dir` / `--osv-mirror-dir` /
+`--ghsa-mirror-dir` / `--cve-db-file` to bundle real data once you have it. No runtime code yet reads
+the artifacts `import-bundle.sh` stages — that wiring is future work.
 
 ---
 
