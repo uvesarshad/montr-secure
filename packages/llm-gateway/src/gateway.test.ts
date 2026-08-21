@@ -5,6 +5,7 @@ import {
   KeyTierRejectedError,
   ModelBelowFloorError,
   type LLMRequest,
+  type LLMStreamEvent,
   type Provider,
 } from "@montr/contracts";
 import { parseConfig, type MontrConfig } from "@montr/config";
@@ -474,5 +475,132 @@ describe("gateway PRE-call budget guard (A2, DECIDE-4)", () => {
     );
     await expect(iterator.next()).rejects.toBeInstanceOf(BudgetExceededError);
     expect(adapter.streamCalls).toBe(0);
+  });
+});
+
+describe("gateway REAL-TIME accounting into the registry-resolved per-scan meter (A32)", () => {
+  const SCAN_ID = "scan_accounting_1";
+
+  function hardHaltPolicy(overrides: Record<string, unknown> = {}) {
+    return BudgetPolicySchema.parse({ enforcement: "hard_halt", ...overrides });
+  }
+
+  it("⛔ closes the loop: a completed call's usage is recorded into the SAME meter instance the registry hands to assertPreCallBudget() — the meter enforceBudget would read — not just checked against it", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    // Room for the call to go through, but tight enough that a second
+    // identical call would be refused pre-call IF (and only if) the first
+    // call's spend actually got recorded.
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 0.01 }));
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    // Before any call: nothing spent.
+    expect(meter.actual().actualUsd).toBe(0);
+    expect(meter.checkBudget(hardHaltPolicy({ maxUsd: 0.01 })).spentUsd).toBe(0);
+
+    const response = await gateway.complete(
+      req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 64 }),
+    );
+    expect(response.content).toBe("hi");
+    expect(adapter.calls).toBe(1);
+
+    // ⛔ The whole point of A32: the registry's meter — the exact instance
+    // `enforceBudget` and a second `assertPreCallBudget()` call would read —
+    // now reflects real recorded spend from the completed call, not $0.
+    const actual = meter.actual();
+    expect(actual.actualUsd).toBeGreaterThan(0);
+    expect(actual.usage.totalTokens).toBeGreaterThan(0);
+    const spend = meter.checkBudget(hardHaltPolicy({ maxUsd: 0.01 }));
+    expect(spend.spentUsd).toBeGreaterThan(0);
+    expect(spend.spentUsd).toBe(actual.actualUsd);
+  });
+
+  it("attributes recorded spend to metadata.layer, matching what layer packages actually send", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 100 }));
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    await gateway.complete(
+      req({
+        metadata: { purpose: "confirmation", scanId: SCAN_ID, layer: "layer3" },
+        maxTokens: 64,
+      }),
+    );
+
+    const actual = meter.actual();
+    const layer3 = actual.byLayer.find((entry) => entry.key === "layer3");
+    expect(layer3).toBeDefined();
+    expect(layer3?.usd).toBeGreaterThan(0);
+  });
+
+  it("also records a stream() completion's usage into the registry-resolved meter", async () => {
+    class StreamingAdapter extends FakeAdapter {
+      async *stream(): AsyncGenerator<LLMStreamEvent, void, unknown> {
+        yield { type: "message_done", usage: makeUsage(20, 10) };
+      }
+    }
+    const adapter = new StreamingAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 100 }));
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    const events: unknown[] = [];
+    for await (const event of gateway.stream(
+      req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 64 }),
+    )) {
+      events.push(event);
+    }
+
+    expect(meter.actual().actualUsd).toBeGreaterThan(0);
+  });
+
+  it("also records into a standalone constructor-level costMeter when configured (non-worker/test callers, unchanged)", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const costMeter = createCostMeter("standalone_scan");
+    const gateway = makeGateway(adapter, { costMeter });
+
+    await gateway.complete(req({ metadata: { purpose: "triage" }, maxTokens: 64 }));
+
+    expect(costMeter.actual().actualUsd).toBeGreaterThan(0);
+  });
+
+  it("does not double-count when the registry-resolved meter and the standalone costMeter are the exact same instance", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 100 }));
+    // Same instance passed both as the standalone costMeter AND reachable via
+    // the registry — a caller could plausibly do this; recording must not
+    // double-count usage into it.
+    const gateway = makeGateway(adapter, { budgetRegistry: registry, costMeter: meter });
+
+    await gateway.complete(
+      req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 64 }),
+    );
+
+    const singleCallActual = meter.actual();
+    // A second call should roughly double the recorded spend if accounting
+    // is correct; if double-counted, the FIRST call alone would already show
+    // usage inflated by 2x relative to a single non-duplicated recording.
+    // We assert directly: totalTokens for one `ok()` response is 15 (10 in + 5 out).
+    expect(singleCallActual.usage.totalTokens).toBe(15);
+  });
+
+  it("does NOT record into any meter when the request carries no scanId and no standalone costMeter is configured", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 100 }));
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    await gateway.complete(req({ metadata: { purpose: "triage" }, maxTokens: 64 }));
+
+    // No scanId on the request ⇒ nothing resolvable in the registry; the
+    // unrelated scan's meter must stay untouched.
+    expect(meter.actual().actualUsd).toBe(0);
   });
 });

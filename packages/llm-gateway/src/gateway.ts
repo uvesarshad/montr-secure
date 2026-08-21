@@ -14,7 +14,12 @@ import {
   type TokenUsage,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
-import { priceUsageUsd, type BudgetRegistry, type CostMeter } from "@montr/cost-meter";
+import {
+  priceUsageUsd,
+  type BudgetRegistry,
+  type CostMeter,
+  type MeterEntry,
+} from "@montr/cost-meter";
 import { createEgressGuard, type EgressGuard } from "@montr/security";
 import { createLogger, getMetrics, type Logger } from "@montr/telemetry";
 import { createAdapter, type ProviderAdapter } from "./adapters/index.js";
@@ -373,7 +378,26 @@ export class MontrLlmGateway implements LLMGateway {
     );
   }
 
-  /** ⛔ Metadata-only accounting: cost meter + audit hook + structured log. */
+  /**
+   * ⛔ Metadata-only accounting: cost meter(s) + audit hook + structured log.
+   *
+   * A32: recorded usage MUST land in the same per-scan `CostMeter` instance
+   * `assertPreCallBudget()` reads from (looked up via `budgetRegistry` by
+   * `metadata.scanId`, mirroring that lookup exactly) — that is also the
+   * SAME instance `orchestrator/controller.ts`'s `getMeter(scanId)` hands to
+   * `enforceBudget` between layers (both come from the controller's single
+   * `this.meters` cache; see `budgetRegistry.register(scanId, meter, ...)`
+   * in `runLayerJob`). Without this, both the pre-call guard and the
+   * between-layers check evaluate against a meter that never accumulates
+   * real recorded spend — the whole point of A2's budget enforcement.
+   *
+   * The standalone `opts.costMeter` (constructor-level, not per-scan) is
+   * still recorded into when configured — it remains legitimate for callers
+   * that don't use `budgetRegistry` at all (tests, one-off/non-worker
+   * tooling). If it happens to resolve to the exact same instance as the
+   * registry-resolved meter, skip the duplicate `record()` call so a single
+   * completed call's spend isn't double-counted.
+   */
   private account(
     metadata: LLMCallMetadata,
     model: string,
@@ -390,11 +414,21 @@ export class MontrLlmGateway implements LLMGateway {
     });
     logCall(this.logger, log);
     this.onCall?.(log);
-    this.costMeter?.record({
+
+    const entry: MeterEntry = {
       modelId: model,
       usage,
       ...(metadata.layer ? { layer: metadata.layer } : {}),
-    });
+    };
+
+    const scanMeter = metadata.scanId
+      ? this.budgetRegistry?.get(metadata.scanId)?.meter
+      : undefined;
+    scanMeter?.record(entry);
+
+    if (this.costMeter && this.costMeter !== scanMeter) {
+      this.costMeter.record(entry);
+    }
   }
 }
 

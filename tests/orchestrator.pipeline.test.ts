@@ -6,6 +6,7 @@ import {
   evaluateFixGate,
   computeAllowLive,
   estimateGateRequired,
+  effectiveBudgetPolicy,
   type LayerRunners,
   type Orchestrator,
 } from "@montr/orchestrator";
@@ -679,6 +680,119 @@ describe("orchestrator FSM — PRE-call budget guard (A2, DECIDE-4)", () => {
     expect(calls.layer3).toBe(0); // never advanced past the refused layer
     expect(adapter.calls).toBe(0); // ⛔ the provider adapter was never dispatched
     expect(actions(audit)).toContain("scan.failed");
+  });
+});
+
+describe("orchestrator FSM — REAL-TIME cost accounting closes the loop into enforceBudget (A32)", () => {
+  /** Minimal fake provider adapter — always succeeds with a small, fixed usage. */
+  class FakeAdapter implements ProviderAdapter {
+    calls = 0;
+    readonly provider: Provider = "anthropic";
+    resolveModelId(modelId: string): string {
+      return modelId;
+    }
+    async complete(): Promise<AdapterCompletion> {
+      this.calls++;
+      return {
+        id: `c${this.calls}`,
+        model: "claude-sonnet-5",
+        content: "hi",
+        stopReason: "end_turn",
+        usage: makeUsage(10, 5),
+      };
+    }
+    // eslint-disable-next-line require-yield -- not exercised by this test
+    async *stream(): AsyncGenerator<never, void, unknown> {
+      throw new Error("not used in this test");
+    }
+  }
+
+  it("⛔ a real gateway.complete() call made mid-layer is recorded into the SAME CostMeter instance enforceBudget reads between layers — no longer $0", async () => {
+    const { store, audit } = makeStore();
+    // Loose enough ceiling that nothing gets refused (pre-call OR between-layers)
+    // — this test proves ACCUMULATION, not enforcement; A2's own describe block
+    // above already covers the refusal path.
+    const config = MontrConfigSchema.parse({
+      clientId: CLIENT_ID,
+      budget: { requireEstimateApproval: false, maxUsdPerScan: 10, enforcement: "hard_halt" },
+    });
+
+    const adapter = new FakeAdapter();
+    // Same production wiring as apps/worker/src/main.ts: ONE registry instance
+    // threaded into both the gateway (reader, via assertPreCallBudget/account)
+    // and the orchestrator (writer, via runLayerJob's budgetRegistry.register).
+    const budgetRegistry = createBudgetRegistry();
+    const gateway = createLlmGateway({ config, adapter, sleep: async () => {}, budgetRegistry });
+
+    const { runners, calls } = makeRunners({
+      layer1: async (ctx) => {
+        await gateway.complete({
+          messages: [{ role: "user", content: "triage these candidate findings" }],
+          maxTokens: 64,
+          metadata: { purpose: "triage", scanId: ctx.scanId, layer: "layer1" },
+        });
+        return mockLayer1Output;
+      },
+      layer2: async (ctx) => {
+        await gateway.complete({
+          messages: [{ role: "user", content: "correlate these findings against the app map" }],
+          maxTokens: 64,
+          metadata: { purpose: "correlation", scanId: ctx.scanId, layer: "layer2" },
+        });
+        return mockLayer2Output;
+      },
+    });
+
+    // Capture the EXACT CostMeter instance the controller's own getMeter(scanId)
+    // caches and reuses — the same one it registers into budgetRegistry, hands
+    // to layer context as ctx.costMeter, and reads in enforceBudget.
+    let capturedMeter: CostMeter | undefined;
+    let tick = 0;
+    let idc = 0;
+    const base = Date.parse("2026-02-01T00:00:00.000Z");
+    const orch = createOrchestrator({
+      config,
+      store,
+      logger: silent,
+      createCostMeter: (scanId) => {
+        const meter = createCostMeter(scanId);
+        capturedMeter = meter;
+        return meter;
+      },
+      layerRunners: runners,
+      clock: () => new Date(base + tick++ * 1000),
+      ids: () => `scan_${idc++}`,
+      sleep: () => Promise.resolve(),
+      budgetRegistry,
+    });
+
+    const scan = await orch.createScan(createInput());
+    await orch.start(scan.id);
+
+    const done = await settle(store, scan.id, isTerminal);
+
+    // The pipeline ran cleanly end-to-end — nothing was refused.
+    expect(done.status).toBe("completed");
+    expect(calls.layer1).toBe(1);
+    expect(calls.layer2).toBe(1);
+    expect(adapter.calls).toBe(2); // both real gateway calls actually dispatched
+
+    // ⛔ The whole point of A32: BEFORE this fix, `account()` never wrote into
+    // the registry-resolved per-scan meter, so this would read exactly 0 —
+    // the between-layers `enforceBudget` check was always evaluating against
+    // dead spend. Now it reflects the two real calls that were made.
+    expect(capturedMeter).toBeDefined();
+    const actual = capturedMeter!.actual();
+    expect(actual.actualUsd).toBeGreaterThan(0);
+    expect(actual.usage.totalTokens).toBe(30); // 2 calls × (10 in + 5 out)
+
+    // This is literally what enforceBudget calls between layers — proving the
+    // check now has real numbers, not the permanently-$0 reading A32 found.
+    const budgetCheck = capturedMeter!.checkBudget(effectiveBudgetPolicy(done, config));
+    expect(budgetCheck.spentUsd).toBeGreaterThan(0);
+    expect(budgetCheck.spentUsd).toBe(actual.actualUsd);
+
+    expect(actions(audit)).toContain("scan.completed");
   });
 });
 
