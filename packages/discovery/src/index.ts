@@ -14,7 +14,10 @@ import { createNullLogger, type Logger } from "@montr/telemetry";
 import type { DetectorContext, DiscoveryDeps, RunDiscoveryInput } from "./types.js";
 import { detectSast } from "./detectors/sast.js";
 import { detectSecretsAndConfig } from "./detectors/secrets.js";
-import { detectDependencies } from "./detectors/sca.js";
+import { detectDependencies, resolveInstalledPackages } from "./detectors/sca.js";
+import { detectAiSecurity } from "./detectors/ai-security.js";
+import { detectIac } from "./detectors/iac.js";
+import { detectSupplyChainRisks } from "./detectors/supply-chain.js";
 import { selectCustomDetectors, selectSemgrepRulesets } from "./rulesets/registry.js";
 import { loadCustomRules, type LoadedSemgrepRule } from "./custom-rules.js";
 import { triageCandidates } from "./triage.js";
@@ -137,7 +140,7 @@ export async function runDiscoveryDetailed(input: RunDiscoveryInput): Promise<Di
   // (keyed on the App Map's detected languages); Phase-1 TS/JS apps get exactly
   // the curated default set + base detectors. Enabled client custom rules append
   // to both (their configs + detectors), never replacing the curated set.
-  const [sast, secrets, sca] = await Promise.all([
+  const [sast, secrets, sca, aiSecurity, iac, supplyChain] = await Promise.all([
     detectSast(ctx, {
       runner: deps.semgrep,
       rulesets: [
@@ -150,12 +153,33 @@ export async function runDiscoveryDetailed(input: RunDiscoveryInput): Promise<Di
       extraDetectors: [...selectCustomDetectors(input.appMap), ...loaded.secretDetectors],
     }),
     detectDependencies(ctx, {}),
+    // E11: AI-application security agent (prompt injection surface, unsafe
+    // tool exposure, unescaped LLM output, secrets-into-prompt, missing
+    // output validation) — fully offline, no scanner binary, degrades to []
+    // for a repo with no recognized LLM SDK call sites (see ai-security.ts).
+    detectAiSecurity(ctx),
+    // E16: IaC agent (Dockerfile/Kubernetes/Terraform). Real structural
+    // detectors always run offline; an optional Semgrep pass against the
+    // real p/dockerfile, p/kubernetes, p/terraform registry packs layers on
+    // top when the binary is available — NOT a required detector (see
+    // iac.ts's module doc for why this differs from detectSast's posture).
+    detectIac(ctx, { runner: deps.iacSemgrep }),
+    // E16: supply-chain risk (typosquatting, install-script risk, basic
+    // malicious-package heuristics) — built on the same resolved dependency
+    // set SCA already computes; see supply-chain.ts's module doc for exactly
+    // what is and isn't checkable fully offline.
+    (async () => detectSupplyChainRisks(ctx, await resolveInstalledPackages(ctx.files)))(),
   ]).finally(() => customSemgrep.cleanup());
 
   // Merge, dedupe (deterministic ids make cross-tool dupes collapse), scope-filter.
-  let candidates: CandidateFinding[] = dedupeById([...sast, ...secrets, ...sca]).filter((c) =>
-    inScope(c.location.file, input.scope),
-  );
+  let candidates: CandidateFinding[] = dedupeById([
+    ...sast,
+    ...secrets,
+    ...sca,
+    ...aiSecurity,
+    ...iac,
+    ...supplyChain,
+  ]).filter((c) => inScope(c.location.file, input.scope));
 
   // OPTIONAL LLM triage/explain — enriches only, never detects (golden rule #6).
   const triageEnabled = Boolean(deps.gateway) && deps.enableTriage !== false;
@@ -254,6 +278,7 @@ export {
   defaultGitleaksRunner,
   candidatesFromGitleaks,
   runCustomDetectors,
+  looksLikePlaceholder,
   type DetectSecretsOptions,
   type FileDetector,
   type RawFinding,
@@ -285,6 +310,43 @@ export {
   type CallSiteReachability,
 } from "./detectors/sca.js";
 
+// ⛔ AI-application security agent (E11). Scans TARGET apps for prompt
+// injection surface, unsafe tool/function exposure, unescaped LLM output,
+// secrets-into-prompt, and missing output validation — see ai-security.ts's
+// module doc for the full design writeup and the Semgrep-vs-AST judgment call.
+export { detectAiSecurity } from "./detectors/ai-security.js";
+
+// ⛔ IaC agent (E16). Dockerfile/Kubernetes/Terraform structural detectors
+// (always-on, offline) plus an optional Semgrep p/dockerfile+p/kubernetes+
+// p/terraform pass — see iac.ts's module doc for why it is its own detector
+// rather than extra SAST rulesets.
+export { detectIac, DEFAULT_IAC_SEMGREP_RULESETS, type DetectIacOptions } from "./detectors/iac.js";
+export { detectDockerfileIssues, detectMissingDockerignore } from "./detectors/iac/dockerfile.js";
+export { detectTerraformIssues, extractResourceBlocks } from "./detectors/iac/terraform.js";
+export {
+  detectKubernetesIssues,
+  detectMissingNetworkPolicy,
+  summarizeManifests,
+} from "./detectors/iac/kubernetes.js";
+
+// ⛔ Supply-chain risk (E16): typosquatting, install-script risk, basic
+// malicious-package heuristics — see supply-chain.ts's module doc for the
+// honest scope line on what is/isn't checkable fully offline.
+export {
+  detectSupplyChainRisks,
+  detectTyposquats,
+  detectOwnInstallScriptRisk,
+  detectDependencyInstallScriptRisk,
+  detectSuspiciousPackageNames,
+  detectSuspiciousRegistryResolution,
+  levenshtein,
+  POPULAR_NPM_PACKAGES,
+  type TyposquatMatch,
+  type InstallScriptFinding,
+  type SuspiciousResolution,
+  type DetectSupplyChainOptions,
+} from "./detectors/supply-chain.js";
+
 // ⛔ Custom rule authoring (Phase-4 / Wave 5, §16). VALIDATE a client rule before
 // it may be enabled, then LOAD enabled rules alongside the curated rulesets
 // (semgrep bodies as extra `--config`, secret rules as `extraDetectors`).
@@ -313,6 +375,19 @@ export {
 } from "./persist.js";
 
 export { ADVISORY_DB, matchAdvisories, type Advisory } from "./advisories.js";
+
+// ⛔ SBOM dependency inventory (E16). The full resolved dependency tree +
+// advisory matches, independent of Layer 1's CandidateFinding shape — see
+// sbom.ts's module doc for why this is a standalone entry point rather than
+// derived from detectDependencies's output, and packages/report/src/exports/
+// cyclonedx.ts for the CycloneDX renderer that consumes it.
+export {
+  buildDependencyInventory,
+  type DependencyInventory,
+  type SbomComponent,
+  type SbomVulnerability,
+  type BuildDependencyInventoryOptions,
+} from "./sbom.js";
 export { satisfies as semverSatisfies, coerce as coerceSemver } from "./semver.js";
 export { buildCandidate, dedupeById } from "./util/candidate.js";
 export { candidateId, fnv1a, toSnippet } from "./util/ids.js";
@@ -323,6 +398,9 @@ export {
   readAll,
   isSourceFile,
   isTextFile,
+  isDockerfileName,
+  isTerraformFile,
+  isYamlFile,
   inScope,
   type FileProvider,
   type RepoFile,

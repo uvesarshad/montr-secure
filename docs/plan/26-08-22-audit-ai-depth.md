@@ -170,6 +170,10 @@ actual metered accumulation across a scan's calls is dead code. Wire `costMeter`
 construction in `apps/worker/src/main.ts` and every real layer call site so recorded spend reflects
 reality and `enforceBudget` has real numbers to check.
 
+### A33 (P0) — JVM SAST silently produces zero findings (dead Semgrep registry pack)
+
+Discovered during implementation of E14 (external benchmark harness). `packages/discovery/src/rulesets/java/index.ts`'s `semgrepRulesets: ["p/java", "p/spring"]` references a `p/spring` Semgrep registry pack that now 404s. Semgrep aborts its **entire** invocation when any one `--config` target fails to resolve — not just the failing pack — so every JVM scan today silently produces zero SAST candidates, with no error surfaced anywhere in the pipeline or report. Verified directly: swapping in a `p/java`-only ruleset via the existing `LayerRunnerOptions.semgrep` injection point raised confirmed findings from 0 to 5 on an identical OWASP Benchmark subset. This is the same class of failure A4 already fixed for the air-gapped case (an empty scan masquerading as clean) but with a different root cause — a dead upstream registry reference reachable over the network, not a missing-egress problem. Fix: remove or replace the dead pack, and make ruleset resolution degrade per-pack (skip the one that fails, keep the rest) rather than letting one bad entry abort the whole run.
+
 ---
 
 ## P1 — should fix

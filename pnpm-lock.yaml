@@ -373,6 +373,9 @@ importers:
       execa:
         specifier: ^9.6.1
         version: 9.6.1
+      undici:
+        specifier: ^7.28.0
+        version: 7.28.0
     devDependencies:
       '@types/diff':
         specifier: ^8.0.0

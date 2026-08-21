@@ -1,0 +1,9 @@
+{
+  "name": "ai-app-vulnerable",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.32.0",
+    "react": "18.3.1"
+  }
+}

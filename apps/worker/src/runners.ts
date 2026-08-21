@@ -439,6 +439,11 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         audit: ctx.store.audit,
         logger: ctx.logger,
         fpTuning,
+        // E10: threads the orchestrator's real progress-event sink (A5's
+        // EventBus → GET /scans/:id/progress → the console's already-built
+        // LayerProgress) into the E1 investigation loop's per-turn narrative,
+        // identically to how signal/logger are passed straight through above.
+        emitProgress: ctx.emitProgress,
         ...(opts.now ? { now: opts.now } : {}),
       };
       return confirmFindings(input, deps);

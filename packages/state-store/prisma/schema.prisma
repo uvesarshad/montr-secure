@@ -163,6 +163,8 @@ enum Category {
   idor
   mass_assignment
   rate_limit_missing
+  prompt_injection
+  insecure_configuration
   other
 }
 

@@ -46,6 +46,19 @@ export const DATAFLOW_SINK_KINDS: Record<Category, readonly TaintSinkKind[]> = {
   idor: [],
   mass_assignment: [],
   rate_limit_missing: [],
+  // No dedicated TaintSinkKind exists for "reaches an LLM prompt" (E11 scoped
+  // Layer 1 detection only; a real data-flow sink kind + static/live Layer 3
+  // confirmation path for prompt_injection is a documented follow-up, out of
+  // this change's file scope for packages/confirm). Treated as a
+  // configuration/component-class category like the others above: it defers
+  // to the Unconfirmed appendix rather than claiming a static proof it can't
+  // back up (fail-safe, golden rule #4).
+  prompt_injection: [],
+  // Configuration/component-class, same shape as vulnerable_dependency /
+  // hardcoded_secret above — an IaC misconfiguration (E16) has no source→sink
+  // taint flow to prove; it defers to the Unconfirmed appendix unless a future
+  // dedicated IaC confirmation path is built.
+  insecure_configuration: [],
   other: [],
 };
 
@@ -184,6 +197,15 @@ const BASE_SEVERITY: Record<Category, Severity> = {
   mass_assignment: "medium",
   rate_limit_missing: "low",
   insufficient_logging: "low",
+  // On par with the other "high" injection-family categories (xss, ssrf) —
+  // see packages/correlation/src/taxonomy.ts's CATEGORY_IMPACT_BASE comment
+  // for the same reasoning (E11).
+  prompt_injection: "high",
+  // On par with the other config-class categories (permissive_cors,
+  // missing_security_headers, insecure_cookie) — real risk, but a rawSeverity
+  // override from the specific check (e.g. a privileged container) can still
+  // push an individual finding higher (E16).
+  insecure_configuration: "medium",
   other: "low",
 };
 

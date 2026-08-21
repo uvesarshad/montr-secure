@@ -65,6 +65,15 @@ export const CategorySchema = z.enum([
   "idor",
   "mass_assignment",
   "rate_limit_missing",
+  "prompt_injection",
+  // E16: IaC/Dockerfile/Kubernetes/Terraform misconfigurations that are not
+  // themselves a secret, an access-control gap, or a crypto weakness (those
+  // reuse hardcoded_secret / broken_access_control / weak_crypto below) —
+  // running-as-root containers, unpinned base image tags, ADD-vs-COPY misuse,
+  // missing K8s resource limits, privileged/hostNetwork/hostPID pods. Nearest
+  // OWASP Top 10 (2021) analog is A05:2021 Security Misconfiguration; CWE-16
+  // ("Configuration") is the umbrella weakness id.
+  "insecure_configuration",
   "other",
 ]);
 export type Category = z.infer<typeof CategorySchema>;
@@ -139,6 +148,19 @@ export const CATEGORY_TAXONOMY: Record<Category, CategoryTaxonomyEntry> = {
     title: "Missing Rate Limiting",
     cwe: ["CWE-770"],
     owasp: "A04:2021",
+  },
+  // Nearest OWASP Top 10 (2021) analog for an LLM-input-neutralization failure is
+  // A03:2021 Injection (the OWASP Top 10 2021 predates the OWASP Top 10 for LLM
+  // Applications; CWE-1427 is the dedicated CWE for this class, added 2024).
+  prompt_injection: {
+    title: "Prompt Injection",
+    cwe: ["CWE-1427"],
+    owasp: "A03:2021",
+  },
+  insecure_configuration: {
+    title: "Insecure Configuration",
+    cwe: ["CWE-16"],
+    owasp: "A05:2021",
   },
   other: { title: "Other", cwe: [], owasp: "A04:2021" },
 };

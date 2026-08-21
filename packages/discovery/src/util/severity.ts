@@ -82,6 +82,22 @@ const RULE_HINTS: ReadonlyArray<readonly [RegExp, Category]> = [
   [/rate-limit|rate_limit/i, "rate_limit_missing"],
   [/sensitive-data|data-exposure|pii-leak/i, "sensitive_data_exposure"],
   [/logging|log-inject/i, "insufficient_logging"],
+  // E11: a scanner/tool that tags its own rule id with AI/LLM-prompt vocabulary.
+  [/prompt-inject|prompt_inject|llm-inject|jailbreak/i, "prompt_injection"],
+  // E16: Semgrep's Dockerfile/Kubernetes/Terraform registry packs use their
+  // own rule-id vocabulary; map the common ones onto the closest existing
+  // category before falling back to "other". Order matters — more specific
+  // patterns (secret/crypto/access) are checked ahead of the generic
+  // "insecure_configuration" catch-alls in this same list.
+  [/unencrypted|missing-encryption|no-encryption/i, "weak_crypto"],
+  [
+    /security-group|iam-.*(wildcard|permissive|policy)|allow-all|0\.0\.0\.0/i,
+    "broken_access_control",
+  ],
+  [
+    /missing-user|run(s|ning)?-as-root|privileged|host-network|host-pid|hostnetwork|hostpid|missing-resource|unpinned|latest-tag|no-tag|add-instead-of-copy/i,
+    "insecure_configuration",
+  ],
 ];
 
 /** Best-effort Category inference from a scanner rule id. */

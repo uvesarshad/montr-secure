@@ -82,6 +82,11 @@ export const ExportFormatSchema = z.enum([
   "pdf",
   "html",
   "json",
+  // E16: CycloneDX SBOM. Unlike the other formats, its content is NOT derived
+  // from confirmedFindings — see packages/report/src/exports/cyclonedx.ts's
+  // module doc comment for how it plugs into the registry via
+  // GenerateExportOptions.dependencyInventory.
+  "cyclonedx",
 ]);
 export type ExportFormat = z.infer<typeof ExportFormatSchema>;
 

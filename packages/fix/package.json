@@ -27,7 +27,8 @@
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*",
     "diff": "^9.0.0",
-    "execa": "^9.6.1"
+    "execa": "^9.6.1",
+    "undici": "^7.28.0"
   },
   "devDependencies": {
     "@types/diff": "^8.0.0"

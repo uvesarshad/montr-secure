@@ -12,7 +12,8 @@
     }
   },
   "bin": {
-    "montr-qa": "./dist/cli.js"
+    "montr-qa": "./dist/cli.js",
+    "montr-qa-owasp-benchmark": "./dist/owasp-benchmark-cli.js"
   },
   "files": [
     "dist"
@@ -26,6 +27,7 @@
     "qa:corpus:selfcheck": "tsc -b && node dist/cli.js",
     "qa:variance": "tsc -b && node dist/cli.js --variance",
     "qa:variance:selfcheck": "tsc -b && node dist/cli.js --variance --variance-selfcheck",
+    "qa:owasp-benchmark": "tsc -b && node dist/owasp-benchmark-cli.js",
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {

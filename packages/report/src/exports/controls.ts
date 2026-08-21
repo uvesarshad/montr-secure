@@ -217,6 +217,15 @@ const SOC2_CATEGORY_CONTROLS: Record<Category, readonly string[]> = {
   idor: ["CC6.1", "CC6.3"],
   mass_assignment: ["CC6.1", "CC6.3", "CC8.1"],
   rate_limit_missing: ["CC6.6", "CC7.2"],
+  // Same control set as the other injection-family categories (sql_injection,
+  // xxe): input validation (CC6.1), operational detection (CC7.1), and secure
+  // development lifecycle (CC8.1) apply identically when the injection target
+  // is an LLM prompt instead of a query/template (E11).
+  prompt_injection: ["CC6.1", "CC7.1", "CC8.1"],
+  // Configuration monitoring (CC7.1) is the direct hit for an IaC/container/
+  // cloud misconfiguration; change management (CC8.1) covers the
+  // infrastructure-as-code review process itself (E16).
+  insecure_configuration: ["CC7.1", "CC8.1"],
   other: ["CC6.1", "CC7.1"],
 };
 
@@ -245,6 +254,13 @@ const ISO27001_CATEGORY_CONTROLS: Record<Category, readonly string[]> = {
   idor: ["A.5.15", "A.8.3"],
   mass_assignment: ["A.8.28", "A.8.3"],
   rate_limit_missing: ["A.8.16", "A.8.26"],
+  // Same Annex A set as sql_injection/xss: secure coding (A.8.28), application
+  // security requirements (A.8.26), and security testing in development
+  // (A.8.29) (E11).
+  prompt_injection: ["A.8.28", "A.8.26", "A.8.29"],
+  // Configuration management (A.8.9) is the exact Annex A control for an
+  // IaC/container misconfiguration finding (E16).
+  insecure_configuration: ["A.8.9", "A.8.25"],
   other: ["A.8.28", "A.8.25"],
 };
 

@@ -19,6 +19,11 @@ import {
   renderReportPdf,
   escapeHtml,
   PdfBrowserUnavailableError,
+  buildCycloneDxSbom,
+  renderCycloneDxSbom,
+  inventoryFromReport,
+  CYCLONEDX_SPEC_VERSION,
+  type DependencyInventoryInput,
 } from "@montr/report";
 import {
   mockScan,
@@ -180,5 +185,149 @@ describe("@montr/report export registry — Wave-3 extension point", () => {
     const out = await generateExport(report, "soc2-evidence");
     expect(out.contentType).toBe("application/json");
     expect(out.artifact.filename.endsWith(".soc2.json")).toBe(true);
+  });
+});
+
+describe("@montr/report CycloneDX SBOM export (E16)", () => {
+  const inventory: DependencyInventoryInput = {
+    components: [
+      { name: "lodash", version: "4.17.11", ecosystem: "npm", reachable: true },
+      { name: "left-pad", version: "1.3.0", ecosystem: "npm", reachable: false },
+      { name: "@scope/pkg", version: "2.0.0", ecosystem: "npm" }, // reachability unknown
+    ],
+    vulnerabilities: [
+      {
+        id: "GHSA-jf85-cpcp-j695",
+        source: "ghsa",
+        packageName: "lodash",
+        packageVersion: "4.17.11",
+        severity: "high",
+        cwe: ["CWE-1321"],
+        summary: "Prototype pollution in lodash.",
+        fixedVersion: "4.17.12",
+        aliases: ["CVE-2019-10744"],
+        reachable: true,
+      },
+    ],
+  };
+
+  it("produces a schema-shaped CycloneDX 1.5 document — bomFormat/specVersion/serialNumber", () => {
+    const bom = buildCycloneDxSbom(inventory, { now: FIXED_LATER, serialNumber: "urn:uuid:test" });
+    expect(bom.bomFormat).toBe("CycloneDX");
+    expect(bom.specVersion).toBe(CYCLONEDX_SPEC_VERSION);
+    expect(bom.serialNumber).toBe("urn:uuid:test");
+    expect(bom.version).toBe(1);
+    expect(bom.metadata.timestamp).toBe(FIXED_LATER);
+    expect(bom.metadata.tools.components[0]?.name).toBe("Montr Secure");
+  });
+
+  it("lists EVERY component, not just the vulnerable ones", () => {
+    const bom = buildCycloneDxSbom(inventory);
+    expect(bom.components).toHaveLength(3);
+    expect(bom.components.map((c) => c.name).sort()).toEqual(["@scope/pkg", "left-pad", "lodash"]);
+  });
+
+  it("builds a correct PURL per component, percent-encoding scoped package '@'", () => {
+    const bom = buildCycloneDxSbom(inventory);
+    const lodash = bom.components.find((c) => c.name === "lodash");
+    expect(lodash?.purl).toBe("pkg:npm/lodash@4.17.11");
+    expect(lodash?.["bom-ref"]).toBe("pkg:npm/lodash@4.17.11");
+    const scoped = bom.components.find((c) => c.name === "@scope/pkg");
+    expect(scoped?.purl).toBe("pkg:npm/%40scope/pkg@2.0.0");
+  });
+
+  it("annotates real call-site reachability (A12) as a component property, only when known", () => {
+    const bom = buildCycloneDxSbom(inventory);
+    const lodash = bom.components.find((c) => c.name === "lodash");
+    expect(lodash?.properties).toContainEqual({ name: "montr:reachable", value: "true" });
+    const leftPad = bom.components.find((c) => c.name === "left-pad");
+    expect(leftPad?.properties).toContainEqual({ name: "montr:reachable", value: "false" });
+    const scoped = bom.components.find((c) => c.name === "@scope/pkg");
+    expect(scoped?.properties).toEqual([]); // unknown reachability -> no property, not a guess
+  });
+
+  it("maps matched advisories to vulnerabilities[], referencing the component's bom-ref via affects", () => {
+    const bom = buildCycloneDxSbom(inventory);
+    expect(bom.vulnerabilities).toHaveLength(1);
+    const vuln = bom.vulnerabilities[0]!;
+    expect(vuln.id).toBe("GHSA-jf85-cpcp-j695");
+    expect(vuln.source).toEqual({ name: "GHSA" });
+    expect(vuln.ratings).toEqual([{ severity: "high", method: "other" }]);
+    expect(vuln.cwes).toEqual([1321]); // "CWE-1321" -> numeric 1321 per the CycloneDX spec
+    expect(vuln.affects).toEqual([{ ref: "pkg:npm/lodash@4.17.11" }]);
+    expect(vuln.recommendation).toContain("4.17.12");
+  });
+
+  it("renderCycloneDxSbom produces valid, parseable JSON matching the built document", () => {
+    const json = renderCycloneDxSbom(inventory, {
+      now: FIXED_LATER,
+      serialNumber: "urn:uuid:test",
+    });
+    const parsed = JSON.parse(json);
+    expect(parsed).toEqual(
+      buildCycloneDxSbom(inventory, { now: FIXED_LATER, serialNumber: "urn:uuid:test" }),
+    );
+  });
+
+  it("an empty inventory still produces a schema-shaped, valid (empty) SBOM — never throws", () => {
+    const bom = buildCycloneDxSbom({ components: [] });
+    expect(bom.bomFormat).toBe("CycloneDX");
+    expect(bom.components).toEqual([]);
+    expect(bom.vulnerabilities).toEqual([]);
+  });
+
+  it("inventoryFromReport derives a partial inventory from a Report's own confirmed vulnerable_dependency findings", async () => {
+    const depFinding = {
+      ...mockConfirmedFindings[0]!,
+      id: "conf_dep_0001",
+      title: "Vulnerable dependency: lodash@4.17.11 (GHSA-jf85-cpcp-j695)",
+      category: "vulnerable_dependency" as const,
+      cwe: ["CWE-1321" as const],
+      severity: "high" as const,
+      impact: "Prototype pollution allows denial of service or property injection.",
+      proofType: "static" as const,
+      proofArtifact: {
+        kind: "static" as const,
+        argument: "Reachable, matched OSV advisory.",
+        dataFlow: [],
+        sanitizersBypassed: [],
+      },
+    };
+    const out = await buildReport({
+      scan: mockScan,
+      confirmed: [depFinding],
+      unconfirmed: [],
+      fixes: [],
+      costRollup: mockCostRollup,
+      autoApply: false,
+      generatedAt: FIXED_LATER,
+    });
+    const derived = inventoryFromReport(out.report);
+    expect(derived.components).toEqual([{ name: "lodash", version: "4.17.11", ecosystem: "npm" }]);
+    expect(derived.vulnerabilities).toHaveLength(1);
+    expect(derived.vulnerabilities[0]).toMatchObject({
+      id: "GHSA-jf85-cpcp-j695",
+      source: "ghsa",
+      packageName: "lodash",
+      packageVersion: "4.17.11",
+      severity: "high",
+    });
+  });
+
+  it("generateExport(report, 'cyclonedx') works through the registry, falling back to inventoryFromReport when no explicit inventory is supplied", async () => {
+    const out = await generateExport(report, "cyclonedx", { now: FIXED_LATER });
+    expect(out.contentType).toBe("application/vnd.cyclonedx+json");
+    expect(out.artifact.filename.endsWith(".cdx.json")).toBe(true);
+    const parsed = JSON.parse(out.content as string);
+    expect(parsed.bomFormat).toBe("CycloneDX");
+    // `report` (mockConfirmedFindings) has no vulnerable_dependency finding ->
+    // the fallback derivation is legitimately empty, not a throw.
+    expect(parsed.components).toEqual([]);
+  });
+
+  it("generateExport(report, 'cyclonedx') prefers an explicitly supplied dependencyInventory over the Report-derived fallback", async () => {
+    const out = await generateExport(report, "cyclonedx", { dependencyInventory: inventory });
+    const parsed = JSON.parse(out.content as string);
+    expect(parsed.components).toHaveLength(3);
   });
 });

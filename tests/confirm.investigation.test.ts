@@ -325,6 +325,123 @@ describe("E1 — hard structural turn-budget cap halts a runaway loop", () => {
   });
 });
 
+describe("E10 — emitProgress narrates the investigation loop, additively", () => {
+  /** The same 3-turn scripted scenario used by the "actually reads files" test above. */
+  function scriptedScenario(): ScriptedGateway {
+    return new ScriptedGateway(
+      [
+        toolResponse("t1", [{ id: "c1", name: "list_routes", input: {} }]),
+        toolResponse("t2", [{ id: "c2", name: "read_file", input: { path: HANDLER_PATH } }]),
+        toolResponse("t3", [
+          {
+            id: "c3",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: {
+              verdict: "confirmed_candidate",
+              rationale: "prisma.order.findUnique has no ownership check against the session user.",
+              ownershipCheckFound: false,
+              existingTestFile: "app/api/orders/ownership.existing.test.ts",
+              targetRouteId: ROUTE_ID,
+            },
+          },
+        ]),
+      ],
+      allConfirmVerifier(),
+    );
+  }
+
+  it("is called exactly once per investigation turn, with a sensible phase/pct/message derived from the actual tool call", async () => {
+    const repoRoot = await writeVulnerableRepo();
+    cleanupDirs.push(repoRoot);
+
+    const progressCalls: Array<{ phase: string; pct: number; message?: string }> = [];
+    const input = baseInput({ repoRoot });
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: scriptedScenario(),
+      investigation: { enabled: true },
+      emitProgress: (phase, pct, message) => {
+        progressCalls.push({ phase, pct, message });
+      },
+    };
+
+    const outcome = await runInvestigation(idorProbableFinding(), input, deps);
+
+    expect(outcome.verdict).toBe("confirmed_candidate");
+    expect(outcome.turnsUsed).toBe(3);
+    // Exactly one emitProgress call per investigation turn (3 turns used).
+    expect(progressCalls.length).toBe(3);
+
+    for (const call of progressCalls) {
+      expect(call.phase).toBe("investigating");
+      expect(call.pct).toBeGreaterThan(0);
+      expect(call.pct).toBeLessThanOrEqual(100);
+    }
+    // pct climbs monotonically toward completion as turns advance.
+    expect(progressCalls[0]?.pct).toBeLessThanOrEqual(progressCalls[1]?.pct ?? 0);
+    expect(progressCalls[1]?.pct).toBeLessThanOrEqual(progressCalls[2]?.pct ?? 0);
+
+    // Messages are derived from the REAL tool call each turn made, not a generic placeholder.
+    expect(progressCalls[0]?.message).toBe("Listing App Map routes...");
+    expect(progressCalls[1]?.message).toBe(`Reading ${HANDLER_PATH}...`);
+    expect(progressCalls[2]?.message).toBe(
+      "Submitting investigation verdict (confirmed_candidate)...",
+    );
+    // The final call reflects the loop's completion.
+    expect(progressCalls[2]?.pct).toBe(100);
+  });
+
+  it("a throwing emitProgress callback never breaks the investigation loop (best-effort telemetry)", async () => {
+    const repoRoot = await writeVulnerableRepo();
+    cleanupDirs.push(repoRoot);
+
+    const input = baseInput({ repoRoot });
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: scriptedScenario(),
+      investigation: { enabled: true },
+      emitProgress: () => {
+        throw new Error("boom — a broken progress consumer");
+      },
+    };
+
+    const outcome = await runInvestigation(idorProbableFinding(), input, deps);
+    expect(outcome.verdict).toBe("confirmed_candidate");
+    expect(outcome.existingTestFile).toBe("app/api/orders/ownership.existing.test.ts");
+  });
+
+  it("REGRESSION: omitting emitProgress leaves the investigation loop's outcome byte-identical to before this change", async () => {
+    const repoRootWith = await writeVulnerableRepo();
+    const repoRootWithout = await writeVulnerableRepo();
+    cleanupDirs.push(repoRootWith, repoRootWithout);
+
+    const outcomeWithoutCallback = await runInvestigation(
+      idorProbableFinding(),
+      baseInput({ repoRoot: repoRootWithout }),
+      { now: NOW, llm: scriptedScenario(), investigation: { enabled: true } }, // no emitProgress
+    );
+
+    const outcomeWithCallback = await runInvestigation(
+      idorProbableFinding(),
+      baseInput({ repoRoot: repoRootWith }),
+      {
+        now: NOW,
+        llm: scriptedScenario(),
+        investigation: { enabled: true },
+        emitProgress: () => undefined,
+      },
+    );
+
+    expect(outcomeWithoutCallback.verdict).toBe(outcomeWithCallback.verdict);
+    expect(outcomeWithoutCallback.rationale).toBe(outcomeWithCallback.rationale);
+    expect(outcomeWithoutCallback.existingTestFile).toBe(outcomeWithCallback.existingTestFile);
+    expect(outcomeWithoutCallback.turnsUsed).toBe(outcomeWithCallback.turnsUsed);
+    expect(outcomeWithoutCallback.toolCallCount).toBe(outcomeWithCallback.toolCallCount);
+    expect(outcomeWithoutCallback.haltedByBudget).toBe(outcomeWithCallback.haltedByBudget);
+    expect(outcomeWithoutCallback.turns).toEqual(outcomeWithCallback.turns);
+  });
+});
+
 describe("E1/E2/E4 wired into confirmFindings — additive, opt-in, and only confirms with full proof", () => {
   it("metadata-only confirmation (investigation disabled, the default) leaves an IDOR finding unconfirmed", async () => {
     const repoRoot = await writeVulnerableRepo();

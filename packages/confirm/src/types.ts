@@ -151,6 +151,19 @@ export interface ConfirmDeps {
   signal?: AbortSignal;
   audit?: AuditSink;
   logger?: ConfirmLogger;
+  /**
+   * E10 — optional intra-layer progress callback. Mirrors
+   * `@montr/orchestrator`'s `LayerContext.emitProgress(phase, pct, message)`
+   * exactly (same signature) and follows the identical wiring pattern as
+   * `signal`/`logger` above: `apps/worker/src/runners.ts`'s layer3 runner
+   * passes `ctx.emitProgress` straight through. Consumed today only by the
+   * E1 investigation loop (`investigate.ts`), called once per tool-call
+   * turn with a human-readable phase/message. Omitting it leaves the
+   * investigation loop — and every other path in this package — byte-
+   * identical to before; this is purely additive telemetry, never load-
+   * bearing for a confirmation decision.
+   */
+  emitProgress?: (phase: string, pct: number, message?: string) => void;
   /** ⛔ Egress guard. Default built from @montr/security with { includeDastTargets: true }. */
   egressGuard?: EgressGuardLike;
   transport?: LiveHttpTransport;

@@ -11,6 +11,7 @@ import {
 } from "@montr/fix";
 import {
   mockConfirmedFindings,
+  mockLiveConfirmedFinding,
   createFakeLlmGateway,
   CLIENT_ID,
   SCAN_ID,
@@ -598,6 +599,64 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
       expect(logger.warnings).toHaveLength(0);
     });
   });
+});
+
+describe("@montr/fix — generateFixes (Layer 4) — E13 ctx.containerProof wiring", () => {
+  it("is OFF by default: zero behavior change for a live-confirmed finding when containerProof is not set", async () => {
+    // mockLiveConfirmedFinding is sql_injection @ app/api/users/route.ts — the
+    // SAME file the base SQLI fixture uses, so the deterministic strategy
+    // applies and the existing vitest-subprocess mechanism proves it exactly
+    // as it always has when containerProof is absent.
+    const out = await generateFixes(baseInput({ confirmed: [mockLiveConfirmedFinding] }));
+    const fix = out.fixes[0]!;
+    expect(fix.riskClass).toBe("auto-eligible");
+    expect(fix.proofOfFixTest.failsPrePatch).toBe(true);
+    expect(fix.proofOfFixTest.passesPostPatch).toBe(true);
+    expect(fix.proofOfFixTest.containerReplay).toBeUndefined();
+  });
+
+  it("wires containerProof end-to-end: a container-infra failure degrades gracefully to a validated fix (no hang, no crash)", async () => {
+    const audit = new CapturingAudit();
+    const out = await generateFixes(
+      baseInput({
+        confirmed: [mockLiveConfirmedFinding],
+        audit,
+        containerProof: {
+          enabled: true,
+          targetRepoDir: VULN_ROOT,
+          // Deliberately-missing binary — exercises the "container infra
+          // fails closed, degrades to the vitest mechanism" path fast,
+          // without needing a real Docker daemon in this particular test.
+          // The REAL, actually-successful container path is proven with a
+          // genuine Docker container in tests/fix.container-replay.test.ts.
+          dockerBin: "montr-e13-nonexistent-docker-binary-xyz",
+          timeoutMs: 15_000,
+        },
+      }),
+    );
+
+    expect(out.fixes).toHaveLength(1);
+    const fix = out.fixes[0]!;
+    // Still a real, validated fix — the container-infra failure never breaks
+    // the pipeline, it degrades to the pre-existing vitest-subprocess proof.
+    expect(fix.riskClass).toBe("auto-eligible");
+    expect(fix.proofOfFixTest.failsPrePatch).toBe(true);
+    expect(fix.proofOfFixTest.passesPostPatch).toBe(true);
+
+    const evidence = fix.proofOfFixTest.containerReplay!;
+    expect(evidence.attempted).toBe(true);
+    expect(evidence.replayed).toBe(false);
+    expect(evidence.error).toMatch(/pre-patch container replay failed/);
+
+    // The audit trail records the ATTEMPT (lean summary), never a transcript body.
+    const event = audit.events.find((e) => e.action === "fix.generated")!;
+    const meta = event.metadata as Record<string, unknown>;
+    const auditedReplay = meta.containerReplay as Record<string, unknown>;
+    expect(auditedReplay.attempted).toBe(true);
+    expect(auditedReplay.replayed).toBe(false);
+    expect(JSON.stringify(meta)).not.toContain("RESULT:");
+    expect(JSON.stringify(meta)).not.toContain("bodySnippet");
+  }, 30_000);
 });
 
 /** Reconstruct the fixed full-file text for the "would the old whole-file-rewrite

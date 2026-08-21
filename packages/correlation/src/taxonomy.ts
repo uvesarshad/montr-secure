@@ -19,6 +19,12 @@ export const INJECTION_CATEGORIES: ReadonlySet<Category> = new Set<Category>([
   "insecure_deserialization",
   "xxe",
   "open_redirect",
+  // Unsanitized user input flowing into an LLM prompt's system/instruction
+  // context is structurally an injection category — the "sink" is the LLM
+  // call instead of a SQL/shell/template sink, but the taint mechanics
+  // (untrusted source reaches a context where it can override intended
+  // instructions) are the same shape (E11).
+  "prompt_injection",
 ]);
 
 /** Security-misconfiguration categories tied to a route/handler surface. */
@@ -30,6 +36,11 @@ export const CONFIG_CATEGORIES: ReadonlySet<Category> = new Set<Category>([
   "csrf",
   "rate_limit_missing",
   "insufficient_logging",
+  // E16: IaC/Dockerfile/Kubernetes/Terraform misconfigurations (running as
+  // root, missing resource limits, unpinned base images, ADD-vs-COPY misuse,
+  // privileged/hostNetwork/hostPID pods) — same "config, not a data flow"
+  // shape as the categories above.
+  "insecure_configuration",
 ]);
 
 /** Secret-exposure categories corroborated by the env/secret surface. */
@@ -117,6 +128,17 @@ export const CATEGORY_IMPACT_BASE: Record<Category, number> = {
   idor: 0.7,
   mass_assignment: 0.6,
   rate_limit_missing: 0.3,
+  // On par with ssrf/xxe: a successful prompt injection can exfiltrate data
+  // via the LLM response, or — combined with unsafe tool exposure — drive a
+  // dangerous tool call, but (unlike sql_injection/command_injection) it
+  // requires a second-stage sink to reach that impact, so it sits below the
+  // 0.9+ direct-RCE-class categories (E11).
+  prompt_injection: 0.75,
+  // On par with permissive_cors/insecure_cookie — a genuine config weakness
+  // (a container running as root, a floating base image tag, a pod missing
+  // resource limits) but rarely a direct single-hop path to compromise the
+  // way an injection/access-control category is (E16).
+  insecure_configuration: 0.35,
   other: 0.4,
 };
 

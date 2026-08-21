@@ -31,7 +31,10 @@ export * from "./prompt-eval.js";
 export * from "./layer-metrics.js";
 export * from "./findings-io.js";
 export * from "./report.js";
+export * from "./owasp-benchmark.js";
+export * from "./owasp-benchmark-report.js";
 export { run } from "./cli.js";
+export { run as runOwaspBenchmarkCli } from "./owasp-benchmark-cli.js";
 
 import {
   DEFAULT_BASELINE,

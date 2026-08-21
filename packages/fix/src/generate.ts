@@ -34,6 +34,10 @@ import {
 import { classifyConfirmedFindingRisk, type RiskDecision } from "./risk.js";
 import { buildUnifiedDiff, validatePatch } from "./patch.js";
 import {
+  validatePatchWithContainerReplay,
+  type ContainerReplayEvidence,
+} from "./container-validate.js";
+import {
   advisoryProofTestCode,
   pickStrategy,
   proofTestPath,
@@ -61,6 +65,31 @@ export interface FixGenerationContext {
   metrics?: MontrMetrics;
   /** Structured logger for LLM parse/apply-failure visibility (A14; defaults to a no-op logger). */
   logger?: Logger;
+  /**
+   * E13 — OFF by default. When enabled AND a confirmed finding carries a real
+   * live-DAST proof artifact (an HTTP exploit transcript), proof-of-fix
+   * validation attempts a genuine ephemeral-container replay of that SAME
+   * probe against the target app instead of (falling back to, on missing
+   * evidence or container-infra failure) the vitest-subprocess regex-assertion
+   * mechanism. See container-validate.ts. Mirrors the existing OFF-by-default,
+   * constructor-opt-in convention used by `ConfirmDeps.investigation.enabled`
+   * (E1), `escalation` (E9), etc.
+   */
+  containerProof?: {
+    enabled: boolean;
+    /**
+     * Filesystem checkout of the FULL target application (not just the
+     * vulnerable file) — required to build a real container image. Not yet
+     * populated by apps/worker/src/runners.ts in production, the same
+     * documented not-yet-wired pattern as `ConfirmInput.repoRoot` for E1's
+     * investigation loop — enabling this without a directory just yields the
+     * vitest fallback (never a hang or a crash).
+     */
+    targetRepoDir?: string;
+    /** Per-container-lifecycle timeout budget (ms). Default 120_000. */
+    timeoutMs?: number;
+    dockerBin?: string;
+  };
 }
 
 export interface GenerateFixesInput extends FixGenerationContext {
@@ -235,8 +264,28 @@ interface FixParts {
     code: string;
     failsPrePatch: boolean;
     passesPostPatch: boolean;
+    /** E13: the full ephemeral-container exploit-replay evidence (request/
+     * response transcript for both runs) — persisted on the Fix row itself,
+     * NOT the audit log (golden rule #1: audit metadata stays metadata-only,
+     * never raw request/response bodies; see `auditFixGenerated` below). */
+    containerReplay?: ContainerReplayEvidence;
   };
   risk: RiskDecision;
+}
+
+/** A LEAN summary of `ContainerReplayEvidence` safe for audit metadata — every
+ * transcript/body field is stripped (golden rule #1). The full evidence lives
+ * on `Fix.proofOfFixTest.containerReplay` instead. */
+function leanContainerReplaySummary(ev: ContainerReplayEvidence): Record<string, unknown> {
+  return {
+    attempted: ev.attempted,
+    replayed: ev.replayed,
+    harness: ev.harness ?? null,
+    prePatchExploitSucceeded: ev.prePatch?.exploitSucceeded ?? null,
+    postPatchExploitSucceeded: ev.postPatch?.exploitSucceeded ?? null,
+    reason: ev.reason ?? null,
+    error: ev.error ?? null,
+  };
 }
 
 function assembleFix(
@@ -267,6 +316,11 @@ interface AuditMeta {
   via: "llm" | "deterministic" | "advisory";
   changedLines: number;
   model?: string;
+  /** E13: present whenever `ctx.containerProof.enabled` — a LEAN summary (no
+   * transcript bodies; see `leanContainerReplaySummary`) of the container
+   * replay attempt. The FULL evidence (with the request/response transcript)
+   * is persisted on `Fix.proofOfFixTest.containerReplay` instead, never here. */
+  containerReplay?: Record<string, unknown>;
 }
 
 interface GeneratedOne {
@@ -349,7 +403,25 @@ async function generateOne(
 
     for (const candidate of candidates) {
       const patch = buildUnifiedDiff(filePath, original, candidate.fixedSource);
-      const validation = await validatePatch(original, patch, { filePath, proofTestCode });
+      const containerProof = ctx.containerProof;
+      let validation: Awaited<ReturnType<typeof validatePatch>>;
+      let containerReplay: ContainerReplayEvidence | undefined;
+      if (containerProof?.enabled) {
+        const result = await validatePatchWithContainerReplay(original, patch, {
+          filePath,
+          proofTestCode,
+          confirmedFinding: finding,
+          ...(containerProof.targetRepoDir ? { targetRepoDir: containerProof.targetRepoDir } : {}),
+          ...(containerProof.timeoutMs !== undefined
+            ? { containerTimeoutMs: containerProof.timeoutMs }
+            : {}),
+          ...(containerProof.dockerBin ? { dockerBin: containerProof.dockerBin } : {}),
+        });
+        validation = result;
+        containerReplay = result.containerReplay;
+      } else {
+        validation = await validatePatch(original, patch, { filePath, proofTestCode });
+      }
       if (validation.applies && validation.failsPrePatch && validation.passesPostPatch) {
         const risk = classifyConfirmedFindingRisk(
           finding,
@@ -370,6 +442,9 @@ async function generateOne(
             code: proofTestCode,
             failsPrePatch: validation.failsPrePatch,
             passesPostPatch: validation.passesPostPatch,
+            // E13: the FULL evidence (with transcript) rides on the Fix row
+            // itself — audit metadata gets only the lean summary below.
+            ...(containerReplay ? { containerReplay } : {}),
           },
           risk,
         });
@@ -380,6 +455,9 @@ async function generateOne(
             via: candidate.via,
             changedLines: validation.changedLines,
             model: llm?.model,
+            ...(containerReplay
+              ? { containerReplay: leanContainerReplaySummary(containerReplay) }
+              : {}),
           },
         };
       }
@@ -413,6 +491,14 @@ async function auditFixGenerated(
       changedLines: meta.changedLines,
       framework: fix.proofOfFixTest.framework ?? null,
       model: meta.model ?? null,
+      // E13: a LEAN summary (harness kind, per-phase pass/fail — no request/
+      // response bodies) of the ephemeral-container exploit-replay attempt,
+      // when one was made for this fix. Golden rule #1: audit metadata never
+      // carries transcript/body content — the FULL evidence artifact (the
+      // real request/response transcript for both runs) is persisted on
+      // `Fix.proofOfFixTest.containerReplay` instead. `null` when container
+      // proof was never enabled/attempted (the common case, OFF by default).
+      containerReplay: meta.containerReplay ?? null,
     },
   });
 }

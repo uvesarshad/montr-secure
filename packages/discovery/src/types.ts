@@ -81,6 +81,13 @@ export interface DiscoveryDeps {
   gitleaks?: GitleaksRunner;
   /** Curated Semgrep rulesets (default {@link DEFAULT_SEMGREP_RULESETS}). */
   semgrepRulesets?: string[];
+  /**
+   * E16: injectable Semgrep runner for the IaC agent's OPTIONAL registry-pack
+   * pass (`p/dockerfile`/`p/kubernetes`/`p/terraform`) — kept separate from
+   * `semgrep` above so a test can stub the app-source SAST pass and the IaC
+   * pass independently. Defaults to the same real-binary runner when omitted.
+   */
+  iacSemgrep?: SemgrepRunner;
 }
 
 /** Input to {@link runDiscovery}. Extends the frozen Wave-0 stub shape. */

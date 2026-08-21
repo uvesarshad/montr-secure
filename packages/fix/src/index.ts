@@ -46,3 +46,29 @@ export { createFsSourceReader, createMapSourceReader, type SourceReader } from "
 export { generateFixes, type GenerateFixesInput, type FixGenerationContext } from "./generate.js";
 
 export { applyLineEdits, numberLines, parseLlmEdits, type LlmEdit } from "./edits.js";
+
+// E13 — real proof-of-fix in an ephemeral container (closes A22).
+export {
+  startEphemeralContainer,
+  type ContainerHarnessOptions,
+  type ContainerHarnessKind,
+  type RunningContainer,
+} from "./container-harness.js";
+
+export {
+  pickReplayExchange,
+  rewriteRequestForContainer,
+  replayAgainstContainer,
+  exploitEvidenceMatches,
+  truncateForEvidence,
+  type ReplayRequest,
+  type ReplayResult,
+} from "./exploit-replay.js";
+
+export {
+  validatePatchWithContainerReplay,
+  type ContainerPatchValidation,
+  type ContainerReplayEvidence,
+  type ContainerReplayPhaseEvidence,
+  type ValidatePatchWithContainerReplayOptions,
+} from "./container-validate.js";

@@ -24,6 +24,11 @@ import { renderReportHtml } from "./html.js";
 import { renderReportPdf, type PdfOptions } from "./pdf.js";
 import { renderReportOwaspJson } from "./owasp.js";
 import {
+  renderCycloneDxSbom,
+  inventoryFromReport,
+  type DependencyInventoryInput,
+} from "./cyclonedx.js";
+import {
   renderSoc2EvidenceJson,
   renderSoc2EvidenceCsv,
   renderIso27001EvidenceJson,
@@ -55,6 +60,13 @@ export interface GenerateExportOptions {
   auditLog?: AuditTrailAccess;
   /** Previous scan context (from scan history) for the posture delta in evidence. */
   previous?: PreviousScanContext;
+  /**
+   * E16: the full resolved dependency tree (e.g. from `@montr/discovery`'s
+   * `buildDependencyInventory`) for the `"cyclonedx"` SBOM export — see
+   * `cyclonedx.ts`'s module doc for why this can't be derived from `Report`
+   * alone. Omit to fall back to the leaner `inventoryFromReport` derivation.
+   */
+  dependencyInventory?: DependencyInventoryInput;
 }
 
 interface ExporterResult {
@@ -158,6 +170,14 @@ const EXPORTERS: Partial<Record<ExportFormat, Exporter>> = {
     content: await renderReportPdf(r, opts.pdf ?? {}),
     contentType: "application/pdf",
     ext: "pdf",
+  }),
+  cyclonedx: async (r, opts) => ({
+    content: renderCycloneDxSbom(opts.dependencyInventory ?? inventoryFromReport(r), {
+      ...(opts.now ? { now: opts.now } : {}),
+      scanId: r.scanId,
+    }),
+    contentType: "application/vnd.cyclonedx+json",
+    ext: "cdx.json",
   }),
 };
 
@@ -271,6 +291,21 @@ export type { RichSarifLog } from "./sarif.js";
 export { renderReportHtml, escapeHtml } from "./html.js";
 export { renderReportPdf, htmlToPdf, PdfBrowserUnavailableError } from "./pdf.js";
 export type { PdfOptions, PdfRenderer } from "./pdf.js";
+
+// CycloneDX 1.5 SBOM (E16) — full dependency tree + reachability + advisories.
+export {
+  buildCycloneDxSbom,
+  renderCycloneDxSbom,
+  inventoryFromReport,
+  CYCLONEDX_SPEC_VERSION,
+} from "./cyclonedx.js";
+export type {
+  CycloneDxBom,
+  CycloneDxComponentInput,
+  CycloneDxVulnerabilityInput,
+  DependencyInventoryInput,
+  BuildCycloneDxSbomOptions,
+} from "./cyclonedx.js";
 
 // Generic OWASP Top 10 (2021) report — JSON + human-readable HTML/PDF.
 export {

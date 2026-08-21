@@ -1,0 +1,25 @@
+# test name, category, real vulnerability, cwe, Benchmark version: 1.2, 2016-06-1
+BenchmarkTest00008,sqli,true,89
+BenchmarkTest00018,sqli,true,89
+BenchmarkTest00024,sqli,true,89
+BenchmarkTest00052,sqli,false,89
+BenchmarkTest00006,cmdi,true,78
+BenchmarkTest00007,cmdi,true,78
+BenchmarkTest00015,cmdi,true,78
+BenchmarkTest00051,cmdi,false,78
+BenchmarkTest00001,pathtraver,true,22
+BenchmarkTest00002,pathtraver,true,22
+BenchmarkTest00011,pathtraver,true,22
+BenchmarkTest00063,pathtraver,false,22
+BenchmarkTest00013,xss,true,79
+BenchmarkTest00014,xss,true,79
+BenchmarkTest00030,xss,true,79
+BenchmarkTest00147,xss,false,79
+BenchmarkTest00087,securecookie,true,614
+BenchmarkTest00169,securecookie,true,614
+BenchmarkTest00170,securecookie,true,614
+BenchmarkTest00016,securecookie,false,614
+BenchmarkTest00005,crypto,true,327
+BenchmarkTest00019,crypto,true,327
+BenchmarkTest00020,crypto,true,327
+BenchmarkTest00054,crypto,false,327

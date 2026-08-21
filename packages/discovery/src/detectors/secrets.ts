@@ -15,7 +15,13 @@ import { randomUUID } from "node:crypto";
 import type { Category, CandidateFinding, CweId, Severity, ToolSource } from "@montr/contracts";
 import type { DetectorContext, GitleaksFinding, GitleaksRunner } from "../types.js";
 import { buildCandidate } from "../util/candidate.js";
-import { isSourceFile, readAll, type RepoFile } from "../util/files.js";
+import {
+  isDockerfileName,
+  isSourceFile,
+  isTerraformFile,
+  readAll,
+  type RepoFile,
+} from "../util/files.js";
 import { errMessage, isBinaryMissing } from "../util/text.js";
 
 export interface DetectSecretsOptions {
@@ -135,7 +141,13 @@ function maskSecret(value: string): string {
   return `${v.slice(0, 4)}…[REDACTED]`;
 }
 
-function looksLikePlaceholder(value: string): boolean {
+/**
+ * True for a value that reads as a placeholder/env-reference rather than a
+ * live secret (used to suppress low-signal generic matches). E16's IaC
+ * detectors (Dockerfile ENV/ARG, Terraform variable assignments) reuse this
+ * directly instead of re-deriving their own placeholder heuristic.
+ */
+export function looksLikePlaceholder(value: string): boolean {
   const v = value.trim();
   if (v.length < 8) return true;
   if (/process\.env/.test(v)) return true;
@@ -472,5 +484,12 @@ function isTextForSecrets(path: string): boolean {
   const base = nodePath.posix.basename(path);
   if (base.startsWith(".env")) return true;
   if (isSourceFile(path)) return true;
+  // E16: a Dockerfile ENV/ARG assignment or a Terraform resource attribute is
+  // exactly the "hardcoded credential" shape the SECRET_RULES/generic-assigned
+  // -secret regex already matches (quoted key=value literals) — extending
+  // this filter gets that coverage for free, no new regex needed for the
+  // quoted-value case (dockerfile.ts/terraform.ts add their own checks for
+  // the unquoted-value shapes those formats also allow).
+  if (isDockerfileName(base) || isTerraformFile(path)) return true;
   return /\.(?:json|ya?ml|toml|ini|conf|prisma)$/i.test(path);
 }

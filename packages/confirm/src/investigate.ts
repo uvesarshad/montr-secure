@@ -184,6 +184,64 @@ function tryParseFreeformConclusion(content: string): PartialOutcome | undefined
   return undefined;
 }
 
+/**
+ * E10 — human-readable, per-turn progress narrative for `ConfirmDeps.emitProgress`.
+ * Derived from the actual tool call(s) about to run/being submitted this turn,
+ * never a generic placeholder (e.g. "Reading packages/api/routes/scans.ts...").
+ */
+function describeToolCall(call: { name: string; input: Record<string, unknown> }): string {
+  const input = call.input ?? {};
+  switch (call.name) {
+    case "read_file": {
+      const path = typeof input.path === "string" ? input.path : "a file";
+      return `Reading ${path}...`;
+    }
+    case "grep": {
+      const pattern = typeof input.pattern === "string" ? input.pattern : "a pattern";
+      return `Searching the repo for "${pattern}"...`;
+    }
+    case "find_definition": {
+      const symbol = typeof input.symbol === "string" ? input.symbol : "a symbol";
+      return `Finding the definition of ${symbol}...`;
+    }
+    case "query_call_graph": {
+      const file = typeof input.file === "string" ? input.file : "the code";
+      return `Checking the call graph for ${file}...`;
+    }
+    case "list_routes":
+      return "Listing App Map routes...";
+    case "get_orm_model": {
+      const name = typeof input.name === "string" ? input.name : "a model";
+      return `Inspecting ORM model ${name}...`;
+    }
+    case SUBMIT_CONCLUSION_TOOL: {
+      const verdict = typeof input.verdict === "string" ? input.verdict : "a verdict";
+      return `Submitting investigation verdict (${verdict})...`;
+    }
+    default:
+      return `Calling ${call.name}...`;
+  }
+}
+
+function describeToolCalls(calls: { name: string; input: Record<string, unknown> }[]): string {
+  return calls.map(describeToolCall).join("; ");
+}
+
+/** Turn-based progress estimate against the (already-clamped) turn cap. */
+function progressPct(turn: number, turnsCap: number): number {
+  return Math.max(1, Math.min(100, Math.round((turn / turnsCap) * 100)));
+}
+
+/** Best-effort — a broken/throwing progress consumer must never break the investigation. */
+function safeEmitProgress(deps: ConfirmDeps, phase: string, pct: number, message: string): void {
+  if (!deps.emitProgress) return;
+  try {
+    deps.emitProgress(phase, pct, message);
+  } catch {
+    /* progress reporting is best-effort telemetry — never propagate its failures */
+  }
+}
+
 function throwIfKilled(deps: ConfirmDeps): void {
   const sig = deps.signal;
   if (sig?.aborted) {
@@ -286,12 +344,26 @@ export async function runInvestigation(
         ],
       });
       const parsed = parseConclusion(submission.input);
+      safeEmitProgress(
+        deps,
+        "investigating",
+        100,
+        describeToolCall({ name: submission.name, input: submission.input }),
+      );
       return { ...parsed, turns, turnsUsed: turn, toolCallCount, haltedByBudget: false };
     }
 
     if (toolCalls.length === 0) {
       const parsed = tryParseFreeformConclusion(resp.content);
       turns.push({ turn, ...(resp.content ? { responseText: resp.content } : {}), toolCalls: [] });
+      safeEmitProgress(
+        deps,
+        "investigating",
+        progressPct(turn, turnsCap),
+        parsed
+          ? `Concluding investigation (${parsed.verdict}) without a further tool call...`
+          : "Reviewing findings without a further tool call...",
+      );
       if (parsed) {
         return { ...parsed, turns, turnsUsed: turn, toolCallCount, haltedByBudget: false };
       }
@@ -306,6 +378,12 @@ export async function runInvestigation(
     }
 
     const bounded = toolCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+    safeEmitProgress(
+      deps,
+      "investigating",
+      progressPct(turn, turnsCap),
+      describeToolCalls(bounded),
+    );
     // The gateway's LLMMessage contract has no structured tool_use content
     // block (packages/contracts is read-only for this change), so the
     // assistant's tool-call turn is echoed as a compact text summary — enough
