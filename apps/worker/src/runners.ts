@@ -27,6 +27,7 @@ import {
 import type { CostMeter } from "@montr/cost-meter";
 import { buildCostRollup } from "@montr/cost-meter";
 import type { LayerContext, LayerRunners } from "@montr/orchestrator";
+import type { FalsePositiveMarkSignal } from "@montr/state-store";
 
 import { createLayer0Runner } from "@montr/appmap";
 import {
@@ -135,6 +136,46 @@ function defaultSourceReader(opts: LayerRunnerOptions, ctx: LayerContext<"layer4
   return root ? createFsSourceReader(root) : createMapSourceReader({});
 }
 
+/**
+ * §15 FP-feedback tuning loop (A10). Loads this client's prior operator
+ * false-positive marks (persisted via the audit log — `store.falsePositiveMarks`
+ * reads back `finding.marked_false_positive` events, see
+ * packages/state-store/src/repositories.ts's FalsePositiveMarkRepositoryImpl)
+ * and wraps them in the `isKnownFalsePositive` seam both
+ * @montr/correlation's `CorrelateInput.fpTuning` and @montr/confirm's
+ * `ConfirmDeps.fpTuning` accept (structurally-identical interfaces, see each
+ * package's tuning.ts). Fail-safe: a store hiccup here degrades to "no prior
+ * FP marks", never blocks the layer.
+ */
+async function loadFpTuning(ctx: LayerContext): Promise<{
+  isKnownFalsePositive(signal: {
+    category: string;
+    file: string;
+    line: number;
+    ruleId?: string;
+  }): boolean;
+}> {
+  let marks: FalsePositiveMarkSignal[] = [];
+  try {
+    marks = await ctx.store.falsePositiveMarks.listByClient(ctx.clientId);
+  } catch (err) {
+    ctx.logger?.warn?.("worker.fp_tuning.load_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return {
+    isKnownFalsePositive(signal) {
+      return marks.some(
+        (m) =>
+          m.category === signal.category &&
+          m.file === signal.file &&
+          m.line === signal.line &&
+          (m.ruleId === undefined || m.ruleId === signal.ruleId),
+      );
+    },
+  };
+}
+
 /* ------------------------------- runners ------------------------------- */
 
 /**
@@ -182,6 +223,9 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
       const candidates =
         ctx.priorOutputs.layer1?.candidates ??
         (await ctx.store.candidates.listByScan(ctx.clientId, ctx.scanId));
+      // §15 FP-feedback loop (A10): prior operator FP marks for this client
+      // down-rank a repeat of the same finding-shape — see loadFpTuning.
+      const fpTuning = await loadFpTuning(ctx);
       return correlate({
         clientId: ctx.clientId,
         scanId: ctx.scanId,
@@ -190,6 +234,7 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         gateway: opts.gateway,
         audit: ctx.store.audit,
         logger: ctx.logger,
+        fpTuning,
         ...(opts.now ? { now: opts.now() } : {}),
       });
     },
@@ -211,11 +256,15 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         ...(ctx.job.stagingUrl !== undefined ? { stagingUrl: ctx.job.stagingUrl } : {}),
         config: ctx.config,
       };
+      // §15 FP-feedback loop (A10): prior operator FP marks for this client
+      // route a repeat of the same finding-shape to the appendix — see loadFpTuning.
+      const fpTuning = await loadFpTuning(ctx);
       const deps: ConfirmDeps = {
         llm: opts.gateway,
         signal: ctx.signal,
         audit: ctx.store.audit,
         logger: ctx.logger,
+        fpTuning,
         ...(opts.now ? { now: opts.now } : {}),
       };
       return confirmFindings(input, deps);

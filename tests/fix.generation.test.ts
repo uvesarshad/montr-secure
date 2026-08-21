@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import {
   generateFixes,
   validatePatch,
-  pickStrategy,
   createFsSourceReader,
   createMapSourceReader,
   type GenerateFixesInput,
@@ -28,7 +27,7 @@ import {
   type LLMGateway,
   type LLMRequest,
 } from "@montr/contracts";
-import type { AuditLogClient } from "@montr/telemetry";
+import { MontrMetrics, type AuditLogClient, type LogFields, type Logger } from "@montr/telemetry";
 
 // `validatePatch` now runs real `vitest` subprocesses (per candidate, and again
 // per independent re-validation below) — several sequential/parallel subprocess
@@ -177,13 +176,31 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
 
   it("⛔ a validated model patch that touches crypto is STILL escalated to human-required", async () => {
     const original = read("app/search/page.tsx");
-    const detFixed = pickStrategy("xss")!.apply(original)!; // removes dangerouslySetInnerHTML
-    const craftedCryptoFix = `import crypto from "node:crypto";\nconst _h = crypto.createHash("sha256");\n${detFixed}`;
+    // A14: the model proposes a targeted line-range EDIT LIST, not a whole-file
+    // rewrite — one edit prepends a crypto import ahead of line 1, another
+    // fixes the vulnerable line in place.
+    const originalLines = original.split("\n");
+    const vulnLineNo = originalLines.findIndex((l) => l.includes("dangerouslySetInnerHTML")) + 1;
+    expect(vulnLineNo).toBeGreaterThan(0);
+    const fixedVulnLine = originalLines[vulnLineNo - 1]!.replace(
+      /<(\w+)\s+dangerouslySetInnerHTML=\{\{\s*__html:\s*([\s\S]*?)\s*\}\}\s*\/>/,
+      (_m, tag: string, expr: string) => `<${tag}>{${expr.trim()}}</${tag}>`,
+    );
 
     const gateway = createFakeLlmGateway({
       cannedByPurpose: {
         fix_generation: JSON.stringify({
-          fixedSource: craftedCryptoFix,
+          edits: [
+            {
+              startLine: 1,
+              endLine: 1,
+              replacement:
+                'import crypto from "node:crypto";\n' +
+                'const _h = crypto.createHash("sha256");\n' +
+                originalLines[0],
+            },
+            { startLine: vulnLineNo, endLine: vulnLineNo, replacement: fixedVulnLine },
+          ],
           rationale: "added hashing",
         }),
       },
@@ -209,28 +226,29 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
 
   it("prefers a cleanly-validated model-proposed patch over the deterministic transform", async () => {
     const original = read("app/api/users/route.ts");
-    // A genuinely different model proposal that must ALSO satisfy the real
-    // generated proof test — including its "uses the remediated pattern"
-    // assertion (`toMatch(/\$(?:queryRaw|executeRaw)\`/)`), not just the
-    // "vulnerability gone" one. `findMany({...})` (the pre-real-execution
-    // version of this fixture) genuinely does NOT satisfy that second
-    // assertion, so under real vitest execution it would (correctly) fail
-    // validation and fall through to the deterministic transform — real
-    // execution catching exactly the kind of gap this rework exists to close.
-    // This craft keeps the model's proposal in the same "parameterized
-    // tagged template" family (so it REALLY passes) while staying textually
-    // distinguishable from the deterministic transform's own output.
-    const modelFix = original.replace(
-      /const rows = await prisma\.\$queryRawUnsafe\([\s\S]*?\);/,
-      'const rows = await prisma.$queryRaw`SELECT * FROM "User" WHERE name = ${q}` /* model-proposed */;',
-    );
-    expect(modelFix).not.toContain("$queryRawUnsafe"); // sanity: the craft removes the vuln
-    expect(modelFix).toContain("$queryRaw`"); // sanity: satisfies the strategy's "safe" pattern too
+    // A14: the model proposes a targeted line-range EDIT (not a whole-file
+    // rewrite) that must ALSO satisfy the real generated proof test —
+    // including its "uses the remediated pattern" assertion
+    // (`toMatch(/\$(?:queryRaw|executeRaw)\`/)`), not just the "vulnerability
+    // gone" one. This craft keeps the model's proposal in the same
+    // "parameterized tagged template" family (so it REALLY passes) while
+    // staying textually distinguishable from the deterministic transform's
+    // own output. The edit is computed dynamically (start/end line + exact
+    // leading whitespace) from the ACTUAL fixture text, rather than
+    // hand-picked, so this stays correct if the fixture ever changes.
+    const vulnRe = /const rows = await prisma\.\$queryRawUnsafe\([\s\S]*?\);/;
+    const match = vulnRe.exec(original)!;
+    const startLine = original.slice(0, match.index).split("\n").length;
+    const endLine = startLine + match[0].split("\n").length - 1;
+    const leadingWs = /^[ \t]*/.exec(original.split("\n")[startLine - 1]!)![0]!;
+    const replacementLine =
+      leadingWs +
+      'const rows = await prisma.$queryRaw`SELECT * FROM "User" WHERE name = ${q}` /* model-proposed */;';
 
     const gateway = createFakeLlmGateway({
       cannedByPurpose: {
         fix_generation: JSON.stringify({
-          fixedSource: modelFix,
+          edits: [{ startLine, endLine, replacement: replacementLine }],
           rationale: "use a tagged-template parameterized query",
         }),
       },
@@ -414,4 +432,178 @@ describe("@montr/fix — generateFixes (Layer 4)", () => {
     expect(redirectCheck.passesPostPatch).toBe(true);
     expect(redirectCheck.appliedSource).toContain('.startsWith("/")');
   });
+
+  // A14 — the whole point of the diff/edit-list rework: a model editing a small
+  // vulnerable snippet inside a file far larger than the old whole-file-rewrite
+  // truncation threshold (~1,500 lines) must now succeed, because the response
+  // only has to carry the CHANGED lines, not the entire file.
+  it("A14: a diff-format fix succeeds on a file far larger than the old whole-file-rewrite truncation threshold", async () => {
+    const FILLER_LINES = 2000;
+    const filler = (n: number, tag: string): string =>
+      Array.from({ length: n }, (_, i) => `  // ${tag} filler line ${i}`).join("\n");
+
+    const original = [
+      "type Props = { searchParams: { q?: string } };",
+      "export default function SearchPage({ searchParams }: Props) {",
+      '  const q = searchParams.q ?? "";',
+      filler(FILLER_LINES, "before"),
+      "  return (",
+      "    <div>",
+      "      <div dangerouslySetInnerHTML={{ __html: q }} />",
+      "    </div>",
+      filler(FILLER_LINES, "after"),
+      "  );",
+      "}",
+      "",
+    ].join("\n");
+
+    // Sanity: this file is genuinely over the old ~1,500-line truncation
+    // threshold cited in the audit (A14) and docs/modules/fix-generation.md.
+    expect(original.split("\n").length).toBeGreaterThan(1500);
+
+    const originalLines = original.split("\n");
+    const vulnLineNo = originalLines.findIndex((l) => l.includes("dangerouslySetInnerHTML")) + 1;
+    expect(vulnLineNo).toBeGreaterThan(0);
+    const fixedVulnLine = originalLines[vulnLineNo - 1]!.replace(
+      /<(\w+)\s+dangerouslySetInnerHTML=\{\{\s*__html:\s*([\s\S]*?)\s*\}\}\s*\/>/,
+      (_m, tag: string, expr: string) => `<${tag}>{${expr.trim()}}</${tag}>`,
+    );
+
+    const editsResponse = JSON.stringify({
+      edits: [{ startLine: vulnLineNo, endLine: vulnLineNo, replacement: fixedVulnLine }],
+      rationale: "removed dangerouslySetInnerHTML",
+    });
+    // The old whole-file-rewrite contract would have needed to embed this
+    // entire 4000+-line file as one JSON string; a targeted edit stays tiny by
+    // comparison. At ~4 chars/token, the old 2048-token cap was ~8192 chars —
+    // the diff-format response comfortably fits; a whole-file rewrite of this
+    // fixture would not have.
+    const OLD_WHOLE_FILE_CAP_CHARS = 2048 * 4;
+    expect(editsResponse.length).toBeLessThan(OLD_WHOLE_FILE_CAP_CHARS);
+    const wholeFileRewriteEquivalent = JSON.stringify({
+      fixedSource: applyEditForAssertionOnly(original, vulnLineNo, fixedVulnLine),
+      rationale: "removed dangerouslySetInnerHTML",
+    });
+    expect(wholeFileRewriteEquivalent.length).toBeGreaterThan(OLD_WHOLE_FILE_CAP_CHARS);
+
+    const bigFinding: ConfirmedFinding = {
+      ...XSS,
+      id: "conf_xss_large_0001",
+      location: { ...XSS.location, file: "app/search/large-page.tsx" },
+    };
+
+    const gateway = createFakeLlmGateway({
+      cannedByPurpose: { fix_generation: editsResponse },
+    });
+
+    const out = await generateFixes(
+      baseInput({
+        confirmed: [bigFinding],
+        gateway,
+        source: createMapSourceReader({ "app/search/large-page.tsx": original }),
+      }),
+    );
+    const fix = out.fixes[0]!;
+
+    expect(fix.riskClass).toBe("auto-eligible");
+    expect(fix.patch.length).toBeGreaterThan(0);
+    expect(fix.proofOfFixTest.failsPrePatch).toBe(true);
+    expect(fix.proofOfFixTest.passesPostPatch).toBe(true);
+    // The model's small, line-anchored edit was used (preferred over the
+    // deterministic transform) — proving it actually round-tripped through
+    // the real diff-build + real-vitest-execution validation pipeline.
+    expect(fix.rationale).toContain("Model-proposed");
+
+    const v = await validatePatch(original, fix.patch, {
+      filePath: "app/search/large-page.tsx",
+      proofTestCode: fix.proofOfFixTest.code,
+    });
+    expect(v.executionError).toBeUndefined();
+    expect(v.applies).toBe(true);
+    expect(v.passesPostPatch).toBe(true);
+    expect(v.appliedSource).not.toContain("dangerouslySetInnerHTML");
+    expect(v.appliedSource).toContain("<div>{q}</div>");
+  });
+
+  // A14 — failure visibility: a malformed/unusable model proposal must be
+  // counted and logged, never a silent null-and-degrade.
+  describe("A14: LLM diff parse/apply-failure visibility", () => {
+    class CapturingLogger implements Logger {
+      readonly warnings: { message: string; fields?: LogFields }[] = [];
+      debug(): void {}
+      info(): void {}
+      warn(message: string, fields?: LogFields): void {
+        this.warnings.push({ message, fields });
+      }
+      error(): void {}
+      child(): Logger {
+        return this;
+      }
+    }
+
+    it("records a metric + warning when the response isn't valid JSON at all", async () => {
+      const metrics = new MontrMetrics();
+      const logger = new CapturingLogger();
+      const gateway = createFakeLlmGateway({
+        cannedByPurpose: { fix_generation: "not json at all {{{" },
+      });
+
+      const out = await generateFixes(baseInput({ confirmed: [XSS], gateway, metrics, logger }));
+
+      expect(metrics.snapshot().errors).toBeGreaterThan(0);
+      expect(
+        logger.warnings.some((w) => w.message === "fix_generation.llm_response_unparseable"),
+      ).toBe(true);
+      // Degrades to the deterministic strategy (or advisory) — never throws.
+      expect(out.fixes).toHaveLength(1);
+    });
+
+    it("records a metric + warning when `edits` is present but structurally invalid", async () => {
+      const metrics = new MontrMetrics();
+      const logger = new CapturingLogger();
+      const gateway = createFakeLlmGateway({
+        cannedByPurpose: {
+          // Overlapping ranges — structurally invalid per parseLlmEdits.
+          fix_generation: JSON.stringify({
+            edits: [
+              { startLine: 1, endLine: 3, replacement: "x" },
+              { startLine: 2, endLine: 4, replacement: "y" },
+            ],
+            rationale: "bad edits",
+          }),
+        },
+      });
+
+      const out = await generateFixes(baseInput({ confirmed: [XSS], gateway, metrics, logger }));
+
+      expect(metrics.snapshot().errors).toBeGreaterThan(0);
+      expect(logger.warnings.some((w) => w.message === "fix_generation.llm_edits_invalid")).toBe(
+        true,
+      );
+      // Falls through to the deterministic transform, which DOES validate —
+      // a bad model proposal never blocks a good mechanical fix.
+      expect(out.fixes[0]!.riskClass).toBe("auto-eligible");
+    });
+
+    it("records NO metric when the model deliberately declines with `{}`", async () => {
+      const metrics = new MontrMetrics();
+      const logger = new CapturingLogger();
+      const gateway = createFakeLlmGateway({
+        cannedByPurpose: { fix_generation: "{}" },
+      });
+
+      await generateFixes(baseInput({ confirmed: [XSS], gateway, metrics, logger }));
+
+      expect(metrics.snapshot().errors).toBe(0);
+      expect(logger.warnings).toHaveLength(0);
+    });
+  });
 });
+
+/** Reconstruct the fixed full-file text for the "would the old whole-file-rewrite
+ * cap have fit this?" size comparison only — NOT part of the generation pipeline. */
+function applyEditForAssertionOnly(original: string, lineNo: number, replacement: string): string {
+  const lines = original.split("\n");
+  lines[lineNo - 1] = replacement;
+  return lines.join("\n");
+}

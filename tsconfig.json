@@ -53,6 +53,9 @@
       "path": "apps/api"
     },
     {
+      "path": "apps/cli"
+    },
+    {
       "path": "apps/worker"
     },
     {

@@ -88,7 +88,22 @@ export {
   contentToString,
   collectSystem,
   anthropicRejectsSampling,
+  anthropicSupportsEffort,
   mapAnthropicStopReason,
   mapVertexFinishReason,
   mapOpenAiFinishReason,
+  toAnthropicTools,
+  toVertexTools,
+  toOpenAiTools,
+  buildAnthropicStyleFields,
+  type AnthropicToolLike,
+  type VertexToolLike,
+  type VertexFunctionDeclaration,
+  type OpenAiToolLike,
 } from "./mapping.js";
+
+export {
+  resolveStructuredOutputSchema,
+  resolveAnthropicOutputFormat,
+  type JsonSchemaOutputFormat,
+} from "./structured-output.js";

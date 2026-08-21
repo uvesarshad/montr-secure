@@ -3,6 +3,7 @@ import {
   CLIENT_ID,
   SCAN_ID,
   CANDIDATE_DEP_ID,
+  CANDIDATE_SQLI_ID,
   createFakeLlmGateway,
   mockAppMap,
   mockScan,
@@ -131,6 +132,41 @@ describe("layer runner adapters — Layer 2 (correlation)", () => {
 
     const out = await runners.layer2(ctx);
     expect(out.probable.length).toBe(4);
+  });
+
+  it("A10 §15 FP-feedback loop: a prior operator FP mark on the same finding-shape demotes the repeat instead of promoting it", async () => {
+    const { store } = makeInMemoryStore();
+    // Simulate what apps/api/src/routes/findings.ts's POST /findings/:id/false-positive
+    // route writes to the audit log when an operator marks a confirmed finding as a
+    // false positive — same action + metadata shape.
+    await store.audit.append({
+      clientId: CLIENT_ID,
+      scanId: SCAN_ID,
+      actor: { type: "user", id: "user_1", role: "operator" },
+      action: "finding.marked_false_positive",
+      targetType: "confirmed_finding",
+      targetId: "cf_prior",
+      summary: "Finding marked as false positive",
+      metadata: { category: "sql_injection", file: "app/api/users/route.ts", line: 9 },
+    });
+
+    const runners = createLayerRunners({ gateway });
+    const ctx = makeLayerContext<"layer2">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer2") as never,
+      store,
+      priorOutputs: { layer0: mockLayer0Output, layer1: { candidates: mockCandidateFindings } },
+    });
+
+    const out = await runners.layer2(ctx);
+    // Without the tuning mark this candidate is `out.probable[0]` (see the test
+    // above) — with a matching prior FP mark on the SAME (category, file, line)
+    // it must be routed to the appendix instead, on the very next scan.
+    expect(out.probable.some((p) => p.mergedCandidateIds.includes(CANDIDATE_SQLI_ID))).toBe(false);
+    expect(out.demoted.some((d) => d.id === CANDIDATE_SQLI_ID)).toBe(true);
+    expect(out.probable.length).toBe(3); // one fewer than the untuned baseline (4)
   });
 });
 

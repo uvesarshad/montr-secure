@@ -22,6 +22,7 @@ import {
   detectDependencies,
   resolveInstalledPackages,
   collectImportedPackages,
+  collectCalledPackages,
   barePackageName,
   parsePkgKey,
   parsePnpmLock,
@@ -546,7 +547,7 @@ describe("discovery/sca reachability", () => {
     expect(nextDep.every((c) => c.metadata?.["reachable"] === true)).toBe(true);
   });
 
-  it("marks a vuln reachable when the package is actually imported", async () => {
+  it("marks a vuln reachable when the package is actually imported AND called", async () => {
     const files: RepoFile[] = [
       { path: "package.json", content: JSON.stringify({ dependencies: { lodash: "4.17.11" } }) },
       { path: "src/index.ts", content: 'import _ from "lodash";\n_.defaultsDeep({}, {});\n' },
@@ -554,6 +555,45 @@ describe("discovery/sca reachability", () => {
     const ctx = makeCtx({ files: memoryFileProvider(files) });
     const candidates = await detectDependencies(ctx);
     expect(candidates[0]?.metadata?.["reachable"]).toBe(true);
+  });
+
+  // A12 — SCA reachability is now call-granularity (real ts-morph AST scan),
+  // not package-import presence. These two tests are the direct regression
+  // coverage the task requires: (1) imported-but-never-called is no longer
+  // reachable, even though the OLD `imported.has(pkg.name)` check would have
+  // said yes; (2) an actually-called import stays reachable.
+  it("does NOT mark a vuln reachable when the package is imported but never CALLED (A12)", async () => {
+    const files: RepoFile[] = [
+      { path: "package.json", content: JSON.stringify({ dependencies: { lodash: "4.17.11" } }) },
+      {
+        // `_` is imported and referenced — the OLD package-import-presence
+        // check (`collectImportedPackages`) would mark "lodash" reachable —
+        // but `_` is never CALLED anywhere.
+        path: "src/index.ts",
+        content: 'import _ from "lodash";\nexport const kind = typeof _;\n',
+      },
+    ];
+    const oldSignalImported = await collectImportedPackages(memoryFileProvider(files));
+    expect(oldSignalImported.has("lodash")).toBe(true); // the old, weaker signal says "reachable"
+
+    const ctx = makeCtx({ files: memoryFileProvider(files) });
+    const candidates = await detectDependencies(ctx);
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.every((c) => c.metadata?.["reachable"] === false)).toBe(true);
+  });
+
+  it("marks a vuln reachable when the imported binding is actually invoked (A12)", async () => {
+    const files: RepoFile[] = [
+      { path: "package.json", content: JSON.stringify({ dependencies: { lodash: "4.17.11" } }) },
+      {
+        path: "src/index.ts",
+        content: 'import { debounce } from "lodash";\nexport const d = debounce(() => {}, 10);\n',
+      },
+    ];
+    const ctx = makeCtx({ files: memoryFileProvider(files) });
+    const candidates = await detectDependencies(ctx);
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.every((c) => c.metadata?.["reachable"] === true)).toBe(true);
   });
 
   it("clean sample (lodash 4.17.21) is patched against every ORIGINAL seed CVE", async () => {
@@ -582,5 +622,87 @@ describe("discovery/sca reachability", () => {
     const ctx = makeCtx({ files: memoryFileProvider([]) });
     expect(await detectDependencies(ctx)).toEqual([]);
     expect(ctx.warnings.join(" ")).toMatch(/no lockfile/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A12 — collectCalledPackages: real ts-morph call-site reachability
+// ---------------------------------------------------------------------------
+
+describe("discovery/sca collectCalledPackages (A12)", () => {
+  it("marks `analyzed: false` when there is no TS/JS source at all", async () => {
+    const result = await collectCalledPackages(memoryFileProvider([]));
+    expect(result.analyzed).toBe(false);
+    expect(result.called.size).toBe(0);
+  });
+
+  it("default import invoked directly is called", async () => {
+    const files = memoryFileProvider([
+      { path: "src/a.ts", content: 'import axios from "axios";\naxios("/x");\n' },
+    ]);
+    const { analyzed, called } = await collectCalledPackages(files);
+    expect(analyzed).toBe(true);
+    expect(called.has("axios")).toBe(true);
+  });
+
+  it("namespace import invoked via property access is called", async () => {
+    const files = memoryFileProvider([
+      { path: "src/a.ts", content: 'import * as _ from "lodash";\n_.debounce(() => {}, 10);\n' },
+    ]);
+    const { called } = await collectCalledPackages(files);
+    expect(called.has("lodash")).toBe(true);
+  });
+
+  it("named import referenced but never called is NOT marked called", async () => {
+    const files = memoryFileProvider([
+      { path: "src/a.ts", content: 'import { debounce } from "lodash";\nconst d = debounce;\n' },
+    ]);
+    const { called } = await collectCalledPackages(files);
+    expect(called.has("lodash")).toBe(false);
+  });
+
+  it("type-only import is never called", async () => {
+    const files = memoryFileProvider([
+      {
+        path: "src/a.ts",
+        content:
+          'import type { Foo } from "some-types-pkg";\nexport function use(f: Foo): Foo {\n  return f;\n}\n',
+      },
+    ]);
+    const { called } = await collectCalledPackages(files);
+    expect(called.has("some-types-pkg")).toBe(false);
+  });
+
+  it("constructing an imported class (`new X()`) counts as called", async () => {
+    const files = memoryFileProvider([
+      {
+        path: "src/a.ts",
+        content: 'import { PrismaClient } from "@prisma/client";\nconst p = new PrismaClient();\n',
+      },
+    ]);
+    const { called } = await collectCalledPackages(files);
+    expect(called.has("@prisma/client")).toBe(true);
+  });
+
+  it("a JSX-rendered import counts as called", async () => {
+    const files = memoryFileProvider([
+      {
+        path: "src/a.tsx",
+        content: 'import { Icon } from "some-icon-lib";\nexport const view = <Icon />;\n',
+      },
+    ]);
+    const { called } = await collectCalledPackages(files);
+    expect(called.has("some-icon-lib")).toBe(true);
+  });
+
+  it("a CommonJS require() binding that is invoked counts as called", async () => {
+    const files = memoryFileProvider([
+      {
+        path: "src/a.js",
+        content: 'const request = require("request");\nrequest("http://x");\n',
+      },
+    ]);
+    const { called } = await collectCalledPackages(files);
+    expect(called.has("request")).toBe(true);
   });
 });

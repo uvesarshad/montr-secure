@@ -19,6 +19,7 @@ docs: Comprehensive AI-readable system documentation and maintenance guidelines.
 
 Applications in apps
 apps/api: Fastify REST API server exposing authenticated endpoints for scan management, gate approvals, DAST control, audit queries, and Swagger documentation.
+apps/cli: `montr` command-line tool (bin name montr, package @montr/cli) that drives the real apps/api HTTP API to create/poll a scan (full or diff mode) from a local repo checkout and exit non-zero on a confirmed finding above a configurable severity floor, for CI gating (A15).
 apps/web: Next.js 14 operator console providing real-time scan monitoring, interactive report review, DAST configuration, and compliance exports.
 apps/worker: Background worker daemon executing BullMQ job consumers and pipeline layer runners.
 

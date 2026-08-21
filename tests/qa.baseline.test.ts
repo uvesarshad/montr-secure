@@ -94,6 +94,25 @@ describe("evaluateBaseline", () => {
     expect(fp?.threshold).toBe(0.05);
   });
 
+  // A6: recall must gate exactly like fpRate/precision does, not just be reported.
+  it("headline recall breach is flagged as a `min` violation (mirrors the fpRate gate)", () => {
+    const r = evaluateBaseline(mkScore({ recall: 0.1, precision: 1, fpRate: 0 }), DEFAULT_BASELINE);
+    const rec = r.violations.find((v) => v.metric === "recall");
+    expect(rec?.direction).toBe("min");
+    expect(rec?.threshold).toBe(DEFAULT_BASELINE.recallMin);
+    expect(rec?.scope).toBe("overall");
+  });
+
+  it("a recall breach alone (precision/fpRate both clean) still fails the gate", () => {
+    const r = evaluateBaseline(
+      mkScore({ recall: 0.01, precision: 1, fpRate: 0 }),
+      DEFAULT_BASELINE,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.violations).toHaveLength(1);
+    expect(r.violations[0]?.metric).toBe("recall");
+  });
+
   it("treats a metric exactly at the threshold as passing (epsilon)", () => {
     const r = evaluateBaseline(mkScore({ fpRate: 0.05, precision: 0.95 }), DEFAULT_BASELINE);
     expect(r.passed).toBe(true);
@@ -138,6 +157,47 @@ describe("loadBaselineFile — the committed corpus baseline", () => {
     expect(baseline.fpRateMax).toBeLessThanOrEqual(0.05);
     expect(baseline.precisionMin).toBeGreaterThanOrEqual(0.9);
     expect(baseline.minReposScored).toBeGreaterThanOrEqual(1);
+  });
+
+  // A6: recall must be a first-class, published floor too — not just FP-rate/precision.
+  it("commits a real, non-zero aggregate recallMin (not just per-category floors)", async () => {
+    const root = findRepoRoot(fileURLToPath(import.meta.url));
+    const baseline = await loadBaselineFile(join(root, "corpus", "baseline.json"));
+    expect(typeof baseline.recallMin).toBe("number");
+    expect(baseline.recallMin).toBeGreaterThan(0);
+    expect(baseline.recallMin).toBeLessThanOrEqual(1);
+    // idor / broken_access_control are honestly 0% today (A6) — floor tracks that
+    // real gap rather than hiding it, while sql_injection/xss still have real floors.
+    expect(baseline.perCategory?.idor?.recallMin).toBe(0);
+    expect(baseline.perCategory?.broken_access_control?.recallMin).toBe(0);
+    expect(baseline.perCategory?.sql_injection?.recallMin).toBeGreaterThan(0);
+    expect(baseline.perCategory?.xss?.recallMin).toBeGreaterThan(0);
+  });
+
+  it("the committed recallMin actually gates: a scan below it fails the release gate", async () => {
+    const root = findRepoRoot(fileURLToPath(import.meta.url));
+    const baseline = await loadBaselineFile(join(root, "corpus", "baseline.json"));
+    const belowFloor = evaluateBaseline(
+      mkScore({
+        recall: Math.max(0, baseline.recallMin - 0.05),
+        precision: 1,
+        fpRate: 0,
+        reposScored: 16,
+      }),
+      baseline,
+    );
+    expect(belowFloor.passed).toBe(false);
+    expect(belowFloor.violations.some((v) => v.metric === "recall" && v.scope === "overall")).toBe(
+      true,
+    );
+
+    // Sanity: exactly at the committed measurement, the gate still passes today
+    // (guards against silently loosening the floor past the real measurement).
+    const atMeasurement = evaluateBaseline(
+      mkScore({ recall: 0.25, precision: 1, fpRate: 0, reposScored: 16 }),
+      baseline,
+    );
+    expect(atMeasurement.passed).toBe(true);
   });
 
   it("throws ConfigValidationError for a missing file", async () => {

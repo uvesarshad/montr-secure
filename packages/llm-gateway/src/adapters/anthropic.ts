@@ -1,11 +1,11 @@
-import { ProviderNotConfiguredError, type LLMRequest, type LLMStreamEvent } from "@montr/contracts";
-import type { MontrConfig } from "@montr/config";
 import {
-  anthropicRejectsSampling,
-  collectSystem,
-  mapAnthropicStopReason,
-  toAnthropicMessages,
-} from "../mapping.js";
+  ProviderNotConfiguredError,
+  type LLMRequest,
+  type LLMStreamEvent,
+  type LLMToolCall,
+} from "@montr/contracts";
+import type { MontrConfig } from "@montr/config";
+import { buildAnthropicStyleFields, mapAnthropicStopReason } from "../mapping.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
 import { resolveOutboundTarget, type AdapterEgress } from "./egress.js";
 
@@ -23,10 +23,19 @@ export const ANTHROPIC_DEFAULT_ENDPOINT = "https://api.anthropic.com";
  * below are exported for reuse.
  */
 
+export interface AnthropicContentBlockLike {
+  type: string;
+  text?: string;
+  /** `type: "tool_use"` fields (A8). */
+  id?: string;
+  name?: string;
+  input?: unknown;
+}
+
 export interface AnthropicMessageLike {
   id?: string;
   model?: string;
-  content?: Array<{ type: string; text?: string }>;
+  content?: AnthropicContentBlockLike[];
   stop_reason?: string | null;
   usage?: {
     input_tokens?: number | null;
@@ -78,6 +87,20 @@ export function anthropicText(msg: AnthropicMessageLike): string {
     .join("");
 }
 
+/** Extract `tool_use` content blocks from an Anthropic-shaped message (A8). */
+export function anthropicToolCalls(msg: AnthropicMessageLike): LLMToolCall[] | undefined {
+  const blocks = (msg.content ?? []).filter(
+    (b): b is AnthropicContentBlockLike & { id: string; name: string } =>
+      b.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string",
+  );
+  if (blocks.length === 0) return undefined;
+  return blocks.map((b) => ({
+    id: b.id,
+    name: b.name,
+    input: (b.input && typeof b.input === "object" ? b.input : {}) as Record<string, unknown>,
+  }));
+}
+
 /** Map an Anthropic-shaped message (native or Bedrock) to a normalized completion. */
 export function mapAnthropicMessage(
   msg: AnthropicMessageLike,
@@ -87,12 +110,14 @@ export function mapAnthropicMessage(
     cacheReadTokens: msg.usage?.cache_read_input_tokens ?? 0,
     cacheWriteTokens: msg.usage?.cache_creation_input_tokens ?? 0,
   });
+  const toolCalls = anthropicToolCalls(msg);
   return {
     id: msg.id ?? `${fallbackModel}:response`,
     model: msg.model ?? fallbackModel,
     content: anthropicText(msg),
     stopReason: mapAnthropicStopReason(msg.stop_reason),
     usage,
+    ...(toolCalls ? { toolCalls } : {}),
   };
 }
 
@@ -133,17 +158,7 @@ export async function* mapAnthropicStream(
 }
 
 function buildBody(request: LLMRequest, modelId: string): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    model: modelId,
-    max_tokens: request.maxTokens,
-    messages: toAnthropicMessages(request),
-  };
-  const system = collectSystem(request);
-  if (system) body.system = system;
-  if (request.temperature !== undefined && !anthropicRejectsSampling(modelId)) {
-    body.temperature = request.temperature;
-  }
-  return body;
+  return { model: modelId, ...buildAnthropicStyleFields(request, modelId) };
 }
 
 export interface AnthropicAdapterOptions {

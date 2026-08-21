@@ -110,3 +110,57 @@ export async function withRetry<T>(
   }
   throw lastError;
 }
+
+/**
+ * Model-fallback cascade (A11). Previously a failing model was retried on
+ * ITSELF (via {@link withRetry}) and then the call failed outright — no
+ * cascade to an alternate model existed. `withRetryAndFallback` keeps that
+ * exact behavior for the primary model (full `policy` — every retry, every
+ * backoff), and only reaches for `fallbackModels` once the primary's retry
+ * budget is exhausted (or it fails immediately on a non-retriable error).
+ */
+export interface ModelFallbackOptions {
+  /**
+   * Fallback model ids to try, in order, after the primary exhausts its
+   * retry budget. Each gets exactly ONE attempt — no backoff, no retries —
+   * so the cascade is bounded (never infinite) regardless of chain length.
+   * A model id equal to the one already attempted is skipped (no self-fallback).
+   */
+  fallbackModels: readonly string[];
+  /** Invoked once per fallback attempt, before it runs (for logging/metrics). */
+  onFallback?: (fromModelId: string, toModelId: string) => void;
+}
+
+/**
+ * Run `fn` against `primaryModelId` with the full retry policy (identical to
+ * `withRetry`). If that ultimately fails, cascade through
+ * `fallback.fallbackModels` in order — one bare attempt each, in the order
+ * given — before surfacing an error. On total failure, throws the LAST error
+ * encountered (from the final fallback attempt if any ran, otherwise the
+ * primary's error) so callers see the failure closest to "why did this
+ * ultimately not work."
+ */
+export async function withRetryAndFallback<T>(
+  primaryModelId: string,
+  fn: (modelId: string, attempt: number) => Promise<T>,
+  policy: RetryPolicy,
+  fallback: ModelFallbackOptions = { fallbackModels: [] },
+): Promise<T> {
+  try {
+    return await withRetry((attempt) => fn(primaryModelId, attempt), policy);
+  } catch (primaryErr) {
+    let lastError: unknown = primaryErr;
+    const attemptedModels = new Set([primaryModelId]);
+    for (const fallbackModelId of fallback.fallbackModels) {
+      if (attemptedModels.has(fallbackModelId)) continue;
+      attemptedModels.add(fallbackModelId);
+      fallback.onFallback?.(primaryModelId, fallbackModelId);
+      try {
+        return await fn(fallbackModelId, 0);
+      } catch (fallbackErr) {
+        lastError = fallbackErr;
+      }
+    }
+    throw lastError;
+  }
+}

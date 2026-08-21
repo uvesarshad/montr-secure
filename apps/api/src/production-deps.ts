@@ -13,7 +13,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { MontrError, type LayerId } from "@montr/contracts";
-import { loadConfig } from "@montr/config";
+import { loadConfig, resolveFieldEncryptionKey } from "@montr/config";
 import { createLogger } from "@montr/telemetry";
 import {
   createOrchestrator,
@@ -121,10 +121,13 @@ export async function createProductionDeps(): Promise<ProductionDeps> {
     update: {},
     create: { id: config.clientId, name: config.clientId },
   });
+  // Goes through the pluggable KeySource (env/file/vault, packages/config/src/
+  // key-source.ts) rather than reading fieldEncryptionKeyRef directly, so
+  // security.keySource = "vault" actually resolves real key bytes from Vault
+  // here instead of silently falling back to an unset ref (A10).
+  const fieldEncryptionKey = await resolveFieldEncryptionKey(config);
   const state: StateStore = createStateStoreFromClient(prisma, {
-    ...(config.security.fieldEncryptionKeyRef
-      ? { fieldEncryptionKey: config.security.fieldEncryptionKeyRef }
-      : {}),
+    ...(fieldEncryptionKey ? { fieldEncryptionKey } : {}),
     ownsClient: true,
   });
 
@@ -148,6 +151,21 @@ export async function createProductionDeps(): Promise<ProductionDeps> {
   const trustProxy = parseBoolEnv("MONTR_API_TRUST_PROXY", false);
   const enableSwaggerUi = parseBoolEnv("MONTR_API_SWAGGER_UI", true);
 
+  // A15 — webhook scan trigger. Fail-closed default: both must be set or the
+  // route stays disabled (503), matching every other hardened-off-by-default
+  // control in this deployment (auto-fix, DAST, telemetry).
+  const webhookSecret = process.env["MONTR_WEBHOOK_SECRET"];
+  const webhookOperatorEmail = process.env["MONTR_WEBHOOK_OPERATOR_EMAIL"];
+  const webhookGithubToken = process.env["MONTR_WEBHOOK_GITHUB_TOKEN"];
+  const webhook =
+    webhookSecret && webhookOperatorEmail
+      ? {
+          secret: webhookSecret,
+          operatorEmail: webhookOperatorEmail,
+          ...(webhookGithubToken ? { githubToken: webhookGithubToken } : {}),
+        }
+      : undefined;
+
   const deps: ApiServerDeps = {
     config,
     store,
@@ -161,6 +179,7 @@ export async function createProductionDeps(): Promise<ProductionDeps> {
     // cookieSecure intentionally omitted — resolveDeps() defaults to `true` in
     // the absence of an override, which is the production-safe behavior.
     ...(corsOrigins.length ? { corsOrigins } : {}),
+    ...(webhook ? { webhook } : {}),
   };
 
   return {

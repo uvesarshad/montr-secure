@@ -254,3 +254,71 @@ export class GitLabPullRequestOpener implements PullRequestOpener {
     });
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * GitHub PR/issue comment — arbitrary-PR annotation (A15).
+ *
+ * Distinct from `GitHubPullRequestOpener` above: that class OPENS the
+ * auto-fix PR itself (golden rule #5, PR-only). This helper instead posts a
+ * COMMENT on a PR that already exists — e.g. the PR a webhook-triggered
+ * diff-mode scan (`POST /webhooks/scan-trigger`, apps/api) was raised for.
+ * GitHub's REST API models PR comments as issue comments (a PR *is* an issue
+ * for this endpoint), so `@octokit/rest`'s `issues.createComment` is the
+ * correct, minimal surface — no new dependency, same lazy-import pattern as
+ * `GitHubPullRequestOpener`.
+ *
+ * Deliberately a single summary comment, not per-line review annotations —
+ * per-line `pulls.createReview` requires diff-position math (which file/line
+ * a comment anchors to) that is out of scope here; a summary comment is the
+ * scoped-down, real, working piece (see docs/plan/26-08-22-tasks-ai-depth.md
+ * A15 notes).
+ * ------------------------------------------------------------------ */
+
+interface OctokitIssuesLike {
+  issues: {
+    createComment(params: {
+      owner: string;
+      repo: string;
+      issue_number: number;
+      body: string;
+    }): Promise<{ data: { html_url: string; id: number } }>;
+  };
+}
+interface OctokitIssuesCtor {
+  new (opts: { auth?: string; baseUrl?: string }): OctokitIssuesLike;
+}
+
+export interface GitHubCommentOptions {
+  /** BYO token (secret) — passed to Octokit, never logged. */
+  token: string;
+  owner: string;
+  repo: string;
+  /** PR number (GitHub PR numbers and issue numbers share one namespace). */
+  issueNumber: number;
+  body: string;
+  /** GitHub Enterprise API base URL, e.g. https://ghe.internal/api/v3. */
+  apiBaseUrl?: string;
+  logger?: Logger;
+}
+
+/** Post one summary comment on an arbitrary GitHub PR (or issue). */
+export async function postGitHubComment(opts: GitHubCommentOptions): Promise<{ url: string }> {
+  const { Octokit } = (await import("@octokit/rest")) as unknown as { Octokit: OctokitIssuesCtor };
+  const octokit = new Octokit({
+    auth: opts.token,
+    ...(opts.apiBaseUrl ? { baseUrl: opts.apiBaseUrl } : {}),
+  });
+  const res = await octokit.issues.createComment({
+    owner: opts.owner,
+    repo: opts.repo,
+    issue_number: opts.issueNumber,
+    body: opts.body,
+  });
+
+  opts.logger?.info("report.vcs.github.comment_posted", {
+    owner: opts.owner,
+    repo: opts.repo,
+    issueNumber: opts.issueNumber,
+  });
+  return { url: res.data.html_url };
+}

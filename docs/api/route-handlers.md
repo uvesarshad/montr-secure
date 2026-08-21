@@ -48,6 +48,9 @@ POST /api/v1/findings/:id/false-positive: Marks a finding as a false positive wi
 GET /api/v1/audit: Queries append-only audit events with sequence numbers, actors, and cryptographic verification status.
 GET /api/v1/audit/verify: Verifies hash-chain integrity across all client audit events.
 
+Webhook Trigger Endpoint in apps/api/src/routes/webhooks.ts
+POST /api/v1/webhooks/scan-trigger: Provider-agnostic, unauthenticated-by-session scan trigger (A15). Verifies a GitHub-compatible X-Hub-Signature-256 HMAC header (apps/api/src/auth/webhook-signature.ts, constant-time comparison) over the raw request body instead of a JWT/cookie principal, then creates and starts a scan through the same orchestrator.createScan/start path POST /scans uses. Accepts repo, branch, mode (full or diff, defaulting to diff), an optional scope (reuses ScanScopeSchema, e.g. changedFiles for diff mode), and an optional pullRequest owner/repo/number. Disabled (503 WEBHOOK_NOT_CONFIGURED) unless the deployment sets MONTR_WEBHOOK_SECRET and MONTR_WEBHOOK_OPERATOR_EMAIL; the resulting scan is attributed to that named operator/approver account since Scan.operator has a required foreign key to User and the caller carries no session. When MONTR_WEBHOOK_GITHUB_TOKEN is set and the payload includes pullRequest, best-effort posts a single acknowledgement comment on that PR via packages/report's postGitHubComment (never blocks or fails scan creation on a post failure). This is the concrete "PR opened -> scan runs" trigger surface ahead of a full GitHub App (manifest registration and OAuth installation remain out of scope).
+
 Management and Automation Endpoints
 GET and POST /api/v1/rules: Lists and creates custom Semgrep and secret detection rules. Validates syntax before saving.
 GET and POST /api/v1/scenarios: Lists and creates versioned red-team DAST attack scenarios with encrypted step sequences.

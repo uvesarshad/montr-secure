@@ -42,6 +42,7 @@ export {
   type AnthropicAdapterOptions,
   type AnthropicClientLike,
   type AnthropicMessageLike,
+  type AnthropicContentBlockLike,
   type AnthropicStreamEventLike,
 } from "./anthropic.js";
 export { BedrockAdapter, type BedrockAdapterOptions, type BedrockTransport } from "./bedrock.js";
@@ -51,6 +52,7 @@ export {
   type VertexTransport,
   type VertexResponseLike,
   type VertexGenerateRequest,
+  type VertexPartLike,
 } from "./vertex.js";
 export {
   AzureAdapter,

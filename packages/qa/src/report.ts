@@ -21,16 +21,45 @@ function padStart(value: string | number, width: number): string {
   return String(value).padStart(width);
 }
 
+/**
+ * A6: below this many confirmed findings (TP+FP), a headline FP-rate/precision
+ * reading is not yet statistically meaningful — one additional false positive
+ * still swings the rate by more than a percentage point. 30 is the common
+ * rule-of-thumb lower bound for treating a sample proportion as meaningful; the
+ * golden corpus currently sits at TP+FP=11 (see `corpus/baseline.json`
+ * `$measurement`), well below it. Report precision/FP-rate alongside this
+ * caveat rather than let a 100%/0% figure read as proof rather than measurement.
+ */
+export const LOW_SAMPLE_CONFIRMED_FLOOR = 30;
+
+/**
+ * Plain-language caveat for a precision/FP-rate reading computed from too few
+ * confirmed findings. Returns `undefined` once the sample is large enough that
+ * the rate is no longer dominated by a single finding.
+ */
+export function sampleSizeCaveat(confirmedSampleSize: number): string | undefined {
+  if (confirmedSampleSize >= LOW_SAMPLE_CONFIRMED_FLOOR) return undefined;
+  const noun = confirmedSampleSize === 1 ? "finding" : "findings";
+  return (
+    `FP-rate/precision above are computed from only ${confirmedSampleSize} confirmed ${noun} ` +
+    `(TP+FP) — not yet statistically meaningful at this sample size (rule of thumb: n>=${LOW_SAMPLE_CONFIRMED_FLOOR}). ` +
+    `One more false positive on the next run would move the rate by more than a percentage point. ` +
+    `Read recall alongside it and treat both as directional, not proof, until the golden corpus grows ` +
+    `further (see corpus/README.md).`
+  );
+}
+
 /** Render an overall + per-category score table. */
 export function formatCorpusScore(score: CorpusScore): string {
   const lines: string[] = [];
+  const sampleSize = score.truePositives + score.falsePositives;
   lines.push("Golden-corpus score");
   lines.push("===================");
-  lines.push(
-    `  FP-rate:   ${pct(score.fpRate)}   (headline; TP+FP=${score.truePositives + score.falsePositives})`,
-  );
+  lines.push(`  FP-rate:   ${pct(score.fpRate)}   (headline; TP+FP=${sampleSize})`);
   lines.push(`  precision: ${pct(score.precision)}`);
-  lines.push(`  recall:    ${pct(score.recall)}`);
+  lines.push(
+    `  recall:    ${pct(score.recall)}   (headline metric #2 — see A6: FP-rate alone is not the whole story)`,
+  );
   lines.push(`  F1:        ${pct(score.f1)}`);
   lines.push(
     `  counts:    TP=${score.truePositives} FP=${score.falsePositives} FN=${score.falseNegatives} over-confirmed=${score.overConfirmed}`,
@@ -41,6 +70,11 @@ export function formatCorpusScore(score: CorpusScore): string {
         ? `, ${score.unknownRepoResults} finding(s) for unknown repos (ignored)`
         : ""),
   );
+  const caveat = sampleSizeCaveat(sampleSize);
+  if (caveat) {
+    lines.push("");
+    lines.push(`  Note: ${caveat}`);
+  }
 
   if (score.perCategory.length > 0) {
     lines.push("");
@@ -138,6 +172,7 @@ export function toJsonReport(
   regression: RegressionResult,
   extra: { corpusVersion?: string; warnings?: string[] } = {},
 ): Record<string, unknown> {
+  const sampleSize = score.truePositives + score.falsePositives;
   return {
     passed: regression.passed,
     corpusVersion: extra.corpusVersion,
@@ -146,6 +181,11 @@ export function toJsonReport(
       precision: score.precision,
       recall: score.recall,
       f1: score.f1,
+      // A6: n=TP+FP the fpRate/precision figures above are computed from, plus
+      // an explicit caveat string when that sample is too small to be
+      // statistically meaningful (undefined once it grows past the floor).
+      confirmedSampleSize: sampleSize,
+      sampleSizeCaveat: sampleSizeCaveat(sampleSize),
     },
     counts: {
       truePositives: score.truePositives,

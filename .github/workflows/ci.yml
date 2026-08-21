@@ -51,6 +51,8 @@ jobs:
         run: pnpm exec prettier --check .
       - name: Typecheck
         run: pnpm run typecheck
+      - name: Unwired-seam check (A10 — every declared production seam must have a real caller)
+        run: pnpm run check:unwired-seams
       - name: Unit tests
         run: pnpm run test
       - name: Coverage thresholds (build-plan §4.7 — fails on regression below vitest.config.ts thresholds)

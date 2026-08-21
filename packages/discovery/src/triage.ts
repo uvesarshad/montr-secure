@@ -93,9 +93,17 @@ export async function triageCandidates(
     snippet: c.evidenceSnippet,
   }));
 
+  // Prompt registry (§8.2, §15): resolve the DB-versioned template for this
+  // prompt name when one is active; otherwise TRIAGE_SYSTEM above is used
+  // unchanged (resolvePrompt's own fallback contract).
+  const system =
+    (await opts.gateway.resolvePrompt?.("triage.system", TRIAGE_SYSTEM, {
+      clientId: opts.clientId,
+    })) ?? TRIAGE_SYSTEM;
+
   const request: LLMRequest = {
     tier: "triage",
-    system: TRIAGE_SYSTEM,
+    system,
     messages: [{ role: "user", content: JSON.stringify({ candidates: items }) }],
     maxTokens: opts.maxTokens ?? 1024,
     responseFormat: "json",

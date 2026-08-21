@@ -27,6 +27,9 @@
       "path": "../../packages/orchestrator"
     },
     {
+      "path": "../../packages/report"
+    },
+    {
       "path": "../../packages/security"
     },
     {

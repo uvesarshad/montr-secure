@@ -1,6 +1,6 @@
 import { ProviderNotConfiguredError, type LLMRequest, type LLMStreamEvent } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
-import { anthropicRejectsSampling, collectSystem, toAnthropicMessages } from "../mapping.js";
+import { buildAnthropicStyleFields } from "../mapping.js";
 import {
   mapAnthropicMessage,
   mapAnthropicStream,
@@ -39,16 +39,14 @@ export interface BedrockTransport {
 export const BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31";
 
 function buildBedrockBody(request: LLMRequest, modelId: string): string {
+  // Bedrock's InvokeModel path takes the same Anthropic Messages body as the
+  // native API (tools, output_config.effort/format, thinking, cache_control
+  // on system all carry over — Bedrock's Claude models accept the identical
+  // fields) plus the Bedrock-specific `anthropic_version` envelope field.
   const body: Record<string, unknown> = {
     anthropic_version: BEDROCK_ANTHROPIC_VERSION,
-    max_tokens: request.maxTokens,
-    messages: toAnthropicMessages(request),
+    ...buildAnthropicStyleFields(request, modelId),
   };
-  const system = collectSystem(request);
-  if (system) body.system = system;
-  if (request.temperature !== undefined && !anthropicRejectsSampling(modelId)) {
-    body.temperature = request.temperature;
-  }
   return JSON.stringify(body);
 }
 

@@ -6,6 +6,7 @@
 import type {
   AppMap,
   CandidateFinding,
+  Category,
   ConfirmedFinding,
   CustomRule,
   Fix,
@@ -238,6 +239,29 @@ export interface PromptVersionRepository {
   markActive(id: string): Promise<PromptVersionRecord>;
 }
 
+/* --------------------------------------------------------------------------- *
+ * §15 false-positive feedback tuning (A10). Prior operator false-positive
+ * marks, sourced from the audit log's `finding.marked_false_positive` events
+ * (apps/api/src/routes/findings.ts), so a future scan's correlation/
+ * confirmation layers can down-rank a repeat of the same finding-shape.
+ * Metadata-only shape — matches packages/correlation/src/tuning.ts's and
+ * packages/confirm/src/tuning.ts's structurally-identical `FalsePositiveTuning`
+ * seam so a single runtime object built from this repo satisfies both.
+ * --------------------------------------------------------------------------- */
+
+/** One prior FP mark's matchable shape — metadata only (golden rule #1). */
+export interface FalsePositiveMarkSignal {
+  category: Category;
+  file: string;
+  line: number;
+  ruleId?: string;
+}
+
+export interface FalsePositiveMarkRepository {
+  /** Every operator FP mark recorded for this client (any scan), newest first. */
+  listByClient(clientId: string): Promise<FalsePositiveMarkSignal[]>;
+}
+
 /** The aggregate persistence surface handed to the orchestrator and layers. */
 export interface StateStore {
   scans: ScanRepository;
@@ -260,5 +284,7 @@ export interface StateStore {
   posture: PostureRepository;
   /** Versioned LLM prompt templates (§8.2, §15 regression-tuning loop). */
   promptVersions: PromptVersionRepository;
+  /** Prior operator FP marks for §15 tuning (A10). */
+  falsePositiveMarks: FalsePositiveMarkRepository;
   disconnect(): Promise<void>;
 }

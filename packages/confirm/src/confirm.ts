@@ -136,6 +136,11 @@ export async function confirmFindings(
       live = await confirmLive(finding, input, target, guard, deps);
     }
 
+    // A7: the ONE path that may PROMOTE a finding to confirmed on evidence
+    // rather than demote it — a successful live-DAST exploit is executable
+    // proof (a real HTTP request/response transcript), not a model guess, so
+    // it outranks (and can stand without) a static/LLM verdict. Everything
+    // else in Layer 3 (the LLM review above) may only veto, never promote.
     if (live?.confirmed && live.finding) {
       confirmed.push(live.finding);
       await safeAppend(

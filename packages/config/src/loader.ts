@@ -86,6 +86,9 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
   set("MONTR_MODEL_TRIAGE", ["llm", "modelMatrix", "triage"]);
   set("MONTR_MODEL_DEFAULT", ["llm", "modelMatrix", "default"]);
   set("MONTR_MODEL_CONFIRMATION", ["llm", "modelMatrix", "confirmation"]);
+  // Model-fallback cascade (A11): retried once, after the primary model's
+  // retry budget is exhausted. See packages/llm-gateway/src/retry.ts.
+  set("MONTR_LLM_FALLBACK_MODEL", ["llm", "fallbackModel"]);
   set("MONTR_BUDGET_MAX_USD", ["budget", "maxUsdPerScan"], parseNum);
   set("MONTR_BUDGET_MAX_TOKENS", ["budget", "maxTokensPerScan"], parseNum);
   set("MONTR_BUDGET_ENFORCEMENT", ["budget", "enforcement"]);

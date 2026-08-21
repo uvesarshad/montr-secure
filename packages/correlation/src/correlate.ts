@@ -306,6 +306,15 @@ async function runLlmEnrichment(args: LlmEnrichmentArgs): Promise<LlmEnrichmentR
       scanId: args.scanId,
       clientId: args.clientId,
     });
+    // Prompt registry (§8.2, §15): resolve the DB-versioned template for this
+    // prompt name when one is active; otherwise the hardcoded SYSTEM_PROMPT
+    // from llm.ts (resolvePrompt's `fallback` arg) is used unchanged.
+    if (request.system) {
+      request.system =
+        (await args.gateway.resolvePrompt?.("correlation.system", request.system, {
+          clientId: args.clientId,
+        })) ?? request.system;
+    }
     const response = await args.gateway.complete(request);
     args.metrics.recordLlmCall({ purpose: "correlation" });
 

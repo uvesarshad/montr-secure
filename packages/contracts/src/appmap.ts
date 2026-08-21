@@ -20,6 +20,23 @@ import {
  * (Layer 2) and is persisted per-client (DECIDE-2).
  */
 
+/**
+ * A CRUD-shaped operation a route handler performs against an ORM model,
+ * coarsened from the underlying Prisma method (e.g. `findMany` → `read`,
+ * `upsert` → `write`, `deleteMany` → `delete`). Used for IDOR / broken-access-
+ * control reasoning (A18) — knowing a route *reads* vs *writes* / *deletes* a
+ * model matters more than the exact Prisma method name.
+ */
+export const RouteModelOperationSchema = z.enum(["read", "write", "delete"]);
+export type RouteModelOperation = z.infer<typeof RouteModelOperationSchema>;
+
+/** One ORM model a route handler statically references, + which operations. */
+export const RouteModelRefSchema = z.object({
+  modelName: z.string().min(1),
+  operations: z.array(RouteModelOperationSchema).default([]),
+});
+export type RouteModelRef = z.infer<typeof RouteModelRefSchema>;
+
 /** A registered route / entry point (path + method + auth state). */
 export const RouteSchema = z.object({
   id: IdSchema.optional(),
@@ -30,6 +47,14 @@ export const RouteSchema = z.object({
   handler: SourceLocationSchema.optional(),
   /** Which auth middleware/guard gates this route, if known. */
   authGate: z.string().optional(),
+  /**
+   * ORM model(s) this route's handler statically queries (A18 route→model
+   * cross-reference — see `packages/appmap/src/languages/typescript/route-models.ts`).
+   * Absent (not an empty array) when nothing was resolved, to keep routes that
+   * were never analyzed for this indistinguishable from routes proven to touch
+   * no model.
+   */
+  referencedModels: z.array(RouteModelRefSchema).optional(),
 });
 export type Route = z.infer<typeof RouteSchema>;
 

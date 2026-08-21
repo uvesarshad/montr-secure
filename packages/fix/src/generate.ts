@@ -24,7 +24,13 @@ import {
   type LLMGateway,
   type LLMRequest,
 } from "@montr/contracts";
-import type { AuditLogClient } from "@montr/telemetry";
+import {
+  createNullLogger,
+  getMetrics,
+  type AuditLogClient,
+  type Logger,
+  type MontrMetrics,
+} from "@montr/telemetry";
 import { classifyConfirmedFindingRisk, type RiskDecision } from "./risk.js";
 import { buildUnifiedDiff, validatePatch } from "./patch.js";
 import {
@@ -34,6 +40,7 @@ import {
   type FixStrategy,
 } from "./strategies.js";
 import type { SourceReader } from "./source.js";
+import { applyLineEdits, numberLines, parseLlmEdits } from "./edits.js";
 
 export interface FixGenerationContext {
   clientId: string;
@@ -50,17 +57,46 @@ export interface FixGenerationContext {
   now?: () => string;
   /** Deterministic id factory (defaults to `fix_<confirmedFindingId>`). */
   makeId?: (finding: ConfirmedFinding, index: number) => string;
+  /** Metrics collector for LLM parse/apply-failure visibility (A14; defaults to the process-wide one). */
+  metrics?: MontrMetrics;
+  /** Structured logger for LLM parse/apply-failure visibility (A14; defaults to a no-op logger). */
+  logger?: Logger;
 }
 
 export interface GenerateFixesInput extends FixGenerationContext {
   confirmed: ConfirmedFinding[];
 }
 
+// A14: the model returns a targeted, line-anchored EDIT LIST (see edits.ts)
+// instead of the entire fixed file. The old `{"fixedSource": "<the full fixed
+// file>"}` contract truncated on any file over ~1,500 lines — the response
+// couldn't fit — and JSON.parse failed with no error, no metric, no retry.
+// Scoping the response to only the changed lines removes that ceiling: a
+// 50-line vulnerable snippet inside a 3,000-line file only costs ~50 lines of
+// output, not 3,000.
 const FIX_SYSTEM_PROMPT =
-  "You are a secure-code fix generator. Given a confirmed vulnerability and the source file, return " +
-  'ONLY minified JSON of the form {"fixedSource": "<the full fixed file>", "rationale": "<plain English>"}. ' +
-  "Change as little as possible and remove ONLY the vulnerability. NEVER modify authentication, session, " +
-  "cryptography, or access-control logic. If you cannot fix it safely, return {}.";
+  "You are a secure-code fix generator. The user message's `source` field is the vulnerable " +
+  'file with each line prefixed "<lineNumber>: " (1-based, e.g. "12: const x = 1;"). Propose ' +
+  "the SMALLEST possible set of line-range edits that fixes ONLY the vulnerability — never " +
+  "re-emit the whole file. Return ONLY minified JSON of the form " +
+  '{"edits":[{"startLine":<n>,"endLine":<n>,"replacement":"<replacement lines, WITHOUT ' +
+  'line-number prefixes>"}],"rationale":"<plain English>"}. `startLine`/`endLine` are 1-based ' +
+  "and inclusive, refer to the ORIGINAL line numbers, and edits must not overlap. Change as " +
+  "little as possible. NEVER modify authentication, session, cryptography, or access-control " +
+  "logic. If you cannot fix it safely, return {}.";
+
+/**
+ * Output budget for a fix-generation call — defense in depth alongside the
+ * edit-list format above (A14). A response now only has to hold a handful of
+ * changed-line hunks plus a short rationale, not an entire file body, so this
+ * doesn't need to be huge; raised 4x over the old whole-file-rewrite cap
+ * (2048) to comfortably fit several hunks of real code for a multi-hunk fix
+ * (the other per-layer annotation-only calls sit at 512–1024, but THIS call
+ * must also emit verbatim replacement code, not just short JSON fields), while
+ * staying a small fraction of the model's actual output ceiling (128k tokens
+ * for the default tier per RECOMMENDED_MODEL_MATRIX).
+ */
+const FIX_GENERATION_MAX_TOKENS = 8192;
 
 interface LlmProposal {
   fixedSource?: string;
@@ -85,9 +121,17 @@ async function proposeFixWithLlm(
   source: string | null,
   ctx: FixGenerationContext,
 ): Promise<LlmProposal | null> {
+  // Prompt registry (§8.2, §15): resolve the DB-versioned template for this
+  // prompt name when one is active; otherwise FIX_SYSTEM_PROMPT above is used
+  // unchanged (resolvePrompt's own fallback contract).
+  const system =
+    (await ctx.gateway.resolvePrompt?.("fix.system", FIX_SYSTEM_PROMPT, {
+      clientId: ctx.clientId,
+    })) ?? FIX_SYSTEM_PROMPT;
+
   const request: LLMRequest = {
     tier: "default",
-    system: FIX_SYSTEM_PROMPT,
+    system,
     messages: [
       {
         role: "user",
@@ -97,11 +141,12 @@ async function proposeFixWithLlm(
           title: finding.title,
           impact: finding.impact,
           // Source is context inside a call to the CLIENT's own key — permitted (§11).
-          source: source ?? "",
+          // Line-numbered (A14) so the model can address exact ranges in `edits`.
+          source: source !== null ? numberLines(source) : "",
         }),
       },
     ],
-    maxTokens: 2048,
+    maxTokens: FIX_GENERATION_MAX_TOKENS,
     temperature: 0,
     responseFormat: "json",
     stream: false,
@@ -113,12 +158,48 @@ async function proposeFixWithLlm(
     },
   };
 
+  const metrics = ctx.metrics ?? getMetrics();
+  const logger = ctx.logger ?? createNullLogger();
+
   try {
     const response = await ctx.gateway.complete(request);
     const parsed = safeJsonObject(response.content);
-    const fixedSource =
-      parsed && typeof parsed.fixedSource === "string" ? parsed.fixedSource : undefined;
-    const rationale = parsed && typeof parsed.rationale === "string" ? parsed.rationale : undefined;
+    const logFields = {
+      scanId: ctx.scanId,
+      clientId: ctx.clientId,
+      category: finding.category,
+      filePath: finding.location.file,
+      model: response.model,
+      stopReason: response.stopReason,
+      // A truncated response (the model hit its output ceiling mid-JSON) is
+      // the exact failure mode A14 exists to make visible instead of silent.
+      likelyTruncated: response.stopReason === "max_tokens",
+    };
+
+    if (parsed === null) {
+      metrics.recordError("fix_generation.llm_response_unparseable");
+      logger.warn("fix_generation.llm_response_unparseable", logFields);
+      return { model: response.model };
+    }
+
+    const rationale = typeof parsed.rationale === "string" ? parsed.rationale : undefined;
+
+    let fixedSource: string | undefined;
+    if (source !== null && parsed.edits !== undefined) {
+      const totalLines = source.split("\n").length;
+      const edits = parseLlmEdits(parsed.edits, totalLines);
+      if (edits === null) {
+        // The model returned an `edits` field, but it was malformed, out of
+        // range, or overlapping — this is exactly the "diff can't be parsed
+        // or doesn't apply cleanly" case A14 requires be counted and logged,
+        // never a silent null-and-degrade.
+        metrics.recordError("fix_generation.llm_edits_invalid");
+        logger.warn("fix_generation.llm_edits_invalid", logFields);
+      } else {
+        fixedSource = applyLineEdits(source, edits);
+      }
+    }
+
     return { fixedSource, rationale, model: response.model };
   } catch {
     return null;

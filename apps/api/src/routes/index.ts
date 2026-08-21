@@ -10,6 +10,7 @@ import { registerGateRoutes } from "./gate.js";
 import { registerDastRoutes } from "./dast.js";
 import { registerFindingRoutes } from "./findings.js";
 import { registerAuditRoutes } from "./audit.js";
+import { registerWebhookRoutes } from "./webhooks.js";
 // Phase-4 (Wave 5) — scale & intelligence. Stub seams registered here; the
 // feature agents (WS-R) fill the handler bodies in these owned files only.
 import { registerAnalyticsRoutes } from "./analytics.js";
@@ -38,6 +39,7 @@ export function registerRoutes(app: FastifyInstance, deps: ResolvedDeps): void {
       registerDastRoutes(api, deps);
       registerFindingRoutes(api, deps);
       registerAuditRoutes(api, deps);
+      registerWebhookRoutes(api, deps);
 
       // Phase-4 (Wave 5) — scale & intelligence stubs.
       registerAnalyticsRoutes(api, deps);

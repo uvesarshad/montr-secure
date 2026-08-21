@@ -22,7 +22,7 @@ import {
 } from "@montr/cost-meter";
 import { createEgressGuard, type EgressGuard } from "@montr/security";
 import { createLogger, getMetrics, type Logger } from "@montr/telemetry";
-import { createAdapter, type ProviderAdapter } from "./adapters/index.js";
+import { createAdapter, type AdapterCompletion, type ProviderAdapter } from "./adapters/index.js";
 import { toGatewayError } from "./errors.js";
 import { assertModelFloor, buildDescriptors, isBelowFloor, resolveDescriptor } from "./models.js";
 import { applyKeyTierGuard, detectKeyTier } from "./keytier.js";
@@ -37,7 +37,7 @@ import {
   DEFAULT_RETRY_POLICY,
   runWithTimeout,
   withIteratorTimeout,
-  withRetry,
+  withRetryAndFallback,
   type RetryPolicy,
   type SleepFn,
 } from "./retry.js";
@@ -224,19 +224,30 @@ export class MontrLlmGateway implements LLMGateway {
     const start = this.now().getTime();
     let completion;
     try {
-      completion = await withRetry(
-        () =>
+      // A11: primary model gets the full retry policy (unchanged behavior);
+      // only once that's exhausted does the configured fallback model (if
+      // any) get its one bounded attempt — see fallbackModelIds().
+      completion = await withRetryAndFallback(
+        modelId,
+        (attemptModelId, _attempt) =>
           runWithTimeout(
-            (signal) => this.adapter.complete(parsed, modelId, signal),
+            (signal) => this.adapter.complete(parsed, attemptModelId, signal),
             this.timeoutMs,
             this.provider,
           ),
         this.retryPolicy,
+        {
+          fallbackModels: this.fallbackModelIds(modelId),
+          onFallback: (fromModelId, toModelId) =>
+            this.recordFallback(parsed, fromModelId, toModelId),
+        },
       );
     } catch (err) {
       throw toGatewayError(err, this.provider);
     }
     const latencyMs = this.now().getTime() - start;
+
+    this.maybeRecordParseFailure(parsed, completion);
 
     const response: LLMResponse = {
       id: completion.id,
@@ -246,9 +257,42 @@ export class MontrLlmGateway implements LLMGateway {
       stopReason: completion.stopReason,
       usage: completion.usage,
       latencyMs,
+      ...(completion.toolCalls ? { toolCalls: completion.toolCalls } : {}),
     };
     this.account(parsed.metadata, completion.model, completion.usage, latencyMs);
     return response;
+  }
+
+  /**
+   * ⛔ LLM response parse-failure metric (A13). Every real call site sets
+   * `responseFormat: "json"` and does its own `try { JSON.parse() } catch`
+   * with a fail-safe fallback — a fallback that quietly "succeeds" (e.g.
+   * confirm/src/static.ts's `safeJson` returning `undefined`, or
+   * correlation/src/llm.ts's `parseCorrelationResponse` returning `null`) is
+   * indistinguishable from a healthy call anywhere those layers currently
+   * look, so a deployment-wide collapse in LLM contribution had no signal.
+   * Checked centrally here — once, at the gateway boundary — rather than
+   * duplicated across five layer packages (several of which are out of scope
+   * for this change): independent of whatever fallback each caller's own
+   * parse layers on top, so it still fires even when the caller's fallback
+   * "succeeds" with an empty/degraded result. A structured-output-enforced
+   * response (A13 item 1) should make this rare for supported providers —
+   * this metric is what proves that in production.
+   */
+  private maybeRecordParseFailure(request: LLMRequest, completion: AdapterCompletion): void {
+    if (request.responseFormat !== "json") return;
+    if (completion.toolCalls && completion.toolCalls.length > 0) return; // tool-use turn, no JSON body expected
+    try {
+      JSON.parse(completion.content);
+    } catch {
+      getMetrics().recordError("llm_gateway.response_parse_failure");
+      this.logger.warn("llm.response_parse_failure", {
+        provider: this.provider,
+        model: completion.model,
+        purpose: request.metadata.purpose,
+        layer: request.metadata.layer,
+      });
+    }
   }
 
   async *stream(request: LLMRequest): AsyncGenerator<LLMStreamEvent, void, unknown> {
@@ -289,6 +333,32 @@ export class MontrLlmGateway implements LLMGateway {
 
   private resolveModelId(request: LLMRequest): string {
     return request.model ?? resolveDescriptor(this.config, request.tier ?? "default").modelId;
+  }
+
+  /**
+   * Fallback chain for `complete()` (A11). Currently a single client-configured
+   * `config.llm.fallbackModel`, applied across every tier — bounded to one
+   * fallback attempt by construction (see {@link withRetryAndFallback}), not
+   * infinite. Empty when unset (today's fail-outright-after-retries behavior)
+   * or when it equals the primary model (no self-fallback).
+   */
+  private fallbackModelIds(primaryModelId: string): string[] {
+    const fallback = this.config.llm.fallbackModel;
+    if (!fallback || fallback === primaryModelId) return [];
+    return [fallback];
+  }
+
+  /** Metric + structured log for a model-fallback attempt (A11). */
+  private recordFallback(request: LLMRequest, fromModelId: string, toModelId: string): void {
+    getMetrics().recordError("llm_gateway.model_fallback");
+    this.logger.warn("llm.model_fallback", {
+      provider: this.provider,
+      fromModel: fromModelId,
+      toModel: toModelId,
+      purpose: request.metadata.purpose,
+      layer: request.metadata.layer,
+      scanId: request.metadata.scanId,
+    });
   }
 
   /** Warn (once per model) when a confirmation call runs on a sub-floor model. */

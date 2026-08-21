@@ -58,9 +58,9 @@ describe("@montr/contracts", () => {
   });
 
   it("pins the recommended model matrix + floor (DECIDE-3)", () => {
-    expect(RECOMMENDED_MODEL_MATRIX.confirmation.modelId).toBe("claude-opus-4-8");
+    expect(RECOMMENDED_MODEL_MATRIX.confirmation.modelId).toBe("claude-opus-5");
     expect(RECOMMENDED_MODEL_MATRIX.default.modelId).toBe("claude-sonnet-5");
-    expect(RECOMMENDED_MODEL_MATRIX.triage.modelId).toBe("claude-haiku-4-5-20251001");
+    expect(RECOMMENDED_MODEL_MATRIX.triage.modelId).toBe("claude-haiku-4-5");
     expect(MODEL_FLOOR.confirmationTier.minModelId).toBe("claude-sonnet-5");
     // Live DAST layer retries conservatively.
     expect(RETRY_POLICIES.layer3.attempts).toBeLessThanOrEqual(RETRY_POLICIES.layer2.attempts);

@@ -66,6 +66,30 @@ export const LLMToolDefinitionSchema = z.object({
 });
 export type LLMToolDefinition = z.infer<typeof LLMToolDefinitionSchema>;
 
+/**
+ * A tool call the model made (A8). Populated on {@link LLMResponseSchema} when
+ * the provider returned one or more tool-use/function-call blocks instead of
+ * (or alongside) text. `input` is the provider-parsed JSON arguments object —
+ * always an object, never a raw string (adapters are responsible for parsing
+ * provider-specific argument encodings, e.g. Azure/OpenAI's stringified
+ * `function.arguments`, before constructing this).
+ */
+export const LLMToolCallSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  input: z.record(z.string(), z.unknown()),
+});
+export type LLMToolCall = z.infer<typeof LLMToolCallSchema>;
+
+/**
+ * Extended-thinking / reasoning-depth setting (A8, E10). Mirrors the current
+ * Claude API's `output_config.effort` values. Adapters that have no equivalent
+ * knob (Vertex's Gemini transport, Azure/OpenAI deployments) silently ignore
+ * this rather than erroring — see each adapter's `buildBody`/`buildRequest`.
+ */
+export const EffortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
+export type Effort = z.infer<typeof EffortSchema>;
+
 /** Static description of a model available through the gateway. */
 export const ModelDescriptorSchema = z.object({
   provider: ProviderSchema,
@@ -101,7 +125,20 @@ export const LLMRequestSchema = z.object({
   maxTokens: z.number().int().positive(),
   temperature: z.number().min(0).max(2).optional(),
   tools: z.array(LLMToolDefinitionSchema).optional(),
+  /** Extended-thinking / reasoning-depth (A8). Adapter support varies — see {@link EffortSchema}. */
+  effort: EffortSchema.optional(),
   responseFormat: ResponseFormatSchema.default("text"),
+  /**
+   * Explicit JSON schema for structured-output enforcement (A13), keyed to
+   * `responseFormat: "json"`. Optional — when omitted, adapters that support
+   * real structured outputs (Anthropic, Bedrock, Vertex-for-Claude) fall back
+   * to a schema resolved from `metadata.purpose` (see
+   * `packages/llm-gateway/src/structured-output.ts`'s per-purpose map, built
+   * from each real call site's already-documented parsed-JSON shape) so
+   * existing callers get real schema enforcement without passing one
+   * themselves. A caller-supplied schema always takes precedence.
+   */
+  responseSchema: z.record(z.string(), z.unknown()).optional(),
   stream: z.boolean().default(false),
   metadata: LLMCallMetadataSchema,
 });
@@ -125,6 +162,8 @@ export const LLMResponseSchema = z.object({
   stopReason: StopReasonSchema,
   usage: TokenUsageSchema,
   latencyMs: z.number().nonnegative(),
+  /** Tool/function calls the model made (A8). Present when `stopReason === "tool_use"`. */
+  toolCalls: z.array(LLMToolCallSchema).optional(),
 });
 export type LLMResponse = z.infer<typeof LLMResponseSchema>;
 
@@ -161,6 +200,19 @@ export interface LLMGateway {
   listModels(): ModelDescriptor[];
   resolveModel(tierOrId: ModelTier | string): ModelDescriptor;
   estimateTokens?(request: LLMRequest): Promise<number>;
+  /**
+   * Resolve prompt `name`'s live template (§8.2, §15 prompt registry):
+   * the active DB-versioned template when the gateway was constructed with a
+   * `promptSource`, else `fallback` unchanged. Optional so callers typed only
+   * against this base interface (e.g. test/fake gateways) remain valid
+   * without implementing it; @montr/llm-gateway's MontrLlmGateway always
+   * implements it (see packages/llm-gateway/src/gateway.ts).
+   */
+  resolvePrompt?(
+    name: string,
+    fallback: string,
+    opts?: { clientId?: string | null },
+  ): Promise<string>;
 }
 
 /**
@@ -174,7 +226,7 @@ export const RECOMMENDED_MODEL_MATRIX: Record<
 > = {
   triage: {
     provider: "anthropic",
-    modelId: "claude-haiku-4-5-20251001",
+    modelId: "claude-haiku-4-5",
     note: "Cheap, fast triage/labeling.",
   },
   default: {
@@ -184,8 +236,8 @@ export const RECOMMENDED_MODEL_MATRIX: Record<
   },
   confirmation: {
     provider: "anthropic",
-    modelId: "claude-opus-4-8",
-    note: "Hardest exploit confirmations.",
+    modelId: "claude-opus-5",
+    note: "Hardest exploit confirmations — current flagship (A11; was claude-opus-4-8).",
   },
 };
 
@@ -241,6 +293,11 @@ export const MODEL_COST_RATES: readonly ModelCostRate[] = [
     modelId: "claude-haiku-4-5-20251001",
     inputPerMillionUsd: 1,
     outputPerMillionUsd: 5,
+    note:
+      "Rate card intentionally keeps the dated snapshot id: it is priced " +
+      "identically to the canonical claude-haiku-4-5 (used by RECOMMENDED_MODEL_MATRIX.triage, " +
+      "A11) via normalizeModelId's -YYYYMMDD stripping in @montr/cost-meter, and findModelRate " +
+      "resolves either form to this row.",
   },
 ];
 

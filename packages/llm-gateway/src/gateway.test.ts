@@ -9,7 +9,7 @@ import {
   type Provider,
 } from "@montr/contracts";
 import { parseConfig, type MontrConfig } from "@montr/config";
-import type { Logger } from "@montr/telemetry";
+import { getMetrics, type Logger } from "@montr/telemetry";
 import { createBudgetRegistry, createCostMeter } from "@montr/cost-meter";
 import { MontrLlmGateway, createLlmGateway, type CreateGatewayOptions } from "./gateway.js";
 import { makeUsage, type ProviderAdapter, type AdapterCompletion } from "./adapters/index.js";
@@ -159,6 +159,103 @@ describe("gateway retry/backoff (via complete())", () => {
     const gateway = makeGateway(adapter, { maxRetries: 3 });
     await gateway.complete(req());
     expect(adapter.calls).toBe(1);
+  });
+});
+
+/**
+ * Model-fallback cascade (A11). Previously a failing model was retried on
+ * ITSELF and then the call failed outright — no cascade to an alternate model
+ * existed. `config.llm.fallbackModel` (packages/config/src/schema.ts) now lets
+ * the gateway retry the SAME request against one alternate model, exactly
+ * once, after the primary's retry budget is exhausted.
+ */
+describe("gateway model-fallback cascade (A11)", () => {
+  /** Unlike FakeAdapter, routes success/failure — and the returned `model` — by modelId. */
+  class ModelRoutedFakeAdapter implements ProviderAdapter {
+    calls: string[] = [];
+
+    constructor(
+      private readonly behavior: (modelId: string) => AdapterCompletion | Error,
+      readonly provider: Provider = "anthropic",
+    ) {}
+
+    resolveModelId(modelId: string): string {
+      return modelId;
+    }
+
+    async complete(_request: LLMRequest, modelId: string): Promise<AdapterCompletion> {
+      this.calls.push(modelId);
+      const outcome = this.behavior(modelId);
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    }
+
+    // eslint-disable-next-line require-yield -- fake adapter's stream() is never exercised by these tests
+    async *stream(): AsyncGenerator<never, void, unknown> {
+      throw new Error("not used in these tests");
+    }
+  }
+
+  function okForModel(modelId: string): AdapterCompletion {
+    return {
+      id: "c1",
+      model: modelId,
+      content: "hi",
+      stopReason: "end_turn",
+      usage: makeUsage(10, 5),
+    };
+  }
+
+  function fallbackConfig(fallbackModel?: string): MontrConfig {
+    return baseConfig(fallbackModel ? { fallbackModel } : {});
+  }
+
+  it("falls back to the configured model once the primary exhausts retries, and succeeds", async () => {
+    const logger = spyLogger();
+    const adapter = new ModelRoutedFakeAdapter((modelId) =>
+      modelId === "claude-sonnet-5" ? statusError(429) : okForModel(modelId),
+    );
+    const gateway = makeGateway(adapter, {
+      maxRetries: 1,
+      logger,
+      config: fallbackConfig("claude-haiku-4-5"),
+    });
+    const response = await gateway.complete(req({ model: "claude-sonnet-5" }));
+    expect(response.model).toBe("claude-haiku-4-5");
+    // Primary: 1 initial + 1 retry (both fail) = 2 calls. Fallback: exactly 1 call.
+    expect(adapter.calls).toEqual(["claude-sonnet-5", "claude-sonnet-5", "claude-haiku-4-5"]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "llm.model_fallback",
+      expect.objectContaining({ fromModel: "claude-sonnet-5", toModel: "claude-haiku-4-5" }),
+    );
+  });
+
+  it("still fails (surfacing the fallback's own error) when the fallback model also fails", async () => {
+    const adapter = new ModelRoutedFakeAdapter(() => statusError(429));
+    const gateway = makeGateway(adapter, {
+      maxRetries: 0,
+      config: fallbackConfig("claude-haiku-4-5"),
+    });
+    await expect(gateway.complete(req({ model: "claude-sonnet-5" }))).rejects.toThrow();
+    // Primary: exactly 1 attempt (maxRetries: 0 — no retry budget). Fallback: exactly 1 attempt.
+    expect(adapter.calls).toEqual(["claude-sonnet-5", "claude-haiku-4-5"]);
+  });
+
+  it("never touches the fallback when no fallbackModel is configured (today's behavior unchanged)", async () => {
+    const adapter = new ModelRoutedFakeAdapter(() => statusError(429));
+    const gateway = makeGateway(adapter, { maxRetries: 1, config: fallbackConfig() });
+    await expect(gateway.complete(req({ model: "claude-sonnet-5" }))).rejects.toThrow();
+    expect(adapter.calls).toEqual(["claude-sonnet-5", "claude-sonnet-5"]);
+  });
+
+  it("never falls back to itself when fallbackModel equals the resolved primary model", async () => {
+    const adapter = new ModelRoutedFakeAdapter(() => statusError(429));
+    const gateway = makeGateway(adapter, {
+      maxRetries: 0,
+      config: fallbackConfig("claude-sonnet-5"),
+    });
+    await expect(gateway.complete(req({ model: "claude-sonnet-5" }))).rejects.toThrow();
+    expect(adapter.calls).toEqual(["claude-sonnet-5"]);
   });
 });
 
@@ -602,5 +699,81 @@ describe("gateway REAL-TIME accounting into the registry-resolved per-scan meter
     // No scanId on the request ⇒ nothing resolvable in the registry; the
     // unrelated scan's meter must stay untouched.
     expect(meter.actual().actualUsd).toBe(0);
+  });
+});
+
+describe("A13 — LLM response parse-failure metric", () => {
+  it("records a parse failure and logs a warning when responseFormat is json but content isn't valid JSON", async () => {
+    const adapter = new FakeAdapter(() => ({
+      id: "bad",
+      model: "claude-sonnet-5",
+      content: "not json at all {",
+      stopReason: "end_turn",
+      usage: makeUsage(10, 5),
+    }));
+    const logger = spyLogger();
+    const gateway = makeGateway(adapter, { logger });
+
+    const before = getMetrics().snapshot().errors;
+    await gateway.complete(req({ responseFormat: "json", metadata: { purpose: "correlation" } }));
+    const after = getMetrics().snapshot().errors;
+
+    expect(after).toBeGreaterThan(before);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "llm.response_parse_failure",
+      expect.objectContaining({ purpose: "correlation" }),
+    );
+  });
+
+  it("does NOT record a parse failure when content is valid JSON", async () => {
+    const adapter = new FakeAdapter(() => ({
+      id: "good",
+      model: "claude-sonnet-5",
+      content: '{"reachabilityScore":0.5}',
+      stopReason: "end_turn",
+      usage: makeUsage(10, 5),
+    }));
+    const logger = spyLogger();
+    const gateway = makeGateway(adapter, { logger });
+
+    await gateway.complete(req({ responseFormat: "json", metadata: { purpose: "correlation" } }));
+
+    expect(logger.warn).not.toHaveBeenCalledWith("llm.response_parse_failure", expect.anything());
+  });
+
+  it("does NOT check for parse failures when responseFormat is text", async () => {
+    const adapter = new FakeAdapter(() => ({
+      id: "x",
+      model: "claude-sonnet-5",
+      content: "plain prose, not json",
+      stopReason: "end_turn",
+      usage: makeUsage(10, 5),
+    }));
+    const logger = spyLogger();
+    const gateway = makeGateway(adapter, { logger });
+
+    await gateway.complete(req({ responseFormat: "text" }));
+
+    expect(logger.warn).not.toHaveBeenCalledWith("llm.response_parse_failure", expect.anything());
+  });
+
+  it("does NOT flag a parse failure on a tool-use turn with no JSON body", async () => {
+    const adapter = new FakeAdapter(() => ({
+      id: "t",
+      model: "claude-sonnet-5",
+      content: "",
+      stopReason: "tool_use",
+      usage: makeUsage(10, 5),
+      toolCalls: [{ id: "call_1", name: "grep", input: { pattern: "x" } }],
+    }));
+    const logger = spyLogger();
+    const gateway = makeGateway(adapter, { logger });
+
+    const response = await gateway.complete(
+      req({ responseFormat: "json", metadata: { purpose: "confirmation" } }),
+    );
+
+    expect(response.toolCalls).toEqual([{ id: "call_1", name: "grep", input: { pattern: "x" } }]);
+    expect(logger.warn).not.toHaveBeenCalledWith("llm.response_parse_failure", expect.anything());
   });
 });

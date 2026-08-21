@@ -63,6 +63,23 @@ export interface ApiServerDeps {
     global?: { max: number; timeWindow: string | number };
     auth?: { max: number; timeWindow: string | number };
   };
+  /**
+   * Webhook scan-trigger config (A15, `POST /webhooks/scan-trigger`). Unset =
+   * the route is disabled (fail-closed default, consistent with every other
+   * hardened default — see docs/infra/environment.md `MONTR_WEBHOOK_SECRET`).
+   */
+  webhook?: {
+    /** HMAC secret verifying inbound `X-Hub-Signature-256` signatures. */
+    secret: string;
+    /**
+     * Email of an existing operator/approver user, used to attribute
+     * webhook-triggered scans (`Scan.operator` has a required FK to `User` —
+     * there is no unauthenticated "system user" row to fall back to).
+     */
+    operatorEmail: string;
+    /** Optional: post a PR summary comment when the payload carries PR info. */
+    githubToken?: string;
+  };
 }
 
 /** Deps after defaults are applied. */
@@ -81,6 +98,8 @@ export interface ResolvedDeps {
   authRate: { max: number; timeWindow: string | number };
   /** §15 regression-corpus sink (defaults to a fail-safe no-op). */
   regressionCorpus: RegressionCorpusRecorder;
+  /** Webhook scan-trigger config (A15). Undefined = route disabled. */
+  webhook?: ApiServerDeps["webhook"];
 }
 
 declare module "fastify" {

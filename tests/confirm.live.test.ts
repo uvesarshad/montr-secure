@@ -27,6 +27,13 @@ function liveConfig(overrides: Record<string, unknown> = {}): MontrConfig {
   return MontrConfigSchema.parse({ dast: { enabled: true, allowlist: [STAGING], ...overrides } });
 }
 
+/** Mutating-method (POST/PUT/PATCH/DELETE) blast-radius cap defaults to 0 — an
+ * operator must explicitly raise it, which is what XXE/deserialization probes
+ * (the only two categories that must POST a body) require in these tests. */
+function mutatingConfig(): MontrConfig {
+  return liveConfig({ scope: { maxMutatingRequests: 5 } });
+}
+
 function realEgress(config: MontrConfig) {
   return createEgressGuard(config, { includeDastTargets: true });
 }
@@ -140,6 +147,325 @@ describe("confirmFindings — live DAST confirmation", () => {
     const out = await confirmFindings(liveInput(), offlineDeps({ transport }));
     expect(out.confirmed).toHaveLength(1);
     expect(out.confirmed[0]?.proofType).toBe("static");
+  });
+});
+
+describe("confirmFindings — A9: NoSQL operator payload (fixed)", () => {
+  it("confirms NoSQL injection via a real $ne bracket-notation operator payload, not a SQL string", async () => {
+    let payloadUrl = "";
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        payloadUrl = req.url;
+        return Promise.resolve({
+          status: 200,
+          headers: {},
+          body: '[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5},{"id":6}] — every document returned',
+        });
+      },
+    };
+    const nosqli = structuredClone(SQLI);
+    nosqli.category = "nosql_injection";
+    const out = await confirmFindings(
+      liveInput({ probable: [nosqli] }),
+      offlineDeps({ transport }),
+    );
+
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+    // The payload must be a Mongo/NoSQL OPERATOR (bracket-notation `[$ne]`), never
+    // the SQL string `' OR '1'='1` the old (buggy) implementation reused.
+    expect(payloadUrl).toMatch(/%5B%24ne%5D|\[\$ne\]/);
+    expect(payloadUrl).not.toContain("1%3D%271"); // no SQL boolean payload present
+  });
+
+  it("falls back to STATIC when the NoSQL operator payload yields no injection signal", async () => {
+    const transport: LiveHttpTransport = {
+      send: () => Promise.resolve({ status: 200, headers: {}, body: "[]" }),
+    };
+    const nosqli = structuredClone(SQLI);
+    nosqli.category = "nosql_injection";
+    const out = await confirmFindings(
+      liveInput({ probable: [nosqli] }),
+      offlineDeps({ transport }),
+    );
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("static"); // live failed → static proof stands
+  });
+});
+
+describe("confirmFindings — A9: expanded live DAST categories", () => {
+  it("confirms SSRF when the response leaks cloud-metadata contents", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("example.com")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "ok" });
+        }
+        return Promise.resolve({
+          status: 200,
+          headers: {},
+          body: '{"ami-id":"ami-0123","instance-id":"i-0123"}',
+        });
+      },
+    };
+    const ssrf = structuredClone(SQLI);
+    ssrf.category = "ssrf";
+    const out = await confirmFindings(liveInput({ probable: [ssrf] }), offlineDeps({ transport }));
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+  });
+
+  it("does NOT confirm SSRF when the response carries no metadata-service signal", async () => {
+    const transport: LiveHttpTransport = {
+      send: () => Promise.resolve({ status: 200, headers: {}, body: "no such host" }),
+    };
+    const ssrf = structuredClone(SQLI);
+    ssrf.category = "ssrf";
+    const out = await confirmFindings(liveInput({ probable: [ssrf] }), offlineDeps({ transport }));
+    // No static sink for ssrf on this fixture either, so the finding stays unconfirmed.
+    expect(out.confirmed).toHaveLength(0);
+    expect(out.unconfirmed).toHaveLength(1);
+  });
+
+  it("confirms IDOR when a different resource id returns distinct, non-denied data", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        const q = new URL(req.url).searchParams.get("q");
+        return Promise.resolve({
+          status: 200,
+          headers: {},
+          body: q === "1" ? '{"id":1,"owner":"alice"}' : '{"id":2,"owner":"bob"}',
+        });
+      },
+    };
+    const idor = structuredClone(SQLI);
+    idor.category = "idor";
+    const out = await confirmFindings(liveInput({ probable: [idor] }), offlineDeps({ transport }));
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+  });
+
+  it("does NOT confirm IDOR when the other resource id is denied", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        const q = new URL(req.url).searchParams.get("q");
+        return Promise.resolve({
+          status: q === "1" ? 200 : 403,
+          headers: {},
+          body: q === "1" ? '{"id":1,"owner":"alice"}' : "forbidden",
+        });
+      },
+    };
+    const idor = structuredClone(SQLI);
+    idor.category = "idor";
+    const out = await confirmFindings(liveInput({ probable: [idor] }), offlineDeps({ transport }));
+    expect(out.confirmed).toHaveLength(0);
+    expect(out.unconfirmed).toHaveLength(1);
+  });
+
+  it("confirms broken access control when the route succeeds without auth headers", async () => {
+    const authedMap = structuredClone(mockAppMap);
+    authedMap.routes[0]!.authState = "authenticated";
+    const bac = structuredClone(SQLI);
+    bac.category = "broken_access_control";
+    bac.exposure = "authed";
+    const browser: BrowserDriver = {
+      login: () => Promise.resolve({ headers: { cookie: "session=abc" } }),
+    };
+    const transport: LiveHttpTransport = {
+      send: () => Promise.resolve({ status: 200, headers: {}, body: "ok" }), // succeeds either way
+    };
+    const out = await confirmFindings(
+      liveInput({ appMap: authedMap, probable: [bac] }),
+      offlineDeps({ transport, browser }),
+    );
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+  });
+
+  it("does NOT confirm broken access control when the stripped request is denied", async () => {
+    const authedMap = structuredClone(mockAppMap);
+    authedMap.routes[0]!.authState = "authenticated";
+    const bac = structuredClone(SQLI);
+    bac.category = "broken_access_control";
+    bac.exposure = "authed";
+    const browser: BrowserDriver = {
+      login: () => Promise.resolve({ headers: { cookie: "session=abc" } }),
+    };
+    const transport: LiveHttpTransport = {
+      send(req) {
+        const hasCookie = Boolean(req.headers?.cookie);
+        return Promise.resolve({ status: hasCookie ? 200 : 401, headers: {}, body: "x" });
+      },
+    };
+    const out = await confirmFindings(
+      liveInput({ appMap: authedMap, probable: [bac] }),
+      offlineDeps({ transport, browser }),
+    );
+    expect(out.confirmed).toHaveLength(0);
+    expect(out.unconfirmed).toHaveLength(1);
+  });
+
+  it("skips broken-access-control probing entirely when the route has no session to strip", async () => {
+    const bac = structuredClone(SQLI); // ROUTE_USERS_ID is public — no session obtained
+    bac.category = "broken_access_control";
+    let sends = 0;
+    const transport: LiveHttpTransport = {
+      send() {
+        sends += 1;
+        return Promise.resolve({ status: 200, headers: {}, body: "x" });
+      },
+    };
+    const out = await confirmFindings(liveInput({ probable: [bac] }), offlineDeps({ transport }));
+    expect(sends).toBe(0);
+    expect(out.confirmed).toHaveLength(0);
+    expect(out.unconfirmed).toHaveLength(1);
+  });
+
+  it("confirms path traversal when the payload discloses /etc/passwd contents", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("readme.txt")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "hello" });
+        }
+        return Promise.resolve({
+          status: 200,
+          headers: {},
+          body: "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
+        });
+      },
+    };
+    const pt = structuredClone(SQLI);
+    pt.category = "path_traversal";
+    const out = await confirmFindings(liveInput({ probable: [pt] }), offlineDeps({ transport }));
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+  });
+
+  it("confirms command injection when the injected marker is reflected in the response", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        // The shell "executed" the chained command and echoed its output back —
+        // simulated here by reflecting the decoded `q` param, which carries the
+        // unique marker embedded in the payload.
+        const q = new URL(req.url).searchParams.get("q") ?? "";
+        return Promise.resolve({ status: 200, headers: {}, body: `output: ${q}` });
+      },
+    };
+    const ci = structuredClone(SQLI);
+    ci.category = "command_injection";
+    const out = await confirmFindings(liveInput({ probable: [ci] }), offlineDeps({ transport }));
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+  });
+
+  it("confirms XXE via a POST body carrying an external entity, and discloses /etc/passwd", async () => {
+    let sawEntity = false;
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.body?.includes("<!ENTITY")) {
+          sawEntity = true;
+          return Promise.resolve({
+            status: 200,
+            headers: {},
+            body: "root:x:0:0:root:/root:/bin/bash",
+          });
+        }
+        return Promise.resolve({
+          status: 200,
+          headers: {},
+          body: "<root><value>montr_baseline</value></root>",
+        });
+      },
+    };
+    const xxe = structuredClone(SQLI);
+    xxe.category = "xxe";
+    // XXE is delivered via POST (a mutating method) — the blast-radius cap on
+    // mutating requests defaults to 0 (see `packages/config/src/schema.ts`), so a
+    // real deployment must opt in. Raise it here the same way an operator would.
+    const out = await confirmFindings(
+      liveInput({ probable: [xxe], config: mutatingConfig() }),
+      offlineDeps({ transport }),
+    );
+    expect(sawEntity).toBe(true);
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+    if (out.confirmed[0]?.proofArtifact.kind !== "live") throw new Error("expected live proof");
+    expect(out.confirmed[0]?.proofArtifact.transcript[1]?.request.method).toBe("POST");
+    expect(out.confirmed[0]?.proofArtifact.transcript[1]?.request.bodySnippet).toContain(
+      "<!ENTITY",
+    );
+  });
+
+  it("confirms insecure deserialization when a malformed typed payload triggers a deserializer error", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.body?.includes("@type")) {
+          return Promise.resolve({
+            status: 500,
+            headers: {},
+            body: "com.fasterxml.jackson.databind.exc.InvalidClassException: unknown type",
+          });
+        }
+        return Promise.resolve({ status: 200, headers: {}, body: "{}" });
+      },
+    };
+    const deser = structuredClone(SQLI);
+    deser.category = "insecure_deserialization";
+    const out = await confirmFindings(
+      liveInput({ probable: [deser], config: mutatingConfig() }),
+      offlineDeps({ transport }),
+    );
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.proofType).toBe("live");
+    if (out.confirmed[0]?.proofArtifact.kind !== "live") throw new Error("expected live proof");
+    expect(out.confirmed[0]?.proofArtifact.transcript[1]?.request.method).toBe("POST");
+  });
+
+  it("does NOT confirm insecure deserialization when the response shows no deserializer signal", async () => {
+    const transport: LiveHttpTransport = {
+      send: () => Promise.resolve({ status: 200, headers: {}, body: "{}" }),
+    };
+    const deser = structuredClone(SQLI);
+    deser.category = "insecure_deserialization";
+    const out = await confirmFindings(
+      liveInput({ probable: [deser], config: mutatingConfig() }),
+      offlineDeps({ transport }),
+    );
+    expect(out.confirmed).toHaveLength(0);
+    expect(out.unconfirmed).toHaveLength(1);
+  });
+});
+
+describe("confirmFindings — A7: successful live-DAST proof is executable evidence", () => {
+  it("promotes to confirmed:true on a successful live probe even though the LLM veto path never ran", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        return Promise.resolve({ status: 200, headers: {}, body: "sql syntax error near '1'" });
+      },
+    };
+    const out = await confirmFindings(liveInput(), offlineDeps({ transport }));
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.status).toBe("confirmed");
+    expect(out.confirmed[0]?.proofType).toBe("live");
+    expect(out.confirmed[0]?.proofArtifact.kind).toBe("live");
+  });
+
+  it("a failed live probe never promotes on its own — the finding stays unconfirmed when static also fails", async () => {
+    const ssrf = structuredClone(SQLI); // no static sink for ssrf in this fixture
+    ssrf.category = "ssrf";
+    const transport: LiveHttpTransport = {
+      send: () => Promise.resolve({ status: 200, headers: {}, body: "nothing interesting here" }),
+    };
+    const out = await confirmFindings(liveInput({ probable: [ssrf] }), offlineDeps({ transport }));
+    expect(out.confirmed).toHaveLength(0);
+    expect(out.unconfirmed).toHaveLength(1);
+    expect(out.unconfirmed[0]?.status).toBe("unconfirmed");
   });
 });
 

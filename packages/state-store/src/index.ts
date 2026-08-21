@@ -41,6 +41,7 @@ export {
   ReportRepositoryImpl,
   ResumeRepositoryImpl,
   CredentialRepositoryImpl,
+  FalsePositiveMarkRepositoryImpl,
   makeCandidateRepo,
   makeProbableRepo,
   makeConfirmedRepo,

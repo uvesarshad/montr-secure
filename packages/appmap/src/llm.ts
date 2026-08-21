@@ -101,7 +101,14 @@ export async function labelAuthBoundaries(
     return { appMap, called: false };
   }
 
-  const { system, user } = buildPrompt(appMap.routes);
+  const { system: fallbackSystem, user } = buildPrompt(appMap.routes);
+  // Prompt registry (§8.2, §15): resolve the DB-versioned template for this
+  // prompt name when one is active; otherwise the hardcoded constant above is
+  // used unchanged (resolvePrompt's own fallback contract).
+  const system =
+    (await gateway.resolvePrompt?.("appmap.auth_boundaries.system", fallbackSystem, {
+      clientId: opts.clientId,
+    })) ?? fallbackSystem;
   let content: string;
   let usage: TokenUsage | undefined;
   try {

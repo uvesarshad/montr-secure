@@ -50,6 +50,7 @@ function resolveDeps(deps: ApiServerDeps): ResolvedDeps {
     sessionTtlMinutes: deps.config.rbac.sessionTtlMinutes,
     authRate: deps.rateLimits?.auth ?? DEFAULT_AUTH_RATE,
     regressionCorpus: deps.regressionCorpus ?? noopRegressionCorpus,
+    ...(deps.webhook ? { webhook: deps.webhook } : {}),
   };
 }
 
@@ -127,6 +128,8 @@ export interface InMemoryDepsOverrides {
   rateLimits?: ApiServerDeps["rateLimits"];
   /** §15 regression-corpus sink (defaults to a fail-safe no-op). */
   regressionCorpus?: RegressionCorpusRecorder;
+  /** Webhook scan-trigger config (A15). Omit to leave the route disabled. */
+  webhook?: ApiServerDeps["webhook"];
 }
 
 /**
@@ -153,5 +156,6 @@ export function createInMemoryDeps(overrides: InMemoryDepsOverrides = {}): ApiSe
     ...(overrides.corsOrigins ? { corsOrigins: overrides.corsOrigins } : {}),
     ...(overrides.rateLimits ? { rateLimits: overrides.rateLimits } : {}),
     ...(overrides.regressionCorpus ? { regressionCorpus: overrides.regressionCorpus } : {}),
+    ...(overrides.webhook ? { webhook: overrides.webhook } : {}),
   };
 }

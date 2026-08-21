@@ -185,6 +185,31 @@ export function makeInMemoryStore(): InMemoryStore {
       list: () => Promise.resolve([]),
       verifyChain: () => Promise.resolve(true),
     },
+    // §15 FP-tuning (A10) — derived from `audit` above so a test that appends a
+    // `finding.marked_false_positive` event sees it reflected on the next
+    // listByClient() call, matching the real repo's audit-log-backed contract.
+    falsePositiveMarks: {
+      listByClient: (c: string) =>
+        Promise.resolve(
+          auditLog
+            .filter((e) => e.clientId === c && e.action === "finding.marked_false_positive")
+            .map((e) => {
+              const m = (e.metadata ?? {}) as Record<string, unknown>;
+              return {
+                category: m["category"],
+                file: m["file"],
+                line: m["line"],
+                ruleId: m["ruleId"],
+              };
+            })
+            .filter(
+              (s): s is { category: string; file: string; line: number; ruleId?: string } =>
+                typeof s.category === "string" &&
+                typeof s.file === "string" &&
+                typeof s.line === "number",
+            ),
+        ),
+    },
     disconnect: () => Promise.resolve(),
   } as unknown as StateStore;
 

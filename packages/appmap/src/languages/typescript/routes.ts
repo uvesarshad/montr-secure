@@ -8,7 +8,14 @@
  * Auth gates are detected syntactically (guard-identifier presence); the exact
  * public/authed boundary is refined later by the LLM semantic pass.
  */
-import type { Project, SourceFile } from "ts-morph";
+import { Node } from "ts-morph";
+import type {
+  ArrowFunction,
+  FunctionDeclaration,
+  FunctionExpression,
+  Project,
+  SourceFile,
+} from "ts-morph";
 import type { Entrypoint, HttpMethod, Route, AuthState, SourceLocation } from "@montr/contracts";
 
 const HTTP_METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
@@ -18,11 +25,21 @@ const HTTP_METHOD_SET = new Set<string>(HTTP_METHODS);
 const AUTH_GUARD_RE =
   /\b(requireSession|requireAuth|requireUser|ensureAuthenticated|isAuthenticated|getServerSession|getSession|getToken|withAuth|currentUser|auth|protect|assertRole|checkPermission)\b/;
 
+/** A function-like declaration a route handler can resolve to. */
+export type FnLike = FunctionDeclaration | ArrowFunction | FunctionExpression;
+
 export interface RouteScanResult {
   routes: Route[];
   entrypoints: Entrypoint[];
   /** file (repo-relative) → route ids whose handler lives there (source↔route link). */
   routeIdsByFile: Map<string, string[]>;
+  /**
+   * route id → its handler function node, when statically resolvable (A18 —
+   * consumed by `route-models.ts` to link routes to the ORM models their
+   * handlers query). Absent for routes whose export shape isn't a
+   * function/arrow (e.g. an anonymous default export ts-morph can't name).
+   */
+  handlersByRouteId: Map<string, FnLike>;
 }
 
 /** Normalize a repo-relative path to POSIX + strip a leading `./`. */
@@ -91,6 +108,31 @@ function exportedDeclLines(sf: SourceFile): Map<string, number> {
   return out;
 }
 
+/**
+ * Exported top-level declaration names → their function node, when the export
+ * IS a function-like declaration (a named `export function` or an exported
+ * `const x = (...) => ...` / `function (...) {}`). Additive companion to
+ * {@link exportedDeclLines} (A18) — kept separate rather than folded in so the
+ * existing line-resolution logic above is untouched.
+ */
+function exportedDeclFns(sf: SourceFile): Map<string, FnLike> {
+  const out = new Map<string, FnLike>();
+  for (const fn of sf.getFunctions()) {
+    const name = fn.getName();
+    if (name && fn.isExported()) out.set(name, fn);
+  }
+  for (const vs of sf.getVariableStatements()) {
+    if (!vs.isExported()) continue;
+    for (const d of vs.getDeclarations()) {
+      const init = d.getInitializer();
+      if (init && (Node.isArrowFunction(init) || Node.isFunctionExpression(init))) {
+        out.set(d.getName(), init);
+      }
+    }
+  }
+  return out;
+}
+
 function detectAuth(text: string): { authState: AuthState; authGate?: string } {
   const m = AUTH_GUARD_RE.exec(text);
   if (m && m[1]) return { authState: "authenticated", authGate: m[1] };
@@ -102,9 +144,10 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
   const routes: Route[] = [];
   const entrypoints: Entrypoint[] = [];
   const routeIdsByFile = new Map<string, string[]>();
+  const handlersByRouteId = new Map<string, FnLike>();
   const seen = new Set<string>();
 
-  const addRoute = (route: Route, file: string): void => {
+  const addRoute = (route: Route, file: string, handlerFn?: FnLike): void => {
     const key = `${route.method} ${route.path}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -117,6 +160,7 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
     const list = routeIdsByFile.get(file) ?? [];
     if (route.id) list.push(route.id);
     routeIdsByFile.set(file, list);
+    if (route.id && handlerFn) handlersByRouteId.set(route.id, handlerFn);
   };
 
   for (const sf of project.getSourceFiles()) {
@@ -128,6 +172,7 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
     const text = sf.getFullText();
     const auth = detectAuth(text);
     const exported = exportedDeclLines(sf);
+    const exportedFns = exportedDeclFns(sf);
 
     if (root.kind === "app" && /^route\.(tsx?|jsx?|mjs|cjs)$/i.test(filename)) {
       // App-Router API route: one Route per exported HTTP-verb handler.
@@ -148,6 +193,7 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
             ...(auth.authGate ? { authGate: auth.authGate } : {}),
           },
           rel,
+          exportedFns.get(method),
         );
       }
       continue;
@@ -168,6 +214,7 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
           ...(auth.authGate ? { authGate: auth.authGate } : {}),
         },
         rel,
+        exportedFns.get("default"),
       );
       continue;
     }
@@ -190,6 +237,7 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
             ...(auth.authGate ? { authGate: auth.authGate } : {}),
           },
           rel,
+          exportedFns.get("default"),
         );
       } else {
         addRoute(
@@ -203,6 +251,7 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
             ...(auth.authGate ? { authGate: auth.authGate } : {}),
           },
           rel,
+          exportedFns.get("default"),
         );
       }
     }
@@ -217,5 +266,5 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
         : 1,
   );
   entrypoints.sort((a, b) => a.name.localeCompare(b.name));
-  return { routes, entrypoints, routeIdsByFile };
+  return { routes, entrypoints, routeIdsByFile, handlersByRouteId };
 }

@@ -46,6 +46,37 @@ function cfg(overrides: { confirmation?: string; enforceModelFloor?: boolean }):
   });
 }
 
+/**
+ * Refreshed model matrix (A11): the default (unconfigured) model matrix now
+ * resolves to `claude-opus-5` as the top/confirmation tier (was
+ * `claude-opus-4-8`) and `claude-haiku-4-5` — undated — as the triage tier
+ * (was `claude-haiku-4-5-20251001`).
+ */
+describe("default model matrix resolves the refreshed A11 ids", () => {
+  function defaultCfg(): MontrConfig {
+    return parseConfig({ llm: { apiKey: "sk-test" } });
+  }
+
+  it("resolves the confirmation tier to the current flagship claude-opus-5", () => {
+    const d = resolveDescriptor(defaultCfg(), "confirmation");
+    expect(d.modelId).toBe("claude-opus-5");
+    expect(modelRank(d.modelId)).toBe(4);
+    expect(isBelowFloor(d.modelId)).toBe(false);
+  });
+
+  it("resolves the triage tier to the undated claude-haiku-4-5", () => {
+    const d = resolveDescriptor(defaultCfg(), "triage");
+    expect(d.modelId).toBe("claude-haiku-4-5");
+    expect(modelRank(d.modelId)).toBe(1);
+  });
+
+  it("does not warn at construction with the default (unconfigured) matrix", () => {
+    const logger = spyLogger();
+    assertModelFloor(defaultCfg(), { logger });
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+});
+
 describe("modelRank", () => {
   it("ranks opus-class highest (4)", () => {
     expect(modelRank("claude-opus-4-8")).toBe(4);

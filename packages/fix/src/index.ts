@@ -44,3 +44,5 @@ export {
 export { createFsSourceReader, createMapSourceReader, type SourceReader } from "./source.js";
 
 export { generateFixes, type GenerateFixesInput, type FixGenerationContext } from "./generate.js";
+
+export { applyLineEdits, numberLines, parseLlmEdits, type LlmEdit } from "./edits.js";

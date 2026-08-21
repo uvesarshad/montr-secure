@@ -18,6 +18,7 @@ Rate Limits and Fallbacks: packages/llm-gateway/src/retry.ts implements exponent
 Version Control Systems in packages/report
 GitHub: VCS adapter in packages/report/src/vcs.ts communicating with the GitHub REST API. Creates isolated remediation branches, commits synthesized diff patches, and opens automated pull requests for auto-eligible fixes.
 GitLab: VCS adapter in packages/report/src/vcs.ts creating branches and merge requests via GitLab API v4.
+GitHub PR comment (A15): packages/report/src/vcs.ts also exports postGitHubComment, a small additive function using the same lazily-imported @octokit/rest client as the auto-fix PR opener but calling issues.createComment against an arbitrary existing PR/issue rather than opening one. Used by apps/api's webhook scan trigger (docs/api/route-handlers.md) to post a single acknowledgement summary comment, not per-line review annotations; posting the confirmed-findings summary itself once a webhook-triggered scan completes is not yet wired (would require apps/worker's Layer 5 to persist and read back the originating PR reference) and is deferred.
 Authentication: VCS personal access tokens or OAuth tokens are provided per scan or loaded from environment variables and encrypted at rest in Postgres.
 
 Vulnerability Feeds and Security Databases

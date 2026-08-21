@@ -267,6 +267,7 @@ export {
   detectDependencies,
   resolveInstalledPackages,
   collectImportedPackages,
+  collectCalledPackages,
   barePackageName,
   parsePnpmLock,
   parsePackageLock,
@@ -275,6 +276,7 @@ export {
   type DetectScaOptions,
   type InstalledPackage,
   type ResolvedDeps,
+  type CallSiteReachability,
 } from "./detectors/sca.js";
 
 // ⛔ Custom rule authoring (Phase-4 / Wave 5, §16). VALIDATE a client rule before

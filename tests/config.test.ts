@@ -29,7 +29,7 @@ describe("@montr/config hardened defaults (§11)", () => {
   });
 
   it("defaults to the recommended model matrix", () => {
-    expect(cfg.llm.modelMatrix.confirmation).toBe("claude-opus-4-8");
+    expect(cfg.llm.modelMatrix.confirmation).toBe("claude-opus-5");
     expect(cfg.llm.enforceModelFloor).toBe(true);
   });
 
@@ -70,5 +70,12 @@ describe("@montr/config loader", () => {
   it("MONTR_DISCOVERY_RULESETS_DIR sets discovery.rulesetsDir", () => {
     const cfg = loadConfig({ env: { MONTR_DISCOVERY_RULESETS_DIR: "/opt/montr/airgap/semgrep" } });
     expect(cfg.discovery.rulesetsDir).toBe("/opt/montr/airgap/semgrep");
+  });
+
+  // A11 (P1): MONTR_LLM_FALLBACK_MODEL wires the gateway's model-fallback cascade.
+  it("MONTR_LLM_FALLBACK_MODEL sets llm.fallbackModel; unset by default", () => {
+    expect(getHardenedDefaults().llm.fallbackModel).toBeUndefined();
+    const cfg = loadConfig({ env: { MONTR_LLM_FALLBACK_MODEL: "claude-sonnet-5" } });
+    expect(cfg.llm.fallbackModel).toBe("claude-sonnet-5");
   });
 });

@@ -17,7 +17,7 @@ Key Components and Services
 ScanController: In packages/orchestrator/src/controller.ts. Core coordinator that initializes scans, advances layer transitions, persists checkpoints, and triggers report generation upon completion.
 ScanFsm: In packages/orchestrator/src/fsm.ts. Finite state machine validating legal state transitions between queued, running, paused, completed, failed, cancelled, and partial states.
 KillSwitchService: In packages/orchestrator/src/kill-switch.ts. Listens on Redis pub/sub channels and dispatches AbortController signals to immediately abort running worker tasks.
-QueueWorkers: In apps/worker/src/runners.ts. Executes individual layer worker routines, mapping layer input contracts to package runner functions.
+QueueWorkers: In apps/worker/src/runners.ts. Executes individual layer worker routines, mapping layer input contracts to package runner functions. Its Layer 2 and Layer 3 runners also call loadFpTuning() to load prior operator false-positive marks and pass them as fpTuning into correlate()/confirmFindings() (§15 tuning loop, A10 — see docs/state/server-state.md).
 
 API Routes and Gate Interactions
 POST /api/v1/scans: Calls ScanController createScan and start methods to initialize and enqueue Layer 0.

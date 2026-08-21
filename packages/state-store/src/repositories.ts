@@ -7,6 +7,7 @@
 import type {
   AppMap,
   CandidateFinding,
+  Category,
   ConfirmedFinding,
   Fix,
   LayerId,
@@ -50,6 +51,8 @@ import { Prisma, fromJson, toJson, type MontrPrismaClient } from "./prisma.js";
 import type {
   AppMapRepository,
   CredentialRepository,
+  FalsePositiveMarkRepository,
+  FalsePositiveMarkSignal,
   FindingRepository,
   FixRepository,
   LlmCredentialInput,
@@ -604,5 +607,50 @@ export class CredentialRepositoryImpl implements CredentialRepository {
 
   async delete(clientId: string): Promise<void> {
     await this.prisma.llmCredential.deleteMany({ where: { clientId } });
+  }
+}
+
+/* ============================== False-positive marks (§15, A10) ============================== */
+
+/** The subset of a `finding.marked_false_positive` audit event's metadata we can trust. */
+interface FalsePositiveMarkMetadata {
+  category?: unknown;
+  file?: unknown;
+  line?: unknown;
+  ruleId?: unknown;
+}
+
+/**
+ * Prior operator false-positive marks, read back from the audit log's
+ * `finding.marked_false_positive` events (apps/api/src/routes/findings.ts
+ * writes them; see that file's `recordAudit` call). The audit log is already
+ * the authoritative, tamper-evident record of the decision (§8.5, golden rule
+ * #7) — this repo does not duplicate the mark into a second table, it just
+ * gives callers (apps/worker/src/runners.ts, for §15 fpTuning) an efficient,
+ * action-scoped read over it. Metadata only (category/file/line/ruleId) —
+ * never a code body or proof (golden rule #1).
+ */
+export class FalsePositiveMarkRepositoryImpl implements FalsePositiveMarkRepository {
+  constructor(private readonly prisma: MontrPrismaClient) {}
+
+  async listByClient(clientId: string): Promise<FalsePositiveMarkSignal[]> {
+    const rows = await this.prisma.auditEvent.findMany({
+      where: { clientId, action: "finding.marked_false_positive" },
+      orderBy: { sequence: "desc" },
+      select: { metadata: true },
+    });
+    const signals: FalsePositiveMarkSignal[] = [];
+    for (const row of rows) {
+      const metadata = fromJson<FalsePositiveMarkMetadata>(row.metadata) ?? {};
+      const category = metadata.category;
+      const file = metadata.file;
+      const line = metadata.line;
+      if (typeof category !== "string" || typeof file !== "string" || typeof line !== "number") {
+        continue; // malformed/legacy event — skip rather than pollute the tuning set.
+      }
+      const ruleId = typeof metadata.ruleId === "string" ? metadata.ruleId : undefined;
+      signals.push({ category: category as Category, file, line, ...(ruleId ? { ruleId } : {}) });
+    }
+    return signals;
   }
 }

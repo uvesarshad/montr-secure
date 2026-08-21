@@ -40,13 +40,18 @@ export type { FileInventory } from "./sources.js";
 // plugin; re-exported here so the package surface is unchanged.
 export {
   scanRoutes,
+  scanExpressRoutes,
+  scanFastifyRoutes,
   scanPrisma,
   scanThirdPartyCalls,
   scanEnvSecretSurfaces,
   scanTaint,
+  linkRouteModels,
 } from "./languages/typescript/index.js";
 export type {
   RouteScanResult,
+  ExpressScanResult,
+  FastifyScanResult,
   PrismaScanResult,
   TaintScanResult,
 } from "./languages/typescript/index.js";

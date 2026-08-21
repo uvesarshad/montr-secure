@@ -35,6 +35,7 @@
     "@montr/contracts": "workspace:*",
     "@montr/discovery": "workspace:*",
     "@montr/orchestrator": "workspace:*",
+    "@montr/report": "workspace:*",
     "@montr/security": "workspace:*",
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*",

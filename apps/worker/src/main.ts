@@ -9,7 +9,7 @@
  * consuming new jobs, let in-flight layer work finish, then close the
  * Postgres/Redis connections before exiting.
  */
-import { loadConfig } from "@montr/config";
+import { loadConfig, resolveFieldEncryptionKey } from "@montr/config";
 import { createLogger } from "@montr/telemetry";
 import { createLlmGateway } from "@montr/llm-gateway";
 import { createBudgetRegistry } from "@montr/cost-meter";
@@ -56,10 +56,13 @@ async function main(): Promise<void> {
     update: {},
     create: { id: config.clientId, name: config.clientId },
   });
+  // Goes through the pluggable KeySource (env/file/vault, packages/config/src/
+  // key-source.ts) rather than reading fieldEncryptionKeyRef directly, so
+  // security.keySource = "vault" actually resolves real key bytes from Vault
+  // here instead of silently falling back to an unset ref (A10).
+  const fieldEncryptionKey = await resolveFieldEncryptionKey(config);
   const store: StateStore = createStateStoreFromClient(prisma, {
-    ...(config.security.fieldEncryptionKeyRef
-      ? { fieldEncryptionKey: config.security.fieldEncryptionKeyRef }
-      : {}),
+    ...(fieldEncryptionKey ? { fieldEncryptionKey } : {}),
     ownsClient: true,
   });
 

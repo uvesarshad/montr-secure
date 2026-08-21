@@ -269,12 +269,19 @@ async function runLlmReview(
       transform: h.transform,
     })),
   };
+  // Prompt registry (§8.2, §15): resolve the DB-versioned template for this
+  // prompt name when one is active; otherwise the hardcoded string below
+  // (resolvePrompt's `fallback` arg) is used unchanged.
+  const systemFallback =
+    "You are a security exploit-confirmation reviewer. Judge exploitability conservatively from the static data-flow. When uncertain, set confirmed=false.";
   const request: LLMRequest = {
     tier: "confirmation",
     system:
-      "You are a security exploit-confirmation reviewer. Judge exploitability conservatively from the static data-flow. When uncertain, set confirmed=false.",
+      (await llm.resolvePrompt?.("confirm.static_review.system", systemFallback, {
+        clientId: input.clientId,
+      })) ?? systemFallback,
     messages: [{ role: "user", content: JSON.stringify(payload) }],
-    maxTokens: 1024,
+    maxTokens: 4096, // A8: raised from 1024 — output-token headroom to reason, not a cost cap.
     temperature: 0,
     responseFormat: "json",
     stream: false,

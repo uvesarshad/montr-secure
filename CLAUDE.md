@@ -48,6 +48,7 @@ Node.js 20+ · TypeScript strict · Turborepo · Fastify REST API · Next.js 14 
 ## Key paths
 
 - apps/api — Fastify REST API and RBAC authentication
+- apps/cli — montr CLI: HTTP-driven scan trigger + CI severity gate
 - apps/web — Next.js 14 operator console and report dashboards
 - apps/worker — BullMQ background worker daemon and pipeline driver
 - packages/contracts — Zod schemas, TypeScript types, and layer I/O spine

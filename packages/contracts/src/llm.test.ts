@@ -172,4 +172,12 @@ describe("MODEL_FLOOR / RECOMMENDED_MODEL_MATRIX (DECIDE-3 reference data)", () 
       expect(RECOMMENDED_MODEL_MATRIX[tier].modelId.length).toBeGreaterThan(0);
     }
   });
+
+  it("pins the confirmation tier to the current flagship claude-opus-5 (A11)", () => {
+    expect(RECOMMENDED_MODEL_MATRIX.confirmation.modelId).toBe("claude-opus-5");
+  });
+
+  it("pins the triage tier to the undated claude-haiku-4-5 (A11)", () => {
+    expect(RECOMMENDED_MODEL_MATRIX.triage.modelId).toBe("claude-haiku-4-5");
+  });
 });

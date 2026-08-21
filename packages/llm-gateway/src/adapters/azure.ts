@@ -1,6 +1,12 @@
-import { ProviderNotConfiguredError, type LLMRequest, type LLMStreamEvent } from "@montr/contracts";
+import {
+  ProviderNotConfiguredError,
+  type LLMRequest,
+  type LLMStreamEvent,
+  type LLMToolCall,
+} from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
-import { mapOpenAiFinishReason, toOpenAiMessages } from "../mapping.js";
+import { mapOpenAiFinishReason, toOpenAiMessages, toOpenAiTools } from "../mapping.js";
+import { resolveStructuredOutputSchema } from "../structured-output.js";
 import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
 import { type AdapterEgress } from "./egress.js";
 
@@ -18,10 +24,19 @@ interface OpenAiUsageLike {
   total_tokens?: number;
 }
 
+interface OpenAiToolCallLike {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 export interface OpenAiChatCompletionLike {
   id?: string;
   model?: string;
-  choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>;
+  choices?: Array<{
+    message?: { content?: string | null; tool_calls?: OpenAiToolCallLike[] | null };
+    finish_reason?: string | null;
+  }>;
   usage?: OpenAiUsageLike | null;
 }
 
@@ -50,8 +65,49 @@ function buildBody(request: LLMRequest, modelId: string): Record<string, unknown
     messages: toOpenAiMessages(request),
   };
   if (request.temperature !== undefined) body.temperature = request.temperature;
-  if (request.responseFormat === "json") body.response_format = { type: "json_object" };
+  const tools = toOpenAiTools(request);
+  if (tools) body.tools = tools;
+  if (request.responseFormat === "json") {
+    // A13: real JSON-schema-constrained output (OpenAI `response_format:
+    // json_schema`) when a schema is resolved for this call's purpose;
+    // otherwise fall back to the prior prose-JSON `json_object` mode.
+    const schema = resolveStructuredOutputSchema(request);
+    body.response_format = schema
+      ? {
+          type: "json_schema",
+          json_schema: { name: request.metadata.purpose, schema, strict: true },
+        }
+      : { type: "json_object" };
+  }
+  // Effort/extended-thinking has no Azure OpenAI equivalent surfaced here
+  // (deployment-name-opaque models per @montr/llm-gateway's egress model) —
+  // no-op cleanly rather than erroring (A8).
   return body;
+}
+
+/** Extract OpenAI-shaped tool calls from a chat-completion choice (A8). */
+function openAiToolCalls(
+  toolCalls: OpenAiToolCallLike[] | null | undefined,
+): LLMToolCall[] | undefined {
+  if (!toolCalls || toolCalls.length === 0) return undefined;
+  const mapped = toolCalls
+    .filter(
+      (tc): tc is OpenAiToolCallLike & { id: string; function: { name: string } } =>
+        typeof tc.id === "string" && typeof tc.function?.name === "string",
+    )
+    .map((tc) => {
+      let input: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+        if (parsed && typeof parsed === "object") input = parsed as Record<string, unknown>;
+      } catch {
+        // Malformed tool-call argument JSON — return the call with empty
+        // input rather than dropping it; the caller (E1's future loop) can
+        // still see the tool the model tried to invoke.
+      }
+      return { id: tc.id, name: tc.function.name, input };
+    });
+  return mapped.length > 0 ? mapped : undefined;
 }
 
 export interface AzureAdapterOptions {
@@ -102,6 +158,7 @@ export class AzureAdapter implements ProviderAdapter {
     )) as OpenAiChatCompletionLike;
     const choice = result.choices?.[0];
     const u = result.usage ?? undefined;
+    const toolCalls = openAiToolCalls(choice?.message?.tool_calls);
     return {
       id: result.id ?? `${modelId}:response`,
       model: result.model ?? modelId,
@@ -110,6 +167,7 @@ export class AzureAdapter implements ProviderAdapter {
       usage: makeUsage(u?.prompt_tokens ?? 0, u?.completion_tokens ?? 0, {
         totalTokens: u?.total_tokens,
       }),
+      ...(toolCalls ? { toolCalls } : {}),
     };
   }
 

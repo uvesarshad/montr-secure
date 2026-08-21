@@ -42,6 +42,16 @@ export const LlmConfigSchema = z.object({
     default: RECOMMENDED_MODEL_MATRIX.default.modelId,
     confirmation: RECOMMENDED_MODEL_MATRIX.confirmation.modelId,
   })),
+  /**
+   * BYO fallback model id (A11). When the gateway's retry budget on the
+   * request's resolved primary model is exhausted (or it fails immediately
+   * on a non-retriable error), the SAME request is retried exactly once
+   * against this model before the call fails outright — e.g. Opus falling
+   * back to Sonnet. Applies across every tier. Unset (default): today's
+   * behavior is unchanged — a failing model fails outright after its own
+   * retries, with no cascade.
+   */
+  fallbackModel: z.string().min(1).optional(),
   /** ⛔ Key-tier guard — warn (default) or block suspected data-retaining tiers. */
   keyTierGuard: KeyTierGuardModeSchema.default("warn"),
   /** Warn/refuse confirmation on a sub-floor model (DECIDE-3). */

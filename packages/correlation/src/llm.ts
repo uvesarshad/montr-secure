@@ -70,7 +70,7 @@ export function buildCorrelationRequest(
     tier: "default",
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: JSON.stringify(facts) }],
-    maxTokens: 512,
+    maxTokens: 2048, // A8: raised from 512 — output-token headroom to reason, not a cost cap.
     temperature: 0,
     responseFormat: "json",
     stream: false,

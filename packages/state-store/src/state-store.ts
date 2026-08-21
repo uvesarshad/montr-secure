@@ -14,6 +14,7 @@ import { createPrismaClient, type MontrPrismaClient } from "./prisma.js";
 import {
   AppMapRepositoryImpl,
   CredentialRepositoryImpl,
+  FalsePositiveMarkRepositoryImpl,
   FixRepositoryImpl,
   PullRequestRepositoryImpl,
   ReportRepositoryImpl,
@@ -81,6 +82,8 @@ function buildStateStore(
     posture: new PostureRepositoryImpl(prisma),
     // Versioned LLM prompt templates (§8.2, §15 regression-tuning loop).
     promptVersions: new PromptVersionRepositoryImpl(prisma),
+    // Prior operator FP marks for §15 tuning (A10).
+    falsePositiveMarks: new FalsePositiveMarkRepositoryImpl(prisma),
     disconnect: async () => {
       if (ownsClient) await prisma.$disconnect();
     },
