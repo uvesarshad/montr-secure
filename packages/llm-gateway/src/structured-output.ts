@@ -22,6 +22,10 @@ import type { LLMPurpose, LLMRequest } from "@montr/contracts";
  * expectations (interface field names/optionality), not a hand-invented
  * divergent shape — see each file's local ad-hoc parse-result interface:
  *   - appmap_labeling  → appmap/src/llm.ts's `AuthBoundary` + `{authBoundaries: [...]}` wrapper
+ *   - threat_model     → appmap/src/threat-model.ts's `LlmThreatModelSuggestion`
+ *                        (E6 — the model may only ADD abuse cases and ADDITIONAL
+ *                        priority-category hints on top of the deterministic
+ *                        baseline, never remove/override it)
  *   - triage           → discovery/src/triage.ts's `TriageVerdict` + `{items: [...]}` wrapper
  *   - correlation      → correlation/src/llm.ts's `ParsedCorrelation`
  *   - confirmation     → confirm/src/static.ts's `LlmReview`
@@ -56,6 +60,41 @@ const PURPOSE_JSON_SCHEMAS: Partial<Record<LLMPurpose, Record<string, unknown>>>
       authBoundaries: { type: "array", items: AUTH_BOUNDARY_ITEM_SCHEMA },
     },
     required: ["authBoundaries"],
+    additionalProperties: false,
+  },
+  threat_model: {
+    // E6: additive-only suggestions layered on top of a deterministic baseline
+    // (packages/appmap/src/threat-model.ts) — never a replacement for it.
+    type: "object",
+    properties: {
+      abuseCases: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            description: { type: "string" },
+            routePaths: { type: "array", items: { type: "string" } },
+            categories: { type: "array", items: { type: "string" } },
+          },
+          required: ["title", "description"],
+          additionalProperties: false,
+        },
+      },
+      additionalPriorityCategories: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            category: { type: "string" },
+            rationale: { type: "string" },
+          },
+          required: ["category", "rationale"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: [],
     additionalProperties: false,
   },
   triage: {

@@ -6,7 +6,7 @@ Project tier: 4
 Last updated: auto
 
 Overview
-Montr Secure is architected as a modular TypeScript monorepo managed with pnpm workspaces and Turborepo. Application entry points are partitioned into three dedicated workloads under the apps directory, shared business logic and layer implementations are divided into sixteen isolated packages under the packages directory, and infrastructure definitions reside in deploy. Dependencies flow inward toward contracts, ensuring strict separation of concerns and eliminating circular dependencies.
+Montr Secure is architected as a modular TypeScript monorepo managed with pnpm workspaces and Turborepo. Application entry points are partitioned into three dedicated workloads under the apps directory, shared business logic and layer implementations are divided into seventeen isolated packages under the packages directory, and infrastructure definitions reside in deploy. Dependencies flow inward toward contracts, ensuring strict separation of concerns and eliminating circular dependencies.
 
 Top-Level Directories
 apps: Application entry points containing user-facing interfaces, HTTP servers, and worker daemon processes.
@@ -34,6 +34,7 @@ packages/orchestrator: Resumable 6-layer finite state machine, BullMQ job queue 
 
 Pipeline Layer Packages in packages
 packages/appmap: Layer 0 AST extraction for TypeScript, Python, and JVM, route discovery, Prisma ORM mapping, taint source/sink identification, and cost estimation.
+packages/semantic-index: AST chunking, embedding generation, and pgvector-backed cosine-similarity retrieval over a scanned repository's source, built once per commit alongside the App Map (E5).
 packages/discovery: Layer 1 multi-engine SAST runner (Semgrep), secret scanner (gitleaks), software composition analysis reachability (OSV), and custom rule execution.
 packages/correlation: Layer 2 candidate scoring across reachability, exposure, and impact, root-cause deduplication, and grounding against the App Map.
 packages/confirm: Layer 3 interprocedural static taint flow solver and approver-gated live DAST runner with blast-radius limits.

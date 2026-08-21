@@ -11,6 +11,8 @@ import { registerDastRoutes } from "./dast.js";
 import { registerFindingRoutes } from "./findings.js";
 import { registerAuditRoutes } from "./audit.js";
 import { registerWebhookRoutes } from "./webhooks.js";
+// §15 cross-scan memory (E8) — explicit operator-facing learned-fact recording.
+import { registerLearnedFactRoutes } from "./learned-facts.js";
 // Phase-4 (Wave 5) — scale & intelligence: custom rules, red-team scenarios,
 // scheduled scans, and cross-scan analytics. Fully implemented, not stubs
 // (analytics' aggregation reads stay honestly empty only because no writer
@@ -42,6 +44,7 @@ export function registerRoutes(app: FastifyInstance, deps: ResolvedDeps): void {
       registerFindingRoutes(api, deps);
       registerAuditRoutes(api, deps);
       registerWebhookRoutes(api, deps);
+      registerLearnedFactRoutes(api, deps);
 
       // Phase-4 (Wave 5) — scale & intelligence.
       registerAnalyticsRoutes(api, deps);

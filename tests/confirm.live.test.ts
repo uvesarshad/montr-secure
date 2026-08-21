@@ -1,9 +1,19 @@
 import { describe, it, expect } from "vitest";
-import { KillSwitchActivatedError, type AuditEventInput } from "@montr/contracts";
+import {
+  KillSwitchActivatedError,
+  type AuditEventInput,
+  type LLMGateway,
+  type LLMRequest,
+  type LLMResponse,
+  type LLMStreamEvent,
+  type ModelDescriptor,
+} from "@montr/contracts";
 import { MontrConfigSchema, type MontrConfig } from "@montr/config";
 import { mockAppMap, mockProbableFindings, CLIENT_ID, SCAN_ID, FIXED_NOW } from "@montr/fixtures";
 import {
   confirmFindings,
+  confirmLive,
+  ScopeGuard,
   type AuditSink,
   type BrowserDriver,
   type ConfirmDeps,
@@ -72,6 +82,65 @@ function offlineDeps(extra: ConfirmDeps): ConfirmDeps {
     sleep: () => Promise.resolve(),
     ...extra,
   };
+}
+
+/** Build a real `ScopeGuard` directly, for tests that call `confirmLive` itself
+ * (bypassing `confirmFindings`/static confirmation entirely, so the adaptive
+ * loop's gateway-call assertions are never muddied by the unrelated static
+ * LLM cross-check, which also uses purpose "confirmation"). */
+function buildGuard(config: MontrConfig, signal?: AbortSignal): ScopeGuard {
+  return new ScopeGuard({
+    config,
+    egressGuard: realEgress(config),
+    clockMs: () => 0,
+    sleep: () => Promise.resolve(),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Fake gateway for E3 adaptive-loop tests. `pick` is handed the list of
+ * currently-allowed variant ids (mirroring the real `responseSchema` enum)
+ * and returns which one to "choose" — letting each test steer the adaptive
+ * loop deterministically without depending on any real model.
+ */
+class VariantPickerGateway implements LLMGateway {
+  calls: LLMRequest[] = [];
+  constructor(
+    private readonly pick: (allowedIds: string[], callNumber: number) => string | undefined,
+  ) {}
+
+  complete(request: LLMRequest): Promise<LLMResponse> {
+    this.calls.push(request);
+    const first = request.messages[0];
+    const raw = typeof first?.content === "string" ? first.content : "";
+    const parsed = JSON.parse(raw) as { allowedVariants?: { id: string }[] };
+    const ids = (parsed.allowedVariants ?? []).map((v) => v.id);
+    const variantId = this.pick(ids, this.calls.length);
+    const content = variantId ? JSON.stringify({ variantId, reasoning: "test" }) : "{}";
+    const response: LLMResponse = {
+      id: `fake_variant_${this.calls.length}`,
+      provider: "anthropic",
+      model: "claude-opus-5",
+      content,
+      stopReason: "end_turn",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      latencyMs: 1,
+    };
+    return Promise.resolve(response);
+  }
+
+  stream(): AsyncIterable<LLMStreamEvent> {
+    throw new Error("VariantPickerGateway.stream() is not used by the adaptive loop");
+  }
+
+  listModels(): ModelDescriptor[] {
+    return [];
+  }
+
+  resolveModel(): ModelDescriptor {
+    throw new Error("VariantPickerGateway.resolveModel() is not used by the adaptive loop");
+  }
 }
 
 describe("confirmFindings — live DAST confirmation", () => {
@@ -606,5 +675,188 @@ describe("confirmFindings — authenticated live flow", () => {
     expect(sends).toBe(0); // no probe fired without a session
     expect(out.confirmed).toHaveLength(1);
     expect(out.confirmed[0]?.proofType).toBe("static");
+  });
+});
+
+describe("confirmLive — E3: adaptive exploit agent", () => {
+  it("does NOT engage the adaptive loop on a clean hit (fixed payload alone confirms)", async () => {
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        return Promise.resolve({ status: 200, headers: {}, body: "sql syntax error near '1'" });
+      },
+    };
+    const gateway = new VariantPickerGateway(() => {
+      throw new Error("adaptive loop must not engage on a clean hit");
+    });
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({ transport, llm: gateway }),
+    );
+
+    expect(out.confirmed).toBe(true);
+    expect(out.exchanges).toHaveLength(2); // baseline + fixed payload only
+    expect(gateway.calls).toHaveLength(0); // zero extra gateway calls
+  });
+
+  it("does NOT engage the adaptive loop on a clean miss (no signal at all)", async () => {
+    const transport: LiveHttpTransport = {
+      send: () => Promise.resolve({ status: 200, headers: {}, body: "[]" }),
+    };
+    const gateway = new VariantPickerGateway(() => {
+      throw new Error("adaptive loop must not engage on a clean miss");
+    });
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({ transport, llm: gateway }),
+    );
+
+    expect(out.confirmed).toBe(false);
+    expect(out.exchanges).toHaveLength(2); // baseline + fixed payload only
+    expect(gateway.calls).toHaveLength(0); // zero extra gateway calls
+  });
+
+  it("adapts to an AMBIGUOUS fixed-probe response and confirms via a mutated payload", async () => {
+    const payloadUrls: string[] = [];
+    // The comment_dash variant's payload is `montr' OR '1'='1' -- -`; its
+    // `-- ` comment terminator survives `encodeURIComponent` as a distinctive
+    // literal `--%20-` substring, so it's identifiable in the fired URL.
+    const COMMENT_DASH_MARKER = encodeURIComponent("-- -");
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        payloadUrls.push(req.url);
+        // The FIXED payload (`' OR '1'='1`) trips a raw 500 with a generic
+        // message — NOT one of the definitive INJECTION_ERROR_MARKERS, so the
+        // fixed oracle alone would report "not confirmed" here (ambiguous, not
+        // a clean miss). The comment-style MUTATION reaches the query layer
+        // for real and gets a genuine SQL error back.
+        if (req.url.includes(COMMENT_DASH_MARKER)) {
+          return Promise.resolve({
+            status: 500,
+            headers: {},
+            body: "you have an error in your sql syntax near '-- -'",
+          });
+        }
+        return Promise.resolve({ status: 500, headers: {}, body: "internal server error" });
+      },
+    };
+    const gateway = new VariantPickerGateway((ids) => {
+      expect(ids).toContain("comment_dash"); // sql_injection's real variant catalog
+      return "comment_dash";
+    });
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({ transport, llm: gateway }),
+    );
+
+    expect(out.confirmed).toBe(true);
+    expect(out.exchanges).toHaveLength(3); // baseline + fixed payload + one adaptive round
+    expect(gateway.calls).toHaveLength(1); // exactly one adaptive round was needed
+    expect(gateway.calls[0]?.metadata.purpose).toBe("confirmation");
+    expect(gateway.calls[0]?.tier).toBe("confirmation");
+    expect(payloadUrls.some((u) => u.includes(encodeURIComponent("-- -")))).toBe(true);
+  });
+
+  it("enforces the hard round cap (independent of the 4-entry SQLi variant catalog)", async () => {
+    let adaptiveSends = 0;
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        adaptiveSends += 1;
+        // Every attempt — fixed and every adaptive round — stays ambiguous
+        // (a raw 500, never a clean hit) so the loop would keep escalating
+        // forever if not bounded.
+        return Promise.resolve({ status: 500, headers: {}, body: "internal server error" });
+      },
+    };
+    // Always pick the first still-untried id, so each round tries a genuinely
+    // different variant (sql_injection ships 4; MAX_ADAPTIVE_ROUNDS is 3).
+    const gateway = new VariantPickerGateway((ids) => ids[0]);
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({ transport, llm: gateway }),
+    );
+
+    expect(out.confirmed).toBe(false);
+    expect(gateway.calls).toHaveLength(3); // hard cap — one 4th SQLi variant was left untried
+    expect(adaptiveSends).toBe(4); // fixed payload (1) + 3 adaptive rounds
+    expect(out.exchanges).toHaveLength(5); // baseline + fixed payload + 3 adaptive rounds
+  });
+
+  it("⛔ a kill switch activated mid-loop (during adaptive reasoning) halts before the next probe ever fires", async () => {
+    const controller = new AbortController();
+    let sends = 0;
+    const transport: LiveHttpTransport = {
+      send(req) {
+        sends += 1;
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        return Promise.resolve({ status: 500, headers: {}, body: "internal server error" });
+      },
+    };
+    const gateway = new VariantPickerGateway((ids) => {
+      // Simulate an operator hitting the kill switch WHILE the model is
+      // reasoning about the next round — the gateway call itself still
+      // completes normally, but the guard must refuse to act on its answer.
+      controller.abort(new KillSwitchActivatedError("kill mid-investigation"));
+      return ids[0];
+    });
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config, controller.signal);
+    const input = liveInput({ probable: [sqli], config });
+
+    await expect(
+      confirmLive(
+        sqli,
+        input,
+        STAGING,
+        guard,
+        offlineDeps({ transport, llm: gateway, signal: controller.signal }),
+      ),
+    ).rejects.toThrow(KillSwitchActivatedError);
+
+    expect(sends).toBe(2); // baseline + fixed payload only — the adaptive probe never fired
+    expect(gateway.calls).toHaveLength(1); // consulted once, then the kill was detected
   });
 });

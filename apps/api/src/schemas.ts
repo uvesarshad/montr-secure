@@ -91,6 +91,29 @@ export const MarkFalsePositiveBodySchema = z.object({
 });
 export type MarkFalsePositiveBody = z.infer<typeof MarkFalsePositiveBodySchema>;
 
+/* ------------------------- learned facts (E8) ------------------------ */
+
+/**
+ * §15 cross-scan memory (E8). An operator records a durable fact about a
+ * repo — a custom sanitizer name, a framework idiom, or an explicit decision
+ * — that a LATER scan of the same repo injects as additive LLM prompt
+ * context (never a substitute for the deterministic pipeline). `content` is
+ * intentionally free-form but metadata-only (golden rule #1) — never a code
+ * body or secret; kept small (2000 chars serialized) so one operator input
+ * can't itself blow the prompt-context budget the worker caps separately.
+ */
+export const RecordLearnedFactBodySchema = z.object({
+  repo: z.string().min(1).max(500),
+  type: z.enum(["custom_sanitizer", "framework_idiom", "operator_decision"]),
+  content: z
+    .record(z.string(), z.unknown())
+    .refine(
+      (v) => JSON.stringify(v).length <= 2000,
+      "content is too large (max ~2000 chars serialized)",
+    ),
+});
+export type RecordLearnedFactBody = z.infer<typeof RecordLearnedFactBodySchema>;
+
 /* ------------------------------- audit ------------------------------ */
 
 export const AuditExportQuerySchema = z.object({

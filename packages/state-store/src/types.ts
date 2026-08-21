@@ -262,6 +262,73 @@ export interface FalsePositiveMarkRepository {
   listByClient(clientId: string): Promise<FalsePositiveMarkSignal[]>;
 }
 
+/* --------------------------------------------------------------------------- *
+ * §15 cross-scan memory (E8). Generalizes the FP-tuning loop above to a
+ * broader class of durable, per-(clientId, repo) learned facts — custom
+ * sanitizer names, framework idioms, and explicit operator decisions — that a
+ * LATER scan's Layer 1/2/3 LLM prompts can be given as optional, additive
+ * context (never a substitute for deterministic logic). See
+ * packages/state-store/src/learned-facts.ts (LearnedFactRepositoryImpl) and
+ * apps/worker/src/runners.ts (loadLearnedFactsContext, the read/injection
+ * wiring, mirroring loadFpTuning above).
+ * --------------------------------------------------------------------------- */
+
+/**
+ * Kinds actually PERSISTED via {@link LearnedFactRepository.record}.
+ * `confirmed_false_positive` is intentionally excluded — that fact class
+ * already lives in the audit log (see {@link FalsePositiveMarkRepository}
+ * above) and is merged in at read time by callers instead of duplicated here.
+ */
+export type LearnedFactType = "custom_sanitizer" | "framework_idiom" | "operator_decision";
+
+/** Where a fact came from — an explicit operator input, or derived from a scan. */
+export interface LearnedFactProvenance {
+  source: "operator" | "scan_derived";
+  /** The scan that produced/confirmed this fact, when known. */
+  scanId?: string;
+  /** The operator who recorded this fact, for an operator-sourced fact. */
+  operatorId?: string;
+  /** ISO timestamp the fact was recorded. */
+  at: string;
+}
+
+/** One persisted learned fact. `content`'s shape depends on `type` — free-form
+ * structured data (e.g. `{ sanitizerName, importPath }` for `custom_sanitizer`,
+ * `{ decision, findingCategory, note }` for `operator_decision`); never a code
+ * body or secret (golden rule #1) — callers are responsible for keeping
+ * `content` metadata-only, mirroring the FP-mark audit-metadata convention. */
+export interface LearnedFact {
+  id: string;
+  clientId: string;
+  repo: string;
+  type: LearnedFactType;
+  content: Record<string, unknown>;
+  provenance: LearnedFactProvenance;
+  createdAt: string;
+}
+
+export interface LearnedFactInput {
+  clientId: string;
+  repo: string;
+  type: LearnedFactType;
+  content: Record<string, unknown>;
+  provenance: LearnedFactProvenance;
+}
+
+export interface LearnedFactRepository {
+  /** Persist one fact. Callers audit-log this separately (§8.5, golden rule #7) —
+   * matches the FP-mark precedent where the audit log, not this table, is the
+   * mutation's authoritative record. */
+  record(input: LearnedFactInput): Promise<LearnedFact>;
+  /**
+   * This client+repo's persisted facts, newest first, capped at `limit`
+   * (default 25 — a generous upper bound; the prompt-context cap that actually
+   * bounds token spend is applied by the caller, see
+   * apps/worker/src/runners.ts's LEARNED_FACT_CONTEXT_LIMIT).
+   */
+  listByRepo(clientId: string, repo: string, limit?: number): Promise<LearnedFact[]>;
+}
+
 /** The aggregate persistence surface handed to the orchestrator and layers. */
 export interface StateStore {
   scans: ScanRepository;
@@ -286,5 +353,7 @@ export interface StateStore {
   promptVersions: PromptVersionRepository;
   /** Prior operator FP marks for §15 tuning (A10). */
   falsePositiveMarks: FalsePositiveMarkRepository;
+  /** Durable per-repo learned facts for §15 cross-scan memory (E8). */
+  learnedFacts: LearnedFactRepository;
   disconnect(): Promise<void>;
 }

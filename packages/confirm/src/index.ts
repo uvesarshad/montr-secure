@@ -27,6 +27,7 @@ export type {
   AuthenticatedSession,
   StaticConfirmOutcome,
   LiveConfirmOutcome,
+  InvestigationConfig,
 } from "./types.js";
 
 // §15 false-positive tuning hook — inject the regression corpus (from @montr/qa)
@@ -91,3 +92,48 @@ export {
 export { HEURISTICS, resolveHeuristics } from "./heuristics/registry.js";
 export { EMPTY_HEURISTICS } from "./heuristics/types.js";
 export type { ConfirmationHeuristics, ResolvedHeuristics } from "./heuristics/types.js";
+
+// E1 — agentic investigation loop: READ-ONLY repo tools + the multi-turn
+// tool-calling loop that drives them. OFF by default (ConfirmDeps.investigation).
+export {
+  INVESTIGATION_TOOL_DEFINITIONS,
+  SUBMIT_CONCLUSION_TOOL,
+  executeInvestigationTool,
+  type InvestigationToolContext,
+} from "./investigate-tools.js";
+export {
+  runInvestigation,
+  type InvestigationVerdict,
+  type InvestigationOutcome,
+  type InvestigationTurn,
+  type InvestigationToolCallRecord,
+} from "./investigate.js";
+
+// E2 — executable-evidence gate (a real, existing, repo test that FAILS
+// against current code — never a synthesized replay, see evidence.ts's header).
+export {
+  gatherExecutableEvidence,
+  createDefaultTestRunner,
+  type TestRunner,
+  type TestRunResult,
+  type ExecutableEvidence,
+  type GatherEvidenceOptions,
+} from "./evidence.js";
+
+// E4 — multi-agent adversarial confirmation (N independent verifier lenses,
+// strict majority required). Exported so callers/tests can assert the
+// disagreement-does-not-confirm invariant directly.
+export {
+  runAdversarialVerification,
+  type VerifierLens,
+  type VerifierVerdict,
+  type AdversarialOutcome,
+} from "./adversarial.js";
+
+// E1 + E2 + E4 tied together — the one path allowed to confirm a finding
+// neither the deterministic static proof nor live DAST could. See this
+// module's header comment for the full three-gate invariant.
+export {
+  attemptInvestigationConfirmation,
+  type InvestigationPathResult,
+} from "./investigation-pipeline.js";

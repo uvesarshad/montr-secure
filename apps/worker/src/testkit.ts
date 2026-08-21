@@ -73,6 +73,16 @@ export function makeInMemoryStore(): InMemoryStore {
   const fixesByClient = new Map<string, Fix[]>();
   const resume = new Map<string, unknown>();
   const auditLog: AuditEventInput[] = [];
+  const learnedFacts: Array<{
+    id: string;
+    clientId: string;
+    repo: string;
+    type: string;
+    content: Record<string, unknown>;
+    provenance: { source: string; scanId?: string; operatorId?: string; at: string };
+    createdAt: string;
+  }> = [];
+  let learnedFactSeq = 0;
   const writes: Record<string, number> = {};
   const bump = (k: string): void => {
     writes[k] = (writes[k] ?? 0) + 1;
@@ -208,6 +218,31 @@ export function makeInMemoryStore(): InMemoryStore {
                 typeof s.file === "string" &&
                 typeof s.line === "number",
             ),
+        ),
+    },
+    // §15 cross-scan memory (E8) — an in-memory stand-in for the real
+    // Prisma-backed LearnedFactRepositoryImpl (packages/state-store/src/
+    // learned-facts.ts), scoped by clientId + repo like the real repo.
+    learnedFacts: {
+      record: (input: {
+        clientId: string;
+        repo: string;
+        type: string;
+        content: Record<string, unknown>;
+        provenance: { source: string; scanId?: string; operatorId?: string; at: string };
+      }) => {
+        const fact = { ...input, id: `lf_${++learnedFactSeq}`, createdAt: input.provenance.at };
+        learnedFacts.push(fact);
+        return Promise.resolve(clone(fact));
+      },
+      listByRepo: (c: string, repo: string, limit = 25) =>
+        Promise.resolve(
+          learnedFacts
+            .filter((f) => f.clientId === c && f.repo === repo)
+            .slice()
+            .reverse() // newest-recorded first, mirroring the real repo's `orderBy: createdAt desc`
+            .slice(0, limit)
+            .map(clone),
         ),
     },
     disconnect: () => Promise.resolve(),

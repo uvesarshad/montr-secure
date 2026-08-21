@@ -4,6 +4,7 @@ import {
   SCAN_ID,
   CANDIDATE_DEP_ID,
   CANDIDATE_SQLI_ID,
+  REPO_URL,
   createFakeLlmGateway,
   mockAppMap,
   mockScan,
@@ -13,9 +14,38 @@ import {
   mockUnconfirmedFindings,
   mockLayer0Output,
 } from "@montr/fixtures";
+import type { LLMGateway, LLMRequest } from "@montr/contracts";
 import type { SemgrepJson } from "@montr/discovery";
 import { createLayerRunners } from "./runners.js";
 import { makeInMemoryStore, makeLayerContext, clone, hardenedConfig } from "./testkit.js";
+
+/**
+ * Wraps a real gateway to record every request passed to `complete()`, so E8
+ * tests can assert on the exact `system` prompt text a layer sent — including
+ * whether the learned-facts context block was appended.
+ */
+function spyGateway(inner: LLMGateway): { gateway: LLMGateway; requests: LLMRequest[] } {
+  const requests: LLMRequest[] = [];
+  const gateway: LLMGateway = {
+    listModels: () => inner.listModels(),
+    resolveModel: (tierOrId) => inner.resolveModel(tierOrId),
+    complete: (request) => {
+      requests.push(request);
+      return inner.complete(request);
+    },
+    stream: (request) => inner.stream(request),
+    ...(inner.estimateTokens
+      ? { estimateTokens: (r: LLMRequest) => inner.estimateTokens!(r) }
+      : {}),
+    ...(inner.resolvePrompt
+      ? {
+          resolvePrompt: (n: string, f: string, o?: { clientId?: string | null }) =>
+            inner.resolvePrompt!(n, f, o),
+        }
+      : {}),
+  };
+  return { gateway, requests };
+}
 
 const gateway = createFakeLlmGateway();
 
@@ -300,5 +330,179 @@ describe("layer runner adapters — construction", () => {
     });
     const out = await runners.layer4(ctx);
     expect(out.fixes.every((f) => typeof f.riskClass === "string")).toBe(true);
+  });
+});
+
+describe("layer runner adapters — §15 cross-scan memory (E8)", () => {
+  const PROVENANCE = {
+    source: "operator" as const,
+    operatorId: "user_1",
+    at: "2026-08-22T00:00:00.000Z",
+  };
+
+  it("Layer 2: a learned fact recorded for this client+repo in an earlier scan is injected into the next scan's correlation prompt", async () => {
+    const { store } = makeInMemoryStore();
+    await store.learnedFacts.record({
+      clientId: CLIENT_ID,
+      repo: REPO_URL,
+      type: "custom_sanitizer",
+      content: { sanitizerName: "acmeSanitizeHtml", importPath: "@acme/security" },
+      provenance: PROVENANCE,
+    });
+
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer2">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan), // mockScan.repo === REPO_URL
+      job: baseJob("layer2") as never,
+      store,
+      priorOutputs: { layer0: mockLayer0Output, layer1: { candidates: mockCandidateFindings } },
+    });
+
+    await runners.layer2(ctx);
+
+    const correlationRequests = spy.requests.filter((r) => r.metadata.purpose === "correlation");
+    expect(correlationRequests.length).toBeGreaterThan(0);
+    for (const req of correlationRequests) {
+      expect(req.system ?? "").toContain("acmeSanitizeHtml");
+      expect(req.system ?? "").toContain("custom sanitizer");
+    }
+  });
+
+  it("Layer 3: a learned fact for this client+repo is injected into the confirmation prompt", async () => {
+    const { store } = makeInMemoryStore();
+    await store.learnedFacts.record({
+      clientId: CLIENT_ID,
+      repo: REPO_URL,
+      type: "operator_decision",
+      content: { decision: "not exploitable", note: "input is validated upstream by middleware" },
+      provenance: PROVENANCE,
+    });
+
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer3">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer3", { allowLive: false }) as never,
+      store,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer2: { probable: mockProbableFindings, demoted: [] },
+      },
+    });
+
+    await runners.layer3(ctx);
+
+    const confirmationRequests = spy.requests.filter((r) => r.metadata.purpose === "confirmation");
+    expect(confirmationRequests.length).toBeGreaterThan(0);
+    for (const req of confirmationRequests) {
+      expect(req.system ?? "").toContain("not exploitable");
+    }
+  });
+
+  it("row-scoping: a learned fact recorded for a DIFFERENT client is never injected", async () => {
+    const { store } = makeInMemoryStore();
+    await store.learnedFacts.record({
+      clientId: "some_other_client",
+      repo: REPO_URL,
+      type: "custom_sanitizer",
+      content: { sanitizerName: "shouldNeverAppear" },
+      provenance: PROVENANCE,
+    });
+
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer2">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID, // NOT "some_other_client"
+      scan: clone(mockScan),
+      job: baseJob("layer2") as never,
+      store,
+      priorOutputs: { layer0: mockLayer0Output, layer1: { candidates: mockCandidateFindings } },
+    });
+
+    await runners.layer2(ctx);
+
+    for (const req of spy.requests) {
+      expect(req.system ?? "").not.toContain("shouldNeverAppear");
+    }
+  });
+
+  it("context-size cap: more than LEARNED_FACT_CONTEXT_LIMIT (10) facts are bounded, not dumped whole", async () => {
+    const { store } = makeInMemoryStore();
+    for (let i = 0; i < 15; i++) {
+      await store.learnedFacts.record({
+        clientId: CLIENT_ID,
+        repo: REPO_URL,
+        type: "framework_idiom",
+        content: { idiomIndex: i, marker: `idiom-marker-${i}` },
+        provenance: PROVENANCE,
+      });
+    }
+
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer2">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer2") as never,
+      store,
+      priorOutputs: { layer0: mockLayer0Output, layer1: { candidates: mockCandidateFindings } },
+    });
+
+    await runners.layer2(ctx);
+
+    const correlationRequest = spy.requests.find((r) => r.metadata.purpose === "correlation");
+    expect(correlationRequest).toBeDefined();
+    const system = correlationRequest?.system ?? "";
+    const factLines = system.split("\n").filter((line) => line.startsWith("- [framework idiom]"));
+    // At most 10 facts are injected even though 15 were recorded — the cap.
+    expect(factLines.length).toBeLessThanOrEqual(10);
+    expect(factLines.length).toBeGreaterThan(0);
+  });
+
+  it("regression safety: a scan with NO prior learned facts or FP marks produces the exact same probable findings as before this change", async () => {
+    const { store } = makeInMemoryStore();
+    const runners = createLayerRunners({ gateway });
+    const ctx = makeLayerContext<"layer2">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer2") as never,
+      store,
+      priorOutputs: { layer0: mockLayer0Output, layer1: { candidates: mockCandidateFindings } },
+    });
+
+    const out = await runners.layer2(ctx);
+    // Same assertions as the pre-existing "correlates the candidate pile"
+    // test above — an empty learned-facts store must change NOTHING.
+    expect(out.probable.length).toBe(4);
+    expect(out.demoted.map((d) => d.id)).toContain(CANDIDATE_DEP_ID);
+    expect(out.probable[0]?.category).toBe("sql_injection");
+  });
+
+  it("regression safety: no learned-facts context block is appended to the system prompt when the store is empty", async () => {
+    const { store } = makeInMemoryStore();
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer2">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer2") as never,
+      store,
+      priorOutputs: { layer0: mockLayer0Output, layer1: { candidates: mockCandidateFindings } },
+    });
+
+    await runners.layer2(ctx);
+
+    for (const req of spy.requests) {
+      expect(req.system ?? "").not.toContain("Prior knowledge about this repository");
+    }
   });
 });

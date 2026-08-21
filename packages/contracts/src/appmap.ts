@@ -14,6 +14,7 @@ import {
   TaintSourceKindSchema,
   TaintSinkKindSchema,
 } from "./enums.js";
+import { ThreatModelSchema } from "./threat-model.js";
 
 /**
  * PRD §9 — the App Map data model. The App Map is the substrate for correlation
@@ -234,6 +235,20 @@ export const AppMapSchema = z.object({
   taintSinks: z.array(TaintSinkSchema).default([]),
   /** Resolved cross-function/cross-file taint flows (see {@link TaintFlowEdgeSchema}). */
   taintFlows: z.array(TaintFlowEdgeSchema).default([]),
+  /**
+   * Threat model derived from this map at the end of Layer 0 (E6/B7 — see
+   * `packages/appmap/src/threat-model.ts`): trust boundaries, attack-surface
+   * plausibility per category, abuse cases, and the scope hints that drive
+   * Layer 1/Layer 3 prioritization. `deriveThreatModel` always attaches a
+   * result (a deterministic baseline runs even with no LLM gateway wired), so
+   * absence here means Layer 0 itself never ran against this object (e.g. a
+   * hand-built test fixture), not that derivation was skipped. Populated on the
+   * in-memory AppMap object the same way A18's `Route.referencedModels` is: NOT
+   * yet persisted through `packages/state-store` (no Prisma column), so a map
+   * reloaded from Postgres after a fresh `appMaps.get()` will not carry it — a
+   * follow-up migration, out of scope here.
+   */
+  threatModel: ThreatModelSchema.optional(),
   /** True when the persisted map is older than the current commit (DECIDE-2). */
   stale: z.boolean().default(false),
   rebuildPolicy: AppMapRebuildPolicySchema.default("rebuild_on_stale_commit"),

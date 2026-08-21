@@ -33,10 +33,20 @@ export { createBudgetRegistry, type BudgetContext, type BudgetRegistry } from "@
 
 export {
   resolvePromptTemplate,
+  resolvePromptVersionTemplate,
   type PromptVersionSource,
   type PromptVersionSourceRecord,
   type ResolvePromptOptions,
 } from "./prompts.js";
+
+// E15 — eval-driven prompt optimization: an in-memory PromptVersionSource for
+// offline A/B evaluation (see @montr/qa's prompt-eval.ts) and tests, structurally
+// interchangeable with @montr/state-store's Postgres-backed repository.
+export {
+  InMemoryPromptVersionRegistry,
+  type CreatePromptVersionInput,
+  type InMemoryPromptVersionRow,
+} from "./prompt-version-registry.js";
 
 export {
   createAdapter,
@@ -120,3 +130,18 @@ export {
   resolveAnthropicOutputFormat,
   type JsonSchemaOutputFormat,
 } from "./structured-output.js";
+
+// Embeddings capability (E5, semantic codebase index) — a separate
+// request/response shape + adapter interface from the chat gateway above; see
+// embeddings.ts's doc comment for the provider-choice rationale (Azure only,
+// today).
+export {
+  createEmbeddingAdapter,
+  AzureEmbeddingAdapter,
+  type EmbeddingProviderAdapter,
+  type EmbeddingRequest,
+  type EmbeddingResult,
+  type EmbeddingCallMetadata,
+  type CreateEmbeddingAdapterOptions,
+  type AzureEmbeddingClientLike,
+} from "./embeddings.js";

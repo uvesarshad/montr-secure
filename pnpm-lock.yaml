@@ -455,6 +455,9 @@ importers:
       '@montr/fixtures':
         specifier: workspace:*
         version: link:../fixtures
+      '@montr/llm-gateway':
+        specifier: workspace:*
+        version: link:../llm-gateway
       fast-glob:
         specifier: ^3.3.3
         version: 3.3.3
@@ -488,6 +491,33 @@ importers:
       '@montr/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/semantic-index:
+    dependencies:
+      '@montr/appmap':
+        specifier: workspace:*
+        version: link:../appmap
+      '@montr/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@montr/llm-gateway':
+        specifier: workspace:*
+        version: link:../llm-gateway
+      '@montr/state-store':
+        specifier: workspace:*
+        version: link:../state-store
+      '@montr/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
+      fast-glob:
+        specifier: ^3.3.3
+        version: 3.3.3
+      ts-morph:
+        specifier: ^28.0.0
+        version: 28.0.0
+      web-tree-sitter:
+        specifier: ^0.25.0
+        version: 0.25.10
 
   packages/state-store:
     dependencies:

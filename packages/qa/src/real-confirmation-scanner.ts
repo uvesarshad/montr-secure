@@ -89,15 +89,17 @@ export function gatewayForModel(model: ModelDescriptor): LLMGateway {
 }
 
 /**
- * The REAL `ModelScanner` (A23). Ignores the shared `gateway` argument
- * `runModelVariance` passes — a genuine per-model comparison needs a
- * DIFFERENTLY behaving gateway per model, so this builds its own via
- * {@link gatewayForModel} instead of reusing one fixed instance for every row.
+ * Run the REAL `@montr/confirm` static-confirmation engine against `repo`
+ * using an ARBITRARY caller-supplied gateway — the shared core both
+ * {@link realConfirmedForRepo} (A23, per-model comparison via
+ * {@link gatewayForModel}) and `@montr/qa`'s `prompt-eval.ts` (E15, per-
+ * prompt-VERSION comparison) build on. Returns `[]` (never throws) for a
+ * corpus repo with no hand-built fixture — see this module's header.
  */
-export const realConfirmedForRepo: ModelScanner = async (
+export async function confirmedForRepoWithGateway(
   repo: LoadedRepo,
-  model: ModelDescriptor,
-): Promise<ConfirmedFinding[]> => {
+  gateway: LLMGateway,
+): Promise<ConfirmedFinding[]> {
   const fixture = REAL_SCANNER_FIXTURES[repo.name];
   if (!fixture) return [];
   const out = await confirmFindings(
@@ -109,12 +111,23 @@ export const realConfirmedForRepo: ModelScanner = async (
       allowLive: false,
       config: getHardenedDefaults(),
     },
-    // Deterministic clock (A23's harness output must be reproducible run to
-    // run — the same fixture the confirm package's own tests pin against).
-    { llm: gatewayForModel(model), now: () => FIXED_NOW },
+    // Deterministic clock — reproducible run to run (the same fixture the
+    // confirm package's own tests pin against).
+    { llm: gateway, now: () => FIXED_NOW },
   );
   return out.confirmed;
-};
+}
+
+/**
+ * The REAL `ModelScanner` (A23). Ignores the shared `gateway` argument
+ * `runModelVariance` passes — a genuine per-model comparison needs a
+ * DIFFERENTLY behaving gateway per model, so this builds its own via
+ * {@link gatewayForModel} instead of reusing one fixed instance for every row.
+ */
+export const realConfirmedForRepo: ModelScanner = async (
+  repo: LoadedRepo,
+  model: ModelDescriptor,
+): Promise<ConfirmedFinding[]> => confirmedForRepoWithGateway(repo, gatewayForModel(model));
 
 /**
  * The model matrix `realConfirmedForRepo` is meaningful against: the three

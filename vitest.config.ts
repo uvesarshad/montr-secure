@@ -16,6 +16,7 @@ export default defineConfig({
       "@montr/state-store": src("./packages/state-store/src/index.ts"),
       "@montr/orchestrator": src("./packages/orchestrator/src/index.ts"),
       "@montr/appmap": src("./packages/appmap/src/index.ts"),
+      "@montr/semantic-index": src("./packages/semantic-index/src/index.ts"),
       "@montr/discovery": src("./packages/discovery/src/index.ts"),
       "@montr/correlation": src("./packages/correlation/src/index.ts"),
       "@montr/confirm": src("./packages/confirm/src/index.ts"),

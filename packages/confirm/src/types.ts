@@ -9,11 +9,13 @@ import type {
   AuditEventInput,
   ConfirmedFinding,
   DataFlowHop,
+  Effort,
   LLMGateway,
   ProbableFinding,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
 import type { FalsePositiveTuning } from "./tuning.js";
+import type { TestRunner } from "./evidence.js";
 
 /**
  * Layer 3 input. Mirrors the frozen `Layer3JobData` the orchestrator builds
@@ -30,6 +32,47 @@ export interface ConfirmInput {
   allowLive: boolean;
   stagingUrl?: string;
   config: MontrConfig;
+  /**
+   * Local checkout root for this scan's repo (E1). Optional — when absent,
+   * the investigation loop's `read_file`/`grep`/`find_definition` tools
+   * degrade to a clear "no repo checkout available" message rather than
+   * throwing, and the App-Map-only tools (`list_routes`, `get_orm_model`,
+   * `query_call_graph`) keep working fully. Mirrors `LayerRunnerOptions`'s
+   * `resolveRepoRoot` convention in `apps/worker/src/runners.ts` (that
+   * file is outside this change's scope — wiring a real value through from
+   * the worker is a natural, narrow follow-up, matching this codebase's
+   * established "built, tested, and documented as not-yet-wired" pattern,
+   * e.g. A31's Batch API).
+   */
+  repoRoot?: string;
+}
+
+/**
+ * E1/E4 tuning knob for the agentic investigation loop and its adversarial
+ * verifier panel (`investigate.ts`, `adversarial.ts`). EVERYTHING here is
+ * optional and the loop is OFF unless `enabled: true` is explicitly set —
+ * unlike the single-call static LLM veto, a multi-turn tool loop plus N
+ * verifier calls is a materially larger cost/latency profile per
+ * unconfirmed finding, so defaulting it on would silently multiply LLM
+ * calls for every existing deployment and caller. Wiring a production
+ * default (e.g. a `config.confirmation.investigation.enabled` schema field
+ * read by `apps/worker/src/runners.ts`) is a natural follow-up outside this
+ * change's file scope (packages/confirm/src/**, packages/appmap/src/** and
+ * packages/llm-gateway/src/** read-only).
+ */
+export interface InvestigationConfig {
+  /** OFF by default — see the interface doc comment above. */
+  enabled?: boolean;
+  /**
+   * Soft per-call turn cap (default 6). Always clamped to the hard
+   * structural ceiling in `investigate.ts` (8) regardless of this value —
+   * that ceiling cannot be raised via config, by design.
+   */
+  maxTurns?: number;
+  /** Extended-thinking/reasoning depth for investigation + verifier calls. Default "high". */
+  effort?: Effort;
+  /** Number of E4 adversarial verifiers to run (default + hard cap: 4, one per defined lens). */
+  verifierCount?: number;
 }
 
 /** Structural audit sink. @montr/telemetry's AuditLogClient / state-store's AuditLog satisfy it. */
@@ -134,6 +177,18 @@ export interface ConfirmDeps {
    * deleted). Additive; can only make confirmation more conservative.
    */
   fpTuning?: FalsePositiveTuning;
+  /**
+   * E1/E4 — agentic investigation loop + adversarial verifier panel tuning.
+   * OFF by default (`enabled` unset/false) — see {@link InvestigationConfig}.
+   */
+  investigation?: InvestigationConfig;
+  /**
+   * E2 — injectable executable-evidence test runner. Default: a real, lazy
+   * `vitest` subprocess runner scoped to exactly the one existing test file
+   * the investigation loop named (`evidence.ts`'s `createDefaultTestRunner`).
+   * Tests inject a fake, mirroring `transport`/`browser`'s convention.
+   */
+  testRunner?: TestRunner;
 }
 
 /* --------------------------------- outcomes -------------------------------- */

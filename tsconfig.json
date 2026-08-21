@@ -26,6 +26,9 @@
       "path": "packages/appmap"
     },
     {
+      "path": "packages/semantic-index"
+    },
+    {
       "path": "packages/discovery"
     },
     {

@@ -69,6 +69,9 @@ export const AuditActionSchema = z.enum([
   "schedule.deleted",
   "schedule.triggered",
   "posture.snapshot",
+  // E8 — cross-scan memory: an operator or the pipeline recorded a durable,
+  // per-repo learned fact (see @montr/state-store's LearnedFactRepository).
+  "learned_fact.recorded",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 

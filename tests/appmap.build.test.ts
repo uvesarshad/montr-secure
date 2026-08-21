@@ -218,10 +218,12 @@ describe("appmap — ⛔ LLM semantic pass is gated + code-free (golden rules #1
 
     const out = await buildAppMap(baseInput(), { gateway: spy, now: fixedNow });
 
-    // Exactly one labeling call, tagged with the right metadata.
-    expect(calls).toHaveLength(1);
-    const req = calls[0]!;
-    expect(req.metadata.purpose).toBe("appmap_labeling");
+    // Two Layer-0 semantic-pass calls: auth-boundary labeling, then the E6
+    // threat-model derivation — both gated on the deterministic map already
+    // existing, both code-free.
+    expect(calls).toHaveLength(2);
+    const req = calls.find((c) => c.metadata.purpose === "appmap_labeling")!;
+    expect(req).toBeDefined();
     expect(req.metadata.layer).toBe("layer0");
 
     // The prompt carries STRUCTURAL data (route paths) — proof the map existed —
@@ -233,10 +235,27 @@ describe("appmap — ⛔ LLM semantic pass is gated + code-free (golden rules #1
     expect(prompt).not.toContain("sk_live_");
     expect(prompt).not.toContain("SELECT * FROM");
 
+    // E6: the threat-model call is equally code-free and structural-only.
+    const tmReq = calls.find((c) => c.metadata.purpose === "threat_model")!;
+    expect(tmReq).toBeDefined();
+    expect(tmReq.metadata.layer).toBe("layer0");
+    const tmPrompt = (tmReq.system ?? "") + JSON.stringify(tmReq.messages);
+    expect(tmPrompt).toContain("/api/users");
+    expect(tmPrompt).not.toContain("queryRawUnsafe");
+    expect(tmPrompt).not.toContain("dangerouslySetInnerHTML");
+    expect(tmPrompt).not.toContain("sk_live_");
+    expect(tmPrompt).not.toContain("SELECT * FROM");
+
     // The canned label flips the unknown public route → public.
     expect(out.appMap.routes.find((r) => r.path === "/api/users")?.authState).toBe("public");
     // A route the model didn't classify stays "unknown" (fail-safe, not guessed).
     expect(out.appMap.routes.find((r) => r.path === "/search")?.authState).toBe("unknown");
+
+    // E6: the threat model is always attached, and is grounded in the real map.
+    expect(out.appMap.threatModel).toBeDefined();
+    expect(out.appMap.threatModel?.attackSurface.some((e) => e.category === "sql_injection")).toBe(
+      true,
+    );
   });
 
   it("produces a valid deterministic-only map when no gateway is wired", async () => {

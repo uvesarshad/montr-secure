@@ -2,7 +2,12 @@ import { describe, it, expect, vi } from "vitest";
 import { parseConfig, type MontrConfig } from "@montr/config";
 import type { LLMStreamEvent, Provider } from "@montr/contracts";
 import { MontrLlmGateway } from "./gateway.js";
-import { resolvePromptTemplate, type PromptVersionSource } from "./prompts.js";
+import {
+  resolvePromptTemplate,
+  resolvePromptVersionTemplate,
+  type PromptVersionSource,
+} from "./prompts.js";
+import { InMemoryPromptVersionRegistry } from "./prompt-version-registry.js";
 import type { AdapterCompletion, ProviderAdapter } from "./adapters/index.js";
 
 /** A no-op adapter — these tests never call complete()/stream(). */
@@ -111,5 +116,131 @@ describe("MontrLlmGateway.resolvePrompt", () => {
     await expect(
       gateway.resolvePrompt("fix.system", "HARDCODED", { clientId: "client_b" }),
     ).resolves.toBe("CLIENT B OVERRIDE");
+  });
+});
+
+/* --------------------------------------------------------------------------- *
+ * E15 — versioned prompt resolution (resolvePromptVersionTemplate,
+ * MontrLlmGateway.resolvePromptVersion, InMemoryPromptVersionRegistry).
+ * --------------------------------------------------------------------------- */
+
+describe("resolvePromptVersionTemplate", () => {
+  it("returns the fallback unchanged when no source is configured", async () => {
+    const out = await resolvePromptVersionTemplate(undefined, "fix.system", 2, "HARDCODED");
+    expect(out).toBe("HARDCODED");
+  });
+
+  it("returns the fallback when the source has no listVersions support (getActive-only source)", async () => {
+    const source: PromptVersionSource = { getActive: async () => null };
+    const out = await resolvePromptVersionTemplate(source, "fix.system", 1, "HARDCODED");
+    expect(out).toBe("HARDCODED");
+  });
+
+  it("resolves an exact version by number, independent of which one is active", async () => {
+    const registry = new InMemoryPromptVersionRegistry();
+    const v1 = registry.createVersion({ name: "fix.system", template: "V1 TEXT" });
+    const v2 = registry.createVersion({ name: "fix.system", template: "V2 TEXT" });
+    registry.markActive(v1.id); // v1 is active; we still want v2's template.
+    expect(v2.version).toBe(2);
+
+    const out = await resolvePromptVersionTemplate(registry, "fix.system", 2, "HARDCODED");
+    expect(out).toBe("V2 TEXT");
+  });
+
+  it("falls back when the requested version number doesn't exist", async () => {
+    const registry = new InMemoryPromptVersionRegistry();
+    registry.createVersion({ name: "fix.system", template: "V1 TEXT" });
+    const out = await resolvePromptVersionTemplate(registry, "fix.system", 99, "HARDCODED");
+    expect(out).toBe("HARDCODED");
+  });
+
+  it("fails safe to the fallback (and reports via onError) when listVersions throws", async () => {
+    const source: PromptVersionSource = {
+      getActive: async () => null,
+      listVersions: async () => {
+        throw new Error("db unreachable");
+      },
+    };
+    const onError = vi.fn();
+    const out = await resolvePromptVersionTemplate(
+      source,
+      "fix.system",
+      1,
+      "HARDCODED",
+      {},
+      onError,
+    );
+    expect(out).toBe("HARDCODED");
+    expect(onError).toHaveBeenCalledOnce();
+  });
+});
+
+describe("MontrLlmGateway.resolvePromptVersion", () => {
+  it("resolves a specific version, defaulting clientId to config.clientId", async () => {
+    const registry = new InMemoryPromptVersionRegistry();
+    registry.createVersion({ name: "triage.system", template: "V1", clientId: "client_a" });
+    const v2 = registry.createVersion({
+      name: "triage.system",
+      template: "V2",
+      clientId: "client_a",
+    });
+    registry.markActive(v2.id);
+    const gateway = new MontrLlmGateway({
+      config: cfg("client_a"),
+      adapter: fakeAdapter(),
+      promptSource: registry,
+    });
+    await expect(gateway.resolvePromptVersion("triage.system", 1, "HARDCODED")).resolves.toBe("V1");
+    await expect(gateway.resolvePromptVersion("triage.system", 2, "HARDCODED")).resolves.toBe("V2");
+  });
+
+  it("falls back to hardcoded when constructed without a promptSource", async () => {
+    const gateway = new MontrLlmGateway({ config: cfg(), adapter: fakeAdapter() });
+    await expect(gateway.resolvePromptVersion("triage.system", 1, "HARDCODED")).resolves.toBe(
+      "HARDCODED",
+    );
+  });
+});
+
+describe("InMemoryPromptVersionRegistry", () => {
+  it("assigns monotonic versions per name, starting at 1, inactive until promoted", () => {
+    const registry = new InMemoryPromptVersionRegistry();
+    const v1 = registry.createVersion({ name: "confirm.static_review.system", template: "A" });
+    const v2 = registry.createVersion({ name: "confirm.static_review.system", template: "B" });
+    expect(v1.version).toBe(1);
+    expect(v2.version).toBe(2);
+    expect(v1.isActive).toBe(false);
+    expect(v2.isActive).toBe(false);
+  });
+
+  it("markActive deactivates any other active row in the same (name, clientId) scope", async () => {
+    const registry = new InMemoryPromptVersionRegistry();
+    const v1 = registry.createVersion({ name: "n", template: "A" });
+    const v2 = registry.createVersion({ name: "n", template: "B" });
+    registry.markActive(v1.id);
+    expect((await registry.getActive("n"))?.template).toBe("A");
+    registry.markActive(v2.id);
+    expect((await registry.getActive("n"))?.template).toBe("B");
+    // Only one row in the scope may be active at a time.
+    const versions = await registry.listVersions("n");
+    const activeCount = versions.filter(
+      (v) => (v as { isActive?: boolean }).isActive === true,
+    ).length;
+    expect(activeCount).toBe(1);
+  });
+
+  it("a client-scoped active row wins over a global active row", async () => {
+    const registry = new InMemoryPromptVersionRegistry();
+    const global = registry.createVersion({ name: "n", template: "GLOBAL" });
+    const override = registry.createVersion({ name: "n", template: "OVERRIDE", clientId: "c1" });
+    registry.markActive(global.id);
+    registry.markActive(override.id);
+    expect((await registry.getActive("n", "c1"))?.template).toBe("OVERRIDE");
+    expect((await registry.getActive("n"))?.template).toBe("GLOBAL");
+  });
+
+  it("markActive throws on an unknown id", () => {
+    const registry = new InMemoryPromptVersionRegistry();
+    expect(() => registry.markActive("does-not-exist")).toThrow();
   });
 });

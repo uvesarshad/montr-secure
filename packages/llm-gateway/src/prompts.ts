@@ -28,11 +28,33 @@
  */
 export interface PromptVersionSourceRecord {
   template: string;
+  /**
+   * Monotonic version number for this record (E15 — eval-driven prompt
+   * optimization). Optional for back-compat with a minimal source that only
+   * ever implements {@link PromptVersionSource.getActive} — such a source
+   * structurally satisfies this interface without ever setting `version`,
+   * since nothing reads it unless {@link resolvePromptVersionTemplate} is
+   * used.
+   */
+  version?: number;
 }
 
 /** The subset of `@montr/state-store`'s `PromptVersionRepository` this package needs. */
 export interface PromptVersionSource {
   getActive(name: string, clientId?: string | null): Promise<PromptVersionSourceRecord | null>;
+  /**
+   * E15 — list every stored version for `name` (any order; callers that care
+   * about order, like {@link resolvePromptVersionTemplate}, filter by exact
+   * version number rather than relying on array order). `@montr/state-store`'s
+   * `PromptVersionRepositoryImpl.listVersions` already satisfies this shape
+   * (its richer `PromptVersionRecord` return type is a structural superset of
+   * {@link PromptVersionSourceRecord}) — this is a WIDENING of the existing
+   * seam, not a new one, so today's single caller (`resolvePromptTemplate`,
+   * via `getActive`) is unaffected. Optional: a source that only supports
+   * "give me the active one" (e.g. a hand-rolled test double) can omit it;
+   * {@link resolvePromptVersionTemplate} then falls back to its `fallback` arg.
+   */
+  listVersions?(name: string, clientId?: string | null): Promise<PromptVersionSourceRecord[]>;
 }
 
 export interface ResolvePromptOptions {
@@ -58,6 +80,38 @@ export async function resolvePromptTemplate(
   try {
     const active = await source.getActive(name, opts.clientId ?? null);
     return active?.template ?? fallback;
+  } catch (err) {
+    onError?.(err);
+    return fallback;
+  }
+}
+
+/**
+ * Resolve prompt `name`'s template at a SPECIFIC version (E15 — eval-driven
+ * prompt optimization). {@link resolvePromptTemplate} always resolves
+ * whichever version is marked ACTIVE; this instead lets a caller — typically
+ * an offline eval harness A/B-testing a candidate prompt version against the
+ * golden corpus before promoting it — pin an exact version number, so a
+ * candidate can be scored WITHOUT first flipping it active in the real store.
+ *
+ * Same fail-safe contract as {@link resolvePromptTemplate}: never throws. A
+ * missing source, a source with no {@link PromptVersionSource.listVersions}
+ * support, a version number that doesn't exist, or a lookup error all resolve
+ * to `fallback` unchanged.
+ */
+export async function resolvePromptVersionTemplate(
+  source: PromptVersionSource | undefined,
+  name: string,
+  version: number,
+  fallback: string,
+  opts: ResolvePromptOptions = {},
+  onError?: (err: unknown) => void,
+): Promise<string> {
+  if (!source?.listVersions) return fallback;
+  try {
+    const versions = await source.listVersions(name, opts.clientId ?? null);
+    const match = versions.find((v) => v.version === version);
+    return match?.template ?? fallback;
   } catch (err) {
     onError?.(err);
     return fallback;

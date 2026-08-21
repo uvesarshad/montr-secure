@@ -31,13 +31,29 @@ import {
 import { createEgressGuard, type EgressGuard } from "@montr/security";
 import { createLogger, getMetrics, type Logger } from "@montr/telemetry";
 import { createAdapter, type AdapterCompletion, type ProviderAdapter } from "./adapters/index.js";
+import {
+  DEFAULT_CONFIDENCE_THRESHOLD,
+  DEFAULT_MAX_ESCALATIONS,
+  evaluateConfidence,
+  isEligibleForEscalation,
+  withEscalatedTier,
+  type ConfidenceSignal,
+  type EscalationPolicy,
+} from "./escalation.js";
 import { toGatewayError } from "./errors.js";
-import { assertModelFloor, buildDescriptors, isBelowFloor, resolveDescriptor } from "./models.js";
+import {
+  assertModelFloor,
+  buildDescriptors,
+  isBelowFloor,
+  nextTier,
+  resolveDescriptor,
+} from "./models.js";
 import { applyKeyTierGuard, detectKeyTier } from "./keytier.js";
 import { buildCallLog, logCall } from "./logging.js";
 import { contentToString } from "./mapping.js";
 import {
   resolvePromptTemplate,
+  resolvePromptVersionTemplate,
   type PromptVersionSource,
   type ResolvePromptOptions,
 } from "./prompts.js";
@@ -93,6 +109,23 @@ export interface CreateGatewayOptions {
    * enforcement (`orchestrator/controller.ts`'s `enforceBudget`) unchanged.
    */
   budgetRegistry?: BudgetRegistry;
+  /**
+   * ⛔ OPT-IN dynamic model-tier escalation (E9). Default OFF (undefined) —
+   * a caller that does not set this sees `complete()` behave byte-for-byte
+   * identically to before this option existed: a single dispatch, no
+   * confidence evaluation, `response.confidence` never populated. When
+   * enabled, a request that resolves via `request.tier` (NOT a pinned
+   * `request.model` — see escalation.ts's `isEligibleForEscalation`) whose
+   * response comes back low-confidence is retried against the NEXT tier up
+   * (triage → default → confirmation), bounded by `maxEscalations` and never
+   * past the top configured tier. Each escalated attempt still passes
+   * through the SAME retry policy, model-fallback cascade (A11), and
+   * pre-call budget guard (A2) as any other call — escalation composes with
+   * those mechanisms rather than replacing any of them. See escalation.ts
+   * for the confidence-signal extraction and docs/modules/llm-gateway.md's
+   * E9 section for the full design rationale.
+   */
+  escalation?: EscalationPolicy;
 }
 
 /**
@@ -116,6 +149,8 @@ export class MontrLlmGateway implements LLMGateway {
   private readonly promptSource?: PromptVersionSource;
   /** ⛔ PRE-call budget guard (A2) — see {@link CreateGatewayOptions.budgetRegistry}. */
   private readonly budgetRegistry?: BudgetRegistry;
+  /** ⛔ OPT-IN dynamic model-tier escalation (E9) — see {@link CreateGatewayOptions.escalation}. */
+  private readonly escalation?: EscalationPolicy;
 
   /**
    * ⛔ Default-deny egress guard (golden rule #1, §4.8). Compiled + validated at
@@ -134,6 +169,7 @@ export class MontrLlmGateway implements LLMGateway {
       createLogger({ name: "llm-gateway", bindings: { clientId: opts.config.clientId } });
     this.costMeter = opts.costMeter;
     this.budgetRegistry = opts.budgetRegistry;
+    this.escalation = opts.escalation;
     this.promptSource = opts.promptSource;
     this.onCall = opts.onCall;
     this.now = opts.now ?? (() => new Date());
@@ -216,6 +252,38 @@ export class MontrLlmGateway implements LLMGateway {
   }
 
   /**
+   * Resolve prompt `name`'s template at a SPECIFIC version rather than
+   * whichever is active (E15 — eval-driven prompt optimization). Mirrors
+   * {@link resolvePrompt}'s fail-safe contract exactly (never throws; a
+   * missing source, a source without version listing, a version that doesn't
+   * exist, or a lookup error all resolve to `fallback`). Not called by any of
+   * the five real pipeline call sites today — those resolve the ACTIVE
+   * version via {@link resolvePrompt}, unchanged; this is the seam an eval
+   * harness (`@montr/qa`'s `prompt-eval.ts`) or a future promotion workflow
+   * uses to score a candidate version before it is ever marked active.
+   */
+  async resolvePromptVersion(
+    name: string,
+    version: number,
+    fallback: string,
+    opts: ResolvePromptOptions = {},
+  ): Promise<string> {
+    return resolvePromptVersionTemplate(
+      this.promptSource,
+      name,
+      version,
+      fallback,
+      { clientId: opts.clientId ?? this.config.clientId },
+      (err) =>
+        this.logger.warn("llm.prompt_version_resolve_failed", {
+          name,
+          version,
+          error: String(err),
+        }),
+    );
+  }
+
+  /**
    * Fast, LOCAL, offline token-count heuristic (A19; `chars/4`, unchanged).
    * Deliberately kept this way: this is the estimator `assertPreCallBudget()`
    * calls on EVERY gated `complete()`/`stream()` — a real per-call network
@@ -266,7 +334,95 @@ export class MontrLlmGateway implements LLMGateway {
     return this.estimateTokens(parsed);
   }
 
+  /**
+   * ⛔ Public entry point. A thin wrapper over {@link completeOnce} — when
+   * `escalation` (E9) isn't configured, this is EXACTLY the prior `complete()`
+   * body, unchanged. When it is, `completeWithEscalation` may dispatch more
+   * than one `completeOnce` call, walking the tier ladder on low confidence.
+   */
   async complete(request: LLMRequest): Promise<LLMResponse> {
+    const parsed = LLMRequestSchema.parse(request);
+    if (!this.escalation?.enabled) return this.completeOnce(parsed);
+    return this.completeWithEscalation(parsed);
+  }
+
+  /**
+   * ⛔ OPT-IN dynamic model-tier escalation (E9). Runs `completeOnce` against
+   * the caller's requested tier, evaluates confidence (escalation.ts), and —
+   * while the response is low-confidence, the request is tier-eligible (see
+   * `isEligibleForEscalation`), a next tier exists, and the per-call
+   * escalation cap hasn't been reached — retries the SAME request against
+   * the next tier up. Bounded on two independent axes so cost can never run
+   * away: `maxEscalations` (attempts) and `nextTier` returning `undefined`
+   * once the top configured tier (`confirmation`) is reached.
+   */
+  private async completeWithEscalation(parsed: LLMRequest): Promise<LLMResponse> {
+    const policy = this.escalation!;
+    const threshold = policy.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
+    const maxEscalations = policy.maxEscalations ?? DEFAULT_MAX_ESCALATIONS;
+
+    let current = parsed;
+    let response = await this.completeOnce(current);
+    let signal = evaluateConfidence(
+      current.responseFormat,
+      response.content,
+      response.stopReason,
+      threshold,
+    );
+    let attempts = 0;
+
+    while (attempts < maxEscalations && signal.low && isEligibleForEscalation(current)) {
+      const fromTier = current.tier!;
+      const toTier = nextTier(fromTier);
+      if (!toTier) break; // already at the top configured tier — never escalate past it
+      attempts++;
+      this.recordEscalation(current, fromTier, toTier, signal);
+      current = withEscalatedTier(current, toTier);
+      response = await this.completeOnce(current);
+      signal = evaluateConfidence(
+        current.responseFormat,
+        response.content,
+        response.stopReason,
+        threshold,
+      );
+    }
+
+    // Surface the FINAL attempt's confidence signal (self-reported or proxy)
+    // on the response actually returned, so a caller can see why escalation
+    // stopped (high confidence, cap reached, or top tier reached).
+    return signal.confidence !== undefined
+      ? { ...response, confidence: signal.confidence }
+      : response;
+  }
+
+  /** Metric + structured log for a tier-escalation attempt (E9), mirroring `recordFallback`'s pattern. */
+  private recordEscalation(
+    request: LLMRequest,
+    fromTier: ModelTier,
+    toTier: ModelTier,
+    signal: ConfidenceSignal,
+  ): void {
+    getMetrics().recordError("llm_gateway.model_escalation");
+    this.logger.warn("llm.model_escalation", {
+      provider: this.provider,
+      fromTier,
+      toTier,
+      reason: signal.source,
+      confidence: signal.confidence,
+      purpose: request.metadata.purpose,
+      layer: request.metadata.layer,
+      scanId: request.metadata.scanId,
+    });
+    this.escalation?.onEscalate?.(fromTier, toTier, signal);
+  }
+
+  /**
+   * The original single-dispatch `complete()` body (retry+fallback, pre-call
+   * budget guard, parse-failure metric, accounting) — unchanged by E9.
+   * `complete()` calls this once directly when escalation isn't configured,
+   * or up to `1 + maxEscalations` times via `completeWithEscalation`.
+   */
+  private async completeOnce(request: LLMRequest): Promise<LLMResponse> {
     const parsed = LLMRequestSchema.parse(request);
     this.assertEgress();
     const modelId = this.resolveModelId(parsed);

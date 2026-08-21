@@ -39,6 +39,7 @@ Decision tree — run after every code change
 - Layer 4 patch generator, proof test synthesis, or risk classification change? -> docs/modules/fix-generation.md
 - Layer 5 report builder, compliance export, or automated PR flow change? -> docs/modules/reporting-vcs.md
 - LLM gateway, model matrix floor, or cost metering change? -> docs/modules/llm-gateway.md
+- AST chunking granularity, embedding provider, or semantic-index query shape change? -> docs/modules/semantic-index.md
 - Operator console page, dashboard view, or modal interaction change? -> docs/modules/web-console.md
 - Does any of the above affect the top-level mental model? -> docs/overview.md (Recent Changes section)
 - Did the set of doc files change, or the stack / key paths? -> docs/maintenance.md (its decision tree) + CLAUDE.md + AGENTS.md

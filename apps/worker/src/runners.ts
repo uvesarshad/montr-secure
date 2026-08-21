@@ -23,11 +23,12 @@ import {
   type CandidateFinding,
   type CostEstimate,
   type LLMGateway,
+  type LLMPurpose,
 } from "@montr/contracts";
 import type { CostMeter } from "@montr/cost-meter";
 import { buildCostRollup } from "@montr/cost-meter";
 import type { LayerContext, LayerRunners } from "@montr/orchestrator";
-import type { FalsePositiveMarkSignal } from "@montr/state-store";
+import type { FalsePositiveMarkSignal, LearnedFact } from "@montr/state-store";
 
 import { createLayer0Runner } from "@montr/appmap";
 import {
@@ -176,6 +177,172 @@ async function loadFpTuning(ctx: LayerContext): Promise<{
   };
 }
 
+/* --------------------- §15 cross-scan memory (E8) --------------------- */
+
+/**
+ * Purposes whose prompts may receive this repo's accumulated learned-fact
+ * context — exactly Layer 1 (triage), Layer 2 (correlation), and Layer 3
+ * (confirmation), per E8's own scope. Layer 0 (`appmap_labeling`) and Layer 4
+ * (`fix_generation`) are deliberately excluded.
+ */
+const LEARNED_FACT_INJECTABLE_PURPOSES = new Set<LLMPurpose>([
+  "triage",
+  "correlation",
+  "confirmation",
+]);
+
+/**
+ * Caps the TOTAL number of learned-fact + FP-mark lines appended to a
+ * prompt's context, so an old, heavily-annotated repo can never blow the
+ * token budget. Deliberately small and constant: this is orienting context
+ * for the model, not a data dump. N=10 keeps the appended block comfortably
+ * under roughly 500 tokens even at each line's max clipped length (~220
+ * chars) — negligible next to correlation/confirmation's 2048/4096-token
+ * output caps (A8) and nowhere near the smallest real context window (200k).
+ */
+const LEARNED_FACT_CONTEXT_LIMIT = 10;
+
+/** Render one persisted {@link LearnedFact} as a single context line, clipped
+ * to keep any one fact from dominating the bounded block. */
+function formatLearnedFact(fact: LearnedFact): string {
+  const kind = fact.type.replace(/_/g, " ");
+  const detail = Object.entries(fact.content)
+    .slice(0, 5)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(", ");
+  const clipped = detail.length > 200 ? `${detail.slice(0, 200)}…` : detail;
+  return `- [${kind}] ${clipped}`;
+}
+
+/** Render one prior operator FP mark (A10 data, reused — never duplicated
+ * into the LearnedFact table, see LearnedFactType's schema doc comment) as a
+ * context line. */
+function formatFpMarkAsContext(mark: FalsePositiveMarkSignal): string {
+  const rule = mark.ruleId ? ` (rule ${mark.ruleId})` : "";
+  return (
+    `- [confirmed false positive] ${mark.category} at ${mark.file}:${mark.line}${rule} — ` +
+    "an operator previously confirmed this exact finding-shape is not a real vulnerability."
+  );
+}
+
+/**
+ * §15 cross-scan memory (E8) — the READ/injection path. Loads this client's
+ * repo-scoped learned facts (custom sanitizers, framework idioms, operator
+ * decisions — packages/state-store/src/learned-facts.ts) plus this client's
+ * prior FP marks (A10's `falsePositiveMarks`, client-scoped — reused here as
+ * the `confirmed_false_positive` fact class rather than duplicated into the
+ * new table), formatted as ONE bounded, additive context block. Returns
+ * `undefined` when there is nothing to say, so a repo scanned for the first
+ * time (or a client store with nothing recorded) produces a byte-identical
+ * prompt to before this change (regression safety). Fail-safe: a store
+ * hiccup here degrades to "no context", never blocks the layer — mirrors
+ * {@link loadFpTuning}.
+ */
+async function loadLearnedFactsContext(
+  ctx: LayerContext,
+  repo: string,
+): Promise<string | undefined> {
+  let facts: LearnedFact[] = [];
+  try {
+    facts = await ctx.store.learnedFacts.listByRepo(ctx.clientId, repo, LEARNED_FACT_CONTEXT_LIMIT);
+  } catch (err) {
+    ctx.logger?.warn?.("worker.learned_facts.load_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  let fpMarks: FalsePositiveMarkSignal[] = [];
+  try {
+    fpMarks = await ctx.store.falsePositiveMarks.listByClient(ctx.clientId);
+  } catch {
+    // loadFpTuning already warns on this failure path when it runs in the
+    // same layer (L2/L3) — avoid a duplicate log line here.
+  }
+
+  const factLines = facts.map(formatLearnedFact);
+  // Repo-scoped, dated LearnedFact rows are prioritized over the coarser,
+  // client-wide FP-mark signal (FalsePositiveMarkRepository has no repo
+  // scoping, by A10's own design — see that repository's doc comment): FP
+  // marks only fill whatever of the shared budget the repo-specific facts
+  // didn't use, never crowd them out.
+  const remaining = Math.max(0, LEARNED_FACT_CONTEXT_LIMIT - factLines.length);
+  const fpLines = fpMarks.slice(0, remaining).map(formatFpMarkAsContext);
+
+  const lines = [...factLines, ...fpLines];
+  if (lines.length === 0) return undefined;
+
+  return [
+    "Prior knowledge about this repository from earlier scans (additive context " +
+      "only — verify independently; never treat as a substitute for your own analysis):",
+    ...lines,
+  ].join("\n");
+}
+
+/**
+ * Wrap a gateway so Layer 1/2/3 prompts (see
+ * {@link LEARNED_FACT_INJECTABLE_PURPOSES}) get this scan's client+repo
+ * learned-fact context appended to their system prompt — ADDITIVELY: the
+ * resolved template (A10's `resolvePrompt`, already run by each real call
+ * site before `complete()` is invoked) is never replaced, only extended, and
+ * a request for a different client or a non-injectable purpose passes through
+ * completely unchanged. This never touches confirm/correlate/discovery
+ * logic — it is never allowed to suppress or override a finding on its own
+ * (golden rule #4); it only gives the model more context to reason with.
+ *
+ * `packages/correlation/src/**`, `packages/confirm/src/**`, and
+ * `packages/discovery/src/triage.ts` are out of this change's file scope, so
+ * injection happens at the ONE seam every real LLM call already funnels
+ * through — the gateway itself — rather than editing those three modules'
+ * prompt-building code directly. A future change WITH access to those files
+ * could instead thread a typed `learnedFactsContext?: string` field through
+ * `CorrelateInput`/`ConfirmDeps`/discovery's triage deps and append it inside
+ * each module's own prompt builder (e.g. right where each already appends
+ * `fpTuning`-derived context) — functionally equivalent, just closer to the
+ * source; documented here as the alternative wiring point.
+ *
+ * The context is computed AT MOST ONCE per wrapped gateway (memoized), not
+ * once per `complete()` call, since a layer may issue several LLM calls
+ * against the same scan+repo (e.g. discovery's triage runs per candidate).
+ */
+function withLearnedFactsContext(gateway: LLMGateway, ctx: LayerContext, repo: string): LLMGateway {
+  let contextPromise: Promise<string | undefined> | undefined;
+  const getContext = (): Promise<string | undefined> => {
+    if (!contextPromise) contextPromise = loadLearnedFactsContext(ctx, repo);
+    return contextPromise;
+  };
+
+  const wrapped: LLMGateway = {
+    listModels: () => gateway.listModels(),
+    resolveModel: (tierOrId) => gateway.resolveModel(tierOrId),
+    async complete(request) {
+      if (
+        !LEARNED_FACT_INJECTABLE_PURPOSES.has(request.metadata.purpose) ||
+        request.metadata.clientId !== ctx.clientId
+      ) {
+        return gateway.complete(request);
+      }
+      const context = await getContext();
+      if (!context) return gateway.complete(request);
+      return gateway.complete({
+        ...request,
+        system: request.system ? `${request.system}\n\n${context}` : context,
+      });
+    },
+    // stream() is deliberately NOT intercepted — no real layer calls it today
+    // (A10's documented unconsumed seam); adding untested surface here would
+    // be speculative.
+    stream: (request) => gateway.stream(request),
+  };
+  if (gateway.estimateTokens) {
+    const estimate = gateway.estimateTokens.bind(gateway);
+    wrapped.estimateTokens = (request) => estimate(request);
+  }
+  if (gateway.resolvePrompt) {
+    const resolve = gateway.resolvePrompt.bind(gateway);
+    wrapped.resolvePrompt = (name, fallback, resolveOpts) => resolve(name, fallback, resolveOpts);
+  }
+  return wrapped;
+}
+
 /* ------------------------------- runners ------------------------------- */
 
 /**
@@ -198,10 +365,13 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
     layer1: async (ctx) => {
       const appMap = await resolveAppMap(ctx);
       const repoRoot = (opts.resolveRepoRoot ?? defaultRepoRoot)(ctx);
+      // §15 cross-scan memory (E8): this client+repo's accumulated learned
+      // facts are appended as additive context to discovery's triage prompt
+      // (purpose "triage") — see withLearnedFactsContext.
       const deps: DiscoveryDeps = {
         logger: ctx.logger,
         signal: ctx.signal,
-        gateway: opts.gateway,
+        gateway: withLearnedFactsContext(opts.gateway, ctx, ctx.scan.repo),
         ...(opts.semgrep ? { semgrep: opts.semgrep } : {}),
         ...(opts.gitleaks ? { gitleaks: opts.gitleaks } : {}),
         ...(opts.now ? { now: opts.now } : {}),
@@ -226,12 +396,14 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
       // §15 FP-feedback loop (A10): prior operator FP marks for this client
       // down-rank a repeat of the same finding-shape — see loadFpTuning.
       const fpTuning = await loadFpTuning(ctx);
+      // §15 cross-scan memory (E8): additive learned-fact context on top of
+      // correlation's prompt (purpose "correlation") — see withLearnedFactsContext.
       return correlate({
         clientId: ctx.clientId,
         scanId: ctx.scanId,
         appMap,
         candidates,
-        gateway: opts.gateway,
+        gateway: withLearnedFactsContext(opts.gateway, ctx, ctx.scan.repo),
         audit: ctx.store.audit,
         logger: ctx.logger,
         fpTuning,
@@ -259,8 +431,10 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
       // §15 FP-feedback loop (A10): prior operator FP marks for this client
       // route a repeat of the same finding-shape to the appendix — see loadFpTuning.
       const fpTuning = await loadFpTuning(ctx);
+      // §15 cross-scan memory (E8): additive learned-fact context on top of
+      // confirmation's prompt (purpose "confirmation") — see withLearnedFactsContext.
       const deps: ConfirmDeps = {
-        llm: opts.gateway,
+        llm: withLearnedFactsContext(opts.gateway, ctx, ctx.scan.repo),
         signal: ctx.signal,
         audit: ctx.store.audit,
         logger: ctx.logger,

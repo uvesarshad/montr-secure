@@ -166,6 +166,19 @@ enum Category {
   other
 }
 
+/// Cross-scan learned-fact kinds actually PERSISTED on `LearnedFact` (E8, §15).
+/// `confirmed_false_positive` is deliberately NOT a member here: that class of
+/// fact already lives in the audit log's `finding.marked_false_positive` events
+/// (A10's FalsePositiveMarkRepository) and is merged in at READ time instead of
+/// duplicated into this table — see LearnedFactRepositoryImpl's doc comment
+/// (packages/state-store/src/learned-facts.ts) and apps/worker/src/runners.ts's
+/// loadLearnedFactsContext.
+enum LearnedFactType {
+  custom_sanitizer
+  framework_idiom
+  operator_decision
+}
+
 // --------------------------------------------------------------------------- //
 // Tenancy & identity
 // --------------------------------------------------------------------------- //
@@ -187,6 +200,9 @@ model Client {
   redTeamScenarios RedTeamScenario[]
   scanSchedules    ScanSchedule[]
   postureSnapshots PostureSnapshot[]
+
+  // §15 cross-scan memory (E8, appended; per-client isolated).
+  learnedFacts LearnedFact[]
 }
 
 model User {
@@ -250,6 +266,7 @@ model AppMap {
   taintSources TaintSource[]
   taintSinks   TaintSink[]
   scans        Scan[]
+  codeChunks   CodeChunk[]
 
   @@unique([clientId, repo, commitSha])
   @@index([clientId])
@@ -290,6 +307,48 @@ model TaintSink {
   description String?
 
   @@index([appMapId])
+}
+
+/// Semantic codebase index (E5) — AST-chunked source + its embedding vector,
+/// built once per commit alongside its parent AppMap and reused by diff scans.
+/// See packages/semantic-index for the chunker/embedder/query-path that
+/// populates and reads this table.
+///
+/// ⛔ REQUIRES the Postgres `vector` extension (pgvector) — NOT enabled by the
+///   bundled dev images in deploy/docker or deploy/helm today (see migration
+///   5_semantic_code_index and docs/api/database.md). STRICTLY ADDITIVE.
+///
+/// `embedding` is declared `Unsupported("vector(N)")`: Prisma Client generates
+/// no typed accessor for it (pgvector has no native Prisma column type), so
+/// every read/write of this column goes through $queryRaw/$executeRaw in
+/// packages/semantic-index's repository — the other columns are ordinary and
+/// go through the generated client as usual. The width (1536) is fixed to the
+/// one embedding model @montr/llm-gateway implements today (Azure OpenAI
+/// text-embedding-3-small); pgvector's ANN index requires a compile-time-fixed
+/// dimension, so supporting a different-width model needs either a migration
+/// widening this column or a dedicated table — see the migration file.
+model CodeChunk {
+  id             String    @id @default(cuid())
+  clientId       String
+  appMapId       String
+  appMap         AppMap    @relation(fields: [appMapId], references: [id], onDelete: Cascade)
+  repo           String
+  commitSha      String
+  file           String
+  startLine      Int
+  endLine        Int
+  language       String // Language (Zod enum is source of truth, @montr/contracts)
+  kind           String // ChunkKind ("function" | "method" | "class" — @montr/semantic-index)
+  symbolName     String?
+  contentHash    String // sha256(content) — lets a rebuild skip re-embedding an unchanged chunk
+  content        String // chunk source text (not @encrypted — mirrors CandidateFinding.evidenceSnippet's precedent for source-code text)
+  embeddingModel String // provider-qualified embedding model id that produced `embedding`
+  embedding      Unsupported("vector(1536)")?
+  createdAt      DateTime  @default(now())
+
+  @@index([clientId])
+  @@index([appMapId])
+  @@index([clientId, repo, commitSha])
 }
 
 // --------------------------------------------------------------------------- //
@@ -503,6 +562,30 @@ model PromptVersion {
   @@unique([name, version])
   @@index([clientId])
   @@index([name, clientId, isActive])
+}
+
+/// Cross-scan memory (E8, §15) — durable, per-repo learned facts (custom
+/// sanitizer names, framework idioms, operator decisions) injected as OPTIONAL,
+/// ADDITIVE context into a LATER scan's Layer 1/2/3 LLM prompts for the same
+/// `(clientId, repo)`. This generalizes A10's §15 false-positive tuning loop
+/// (`FalsePositiveMarkRepository`, sourced from the audit log) to a broader
+/// class of learned facts; it does NOT duplicate the FP-mark data — see the
+/// `LearnedFactType` enum's doc comment and `LearnedFactRepositoryImpl` in
+/// packages/state-store/src/learned-facts.ts. Never overrides deterministic
+/// logic: the read path only appends context text to an existing prompt.
+model LearnedFact {
+  id         String          @id @default(cuid())
+  clientId   String
+  client     Client          @relation(fields: [clientId], references: [id])
+  repo       String
+  type       LearnedFactType
+  content    Json // free-form structured payload; shape depends on `type` (LearnedFactContent, state-store/src/types.ts)
+  provenance Json // LearnedFactProvenance — { source: "operator" | "scan_derived", scanId?, operatorId?, at }
+  createdAt  DateTime        @default(now())
+
+  @@index([clientId])
+  @@index([clientId, repo])
+  @@index([clientId, repo, type])
 }
 
 /// DAST allowlist + scope contract (§11). Nothing may be probed unless enabled + approved.

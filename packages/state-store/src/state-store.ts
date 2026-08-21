@@ -32,6 +32,7 @@ import {
   ScanScheduleRepositoryImpl,
 } from "./phase4.js";
 import { PromptVersionRepositoryImpl } from "./prompt-version.js";
+import { LearnedFactRepositoryImpl } from "./learned-facts.js";
 import { RetentionEnforcer } from "./retention.js";
 import type { StateStore } from "./types.js";
 
@@ -84,6 +85,8 @@ function buildStateStore(
     promptVersions: new PromptVersionRepositoryImpl(prisma),
     // Prior operator FP marks for §15 tuning (A10).
     falsePositiveMarks: new FalsePositiveMarkRepositoryImpl(prisma),
+    // Durable per-repo learned facts for §15 cross-scan memory (E8).
+    learnedFacts: new LearnedFactRepositoryImpl(prisma),
     disconnect: async () => {
       if (ownsClient) await prisma.$disconnect();
     },

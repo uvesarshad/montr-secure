@@ -27,6 +27,7 @@ export type LLMRole = z.infer<typeof LLMRoleSchema>;
 /** What a given LLM call is for. Logged as metadata; drives model-tier routing. */
 export const LLMPurposeSchema = z.enum([
   "appmap_labeling",
+  "threat_model",
   "triage",
   "correlation",
   "confirmation",
@@ -164,6 +165,15 @@ export const LLMResponseSchema = z.object({
   latencyMs: z.number().nonnegative(),
   /** Tool/function calls the model made (A8). Present when `stopReason === "tool_use"`. */
   toolCalls: z.array(LLMToolCallSchema).optional(),
+  /**
+   * Self-reported or proxy-derived confidence in [0,1] (E9, dynamic model-tier
+   * escalation). Additive and OFF by default: only ever populated by
+   * `MontrLlmGateway.complete()` when the gateway was constructed with
+   * `escalation.enabled` (packages/llm-gateway/src/gateway.ts); every other
+   * caller sees this field simply absent, exactly as before this addition.
+   * See packages/llm-gateway/src/escalation.ts for how it is derived.
+   */
+  confidence: z.number().min(0).max(1).optional(),
 });
 export type LLMResponse = z.infer<typeof LLMResponseSchema>;
 

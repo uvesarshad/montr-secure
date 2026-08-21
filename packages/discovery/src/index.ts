@@ -18,6 +18,7 @@ import { detectDependencies } from "./detectors/sca.js";
 import { selectCustomDetectors, selectSemgrepRulesets } from "./rulesets/registry.js";
 import { loadCustomRules, type LoadedSemgrepRule } from "./custom-rules.js";
 import { triageCandidates } from "./triage.js";
+import { applyThreatModelScopeHints } from "./threat-model-scope.js";
 import { persistCandidates, type AuditAppender, type CandidatePersister } from "./persist.js";
 import { dedupeById } from "./util/candidate.js";
 import { countBy } from "./util/text.js";
@@ -169,6 +170,11 @@ export async function runDiscoveryDetailed(input: RunDiscoveryInput): Promise<Di
     ctx.warn("triage", "Triage requested but no gateway provided; skipped.");
   }
 
+  // E6: additive-only prioritization from Layer 0's threat model, when one is
+  // attached to the App Map (see threat-model-scope.ts's module doc — this
+  // NEVER drops a candidate or changes the count, only annotates + reorders).
+  candidates = applyThreatModelScopeHints(candidates, input.appMap);
+
   const bySource = countBy(candidates, (c) => c.source);
   logger.info("discovery.complete", {
     scanId: input.scanId,
@@ -298,6 +304,7 @@ export {
 } from "./custom-rules.js";
 
 export { triageCandidates, parseTriage, type TriageOptions } from "./triage.js";
+export { applyThreatModelScopeHints } from "./threat-model-scope.js";
 export {
   persistCandidates,
   type PersistCandidatesInput,

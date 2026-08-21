@@ -27,6 +27,7 @@ export * from "./runner.js";
 export * from "./real-mode.js";
 export * from "./model-variance.js";
 export * from "./real-confirmation-scanner.js";
+export * from "./prompt-eval.js";
 export * from "./layer-metrics.js";
 export * from "./findings-io.js";
 export * from "./report.js";

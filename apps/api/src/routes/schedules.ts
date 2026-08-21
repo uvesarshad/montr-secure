@@ -17,14 +17,105 @@
  * and the audit trail. The cron evaluator below is intentionally dependency-free
  * (pure) so it runs at the HTTP boundary AND in offline unit tests, and evaluates
  * in **UTC** (matches the containerized worker + keeps `nextRunAt` deterministic).
+ *
+ * Delta-only reporting (E12): a scheduled run always executes the SAME full
+ * report pipeline a manual scan does (this route does not — and should not —
+ * change what a scan itself computes; ⛔ the deterministic engines and the
+ * report contract are out of this change's scope). What was missing was any
+ * way to see WHAT'S NEW since the previous scheduled run for the same
+ * repo — every run just produced a standalone full report with nothing
+ * comparing it to the last one, so a continuously-scheduled repo diluted a
+ * genuinely new finding into a full undifferentiated list every time it re-ran.
+ * `GET /schedules/:id/delta` below closes that gap: it finds the two most
+ * recent COMPLETED (or partial — a budget hard-halt still emits a report)
+ * scheduler-triggered scans for this schedule's repo (`Scan.operator ===
+ * SCHEDULER_OPERATOR`, the same marker `apps/worker/src/scheduling/scan-
+ * scheduler.ts`'s `scheduledScanInput` already stamps on every scheduled
+ * scan — no new Scan field needed) and diffs their CONFIRMED findings by
+ * (category, file, line) — see {@link computeFindingsDelta}. This is
+ * deliberately NOT wired into the report contract itself (`@montr/report`,
+ * `packages/contracts/src/report.ts`'s `Report` shape) to stay within this
+ * task's scoped files; it is a read-only, additive VIEW over data the report
+ * pipeline already persists.
+ *
+ * KNOWN LIMITATION: because there is no `Scan.scheduleId` field (the
+ * `ScanSchedule` contract carries no back-reference to the scans it created,
+ * and adding one is a contract-and-migration change out of this task's
+ * scope), the match is scoped to `(clientId, repo, operator===scheduler)`
+ * rather than the exact schedule id. Two schedules for the same repo in the
+ * same client would be indistinguishable here — an accepted, documented
+ * simplification, not a silent bug.
  */
 import type { FastifyInstance } from "fastify";
-import { ScanScheduleSchema, type ScanSchedule } from "@montr/contracts";
+import {
+  ScanScheduleSchema,
+  type ConfirmedFinding,
+  type Scan,
+  type ScanSchedule,
+} from "@montr/contracts";
 import { badRequest, notFound, unauthorized } from "../errors.js";
 import { parseBody, parseParams } from "../validation.js";
 import { actorFromUser, recordAudit } from "../audit.js";
 import { CreateScanScheduleBodySchema, EntityIdParamsSchema } from "../schemas.js";
 import type { ResolvedDeps } from "../types.js";
+
+/**
+ * The operator id every scheduler-triggered scan is created with (MUST match
+ * `apps/worker/src/scheduling/scan-scheduler.ts`'s `SCHEDULER_OPERATOR` /
+ * `scheduledScanInput` — apps/api cannot import apps/worker, so this is a
+ * duplicated literal, not a shared import; both sides are covered by tests).
+ */
+const SCHEDULER_OPERATOR = "scan-scheduler";
+
+/** Statuses that mean "a report was actually produced" (partial = budget hard-halt, still real). */
+const REPORTED_STATUSES = new Set(["completed", "partial"]);
+
+/** Stable identity for matching a confirmed finding across two scans of the same repo. */
+function findingKey(f: ConfirmedFinding): string {
+  return `${f.category}::${f.location.file}::${f.location.line}`;
+}
+
+export interface ScheduleFindingsDelta {
+  /** Confirmed in the current scan but not (by identity) in the previous one. */
+  newFindings: ConfirmedFinding[];
+  /** Count present in the previous scan but no longer in the current one. */
+  resolvedCount: number;
+  currentConfirmedCount: number;
+  previousConfirmedCount: number;
+}
+
+/**
+ * Pure delta computation (E12): confirmed findings present in `current` but
+ * not matched (by category + file + line) in `previous` are "new since last
+ * scan"; findings in `previous` with no match in `current` count as
+ * resolved. Dependency-free and unit-testable, mirroring this file's cron
+ * evaluator's own "pure core, thin HTTP wrapper" shape.
+ */
+export function computeFindingsDelta(
+  previous: ConfirmedFinding[],
+  current: ConfirmedFinding[],
+): ScheduleFindingsDelta {
+  const previousKeys = new Set(previous.map(findingKey));
+  const currentKeys = new Set(current.map(findingKey));
+  const newFindings = current.filter((f) => !previousKeys.has(findingKey(f)));
+  const resolvedCount = previous.filter((f) => !currentKeys.has(findingKey(f))).length;
+  return {
+    newFindings,
+    resolvedCount,
+    currentConfirmedCount: current.length,
+    previousConfirmedCount: previous.length,
+  };
+}
+
+/** Scheduler-triggered, reported scans for `repo`, newest first. */
+function scheduledReportedScansForRepo(scans: Scan[], repo: string): Scan[] {
+  return scans
+    .filter(
+      (s) =>
+        s.repo === repo && s.operator === SCHEDULER_OPERATOR && REPORTED_STATUSES.has(s.status),
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
 
 /* --------------------------------------------------------------------------- *
  * Dependency-free cron evaluator (standard 5- or 6-field, UTC).
@@ -290,6 +381,71 @@ export function registerScheduleRoutes(app: FastifyInstance, deps: ResolvedDeps)
       const schedule = await store.scanSchedules.get(user.clientId, id);
       if (!schedule) throw notFound("Scan schedule not found");
       return { schedule };
+    },
+  );
+
+  // E12 — delta-only reporting: what's new since the previous scheduled run
+  // for this schedule's repo. Read-only; any authenticated role, same as the
+  // other schedule GETs. See the module doc comment for the matching + scope
+  // rationale (operator===scan-scheduler, no Scan.scheduleId field yet).
+  app.get(
+    "/schedules/:id/delta",
+    {
+      preHandler: app.authenticate,
+      schema: {
+        tags: ["schedules"],
+        summary: "New/resolved confirmed findings since this schedule's previous run",
+        security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+      },
+    },
+    async (req) => {
+      const user = req.authUser;
+      if (!user) throw unauthorized();
+      const { id } = parseParams(EntityIdParamsSchema, req);
+      const schedule = await store.scanSchedules.get(user.clientId, id);
+      if (!schedule) throw notFound("Scan schedule not found");
+
+      const allScans = await store.scans.list(user.clientId);
+      const [current, previous] = scheduledReportedScansForRepo(allScans, schedule.repo);
+
+      if (!current) {
+        return {
+          scheduleId: schedule.id,
+          repo: schedule.repo,
+          currentScanId: null,
+          previousScanId: null,
+          newFindings: [],
+          resolvedCount: 0,
+          currentConfirmedCount: 0,
+          previousConfirmedCount: 0,
+          note: "No completed scheduled run yet for this schedule's repo.",
+        };
+      }
+
+      const currentConfirmed = await store.confirmed.listByScan(user.clientId, current.id);
+      if (!previous) {
+        return {
+          scheduleId: schedule.id,
+          repo: schedule.repo,
+          currentScanId: current.id,
+          previousScanId: null,
+          newFindings: currentConfirmed,
+          resolvedCount: 0,
+          currentConfirmedCount: currentConfirmed.length,
+          previousConfirmedCount: 0,
+          note: "Only one completed scheduled run so far — no prior baseline to diff against.",
+        };
+      }
+
+      const previousConfirmed = await store.confirmed.listByScan(user.clientId, previous.id);
+      const delta = computeFindingsDelta(previousConfirmed, currentConfirmed);
+      return {
+        scheduleId: schedule.id,
+        repo: schedule.repo,
+        currentScanId: current.id,
+        previousScanId: previous.id,
+        ...delta,
+      };
     },
   );
 

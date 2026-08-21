@@ -36,6 +36,28 @@ export {
 export { collectFiles, detectLanguages, detectFrameworks, createProject } from "./sources.js";
 export type { FileInventory } from "./sources.js";
 
+// ⛔ E5 (semantic codebase index) reuse seam: the Python/Java web-tree-sitter
+// parser loaders + null-safe AST helpers, previously internal to
+// languages/{python,java}/. Re-exported (additive only — no behavior change)
+// so packages/semantic-index's AST chunker can parse the SAME grammars
+// through the SAME loaders rather than duplicating WASM-loading logic; the
+// TypeScript equivalent (`createProject`, ts-morph) was already exported
+// above. See packages/semantic-index/src/chunk.ts.
+export {
+  getPythonParser,
+  parseModule as parsePythonModule,
+  lineOf as pythonLineOf,
+  descendants as pythonDescendants,
+} from "./languages/python/parser.js";
+export type { ParsedModule as ParsedPythonModule } from "./languages/python/parser.js";
+export {
+  getJavaParser,
+  parseJava,
+  lineOf as javaLineOf,
+  descendantsOfType as javaDescendantsOfType,
+} from "./languages/java/parser.js";
+export type { TSNode as JavaSyntaxNode } from "./languages/java/parser.js";
+
 // The TypeScript/JS App-Map builders now live behind the `typescript` language
 // plugin; re-exported here so the package surface is unchanged.
 export {
@@ -75,6 +97,17 @@ export type { DiffScope } from "./diff.js";
 // Semantic pass, cost, persistence.
 export { labelAuthBoundaries } from "./llm.js";
 export type { AuthLabelOptions, AuthLabelResult } from "./llm.js";
+// ⛔ E6 — threat-model derivation (Layer 0.5 as a Layer-0 sub-step, see the
+// module doc). `buildDeterministicThreatModel`/`buildAttackSurfaceBaseline`/
+// `buildTrustBoundaries` are exported for standalone/test use; `deriveThreatModel`
+// is the full (deterministic + optional LLM enrichment) entry point `build.ts` calls.
+export {
+  deriveThreatModel,
+  buildDeterministicThreatModel,
+  buildAttackSurfaceBaseline,
+  buildTrustBoundaries,
+} from "./threat-model.js";
+export type { ThreatModelOptions, ThreatModelResult } from "./threat-model.js";
 export { estimateCost } from "./cost.js";
 export type { EstimateCostInput } from "./cost.js";
 export { persistAppMap, findReusableAppMap } from "./persist.js";

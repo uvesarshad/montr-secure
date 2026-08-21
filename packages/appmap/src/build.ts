@@ -17,6 +17,7 @@ import { collectFiles, createProject } from "./sources.js";
 import { buildDeterministicPieces } from "./languages/registry.js";
 import { computeDiffScope } from "./diff.js";
 import { labelAuthBoundaries } from "./llm.js";
+import { deriveThreatModel } from "./threat-model.js";
 import { estimateCost } from "./cost.js";
 import { findReusableAppMap, persistAppMap } from "./persist.js";
 
@@ -115,6 +116,22 @@ export async function buildAppMap(
       logger,
     });
     appMap = labeled.appMap;
+
+    // E6 — Layer 0.5 threat-model derivation, as a SUB-STEP of Layer 0 (see
+    // threat-model.ts's module doc for why this is not a new pipeline layer).
+    // Runs AFTER auth-boundary labeling (the threat model's trust boundaries
+    // are grounded in the final, LLM-filled `authState`), still strictly
+    // before persistence. Always attaches a result — the deterministic
+    // baseline requires no gateway — so this never gates on the LLM being
+    // available.
+    progress("threat-model", 88, "threat-model derivation");
+    const threatModelResult = await deriveThreatModel(appMap, deps.gateway, {
+      scanId: input.scanId,
+      clientId,
+      ...(deps.signal ? { signal: deps.signal } : {}),
+      logger,
+    });
+    appMap = { ...appMap, threatModel: threatModelResult.threatModel };
 
     // Persist (per-client, encrypted) with DECIDE-2 stale invalidation + audit.
     if (deps.appMaps) {

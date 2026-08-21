@@ -98,8 +98,23 @@ export function buildDescriptors(config: MontrConfig): ModelDescriptor[] {
 
 const TIERS: readonly ModelTier[] = ["triage", "default", "confirmation"];
 
+/** The configured tier ladder, cheapest first (E9 escalation walks this in order). */
+export const TIER_ORDER: readonly ModelTier[] = TIERS;
+
 function isTier(value: string): value is ModelTier {
   return (TIERS as readonly string[]).includes(value);
+}
+
+/**
+ * The tier immediately above `tier` in {@link TIER_ORDER} (E9 dynamic
+ * model-tier escalation — packages/llm-gateway/src/escalation.ts). Returns
+ * `undefined` when `tier` is already the top configured tier
+ * (`"confirmation"`), so a caller walking this never escalates past it.
+ */
+export function nextTier(tier: ModelTier): ModelTier | undefined {
+  const idx = TIER_ORDER.indexOf(tier);
+  if (idx === -1 || idx === TIER_ORDER.length - 1) return undefined;
+  return TIER_ORDER[idx + 1];
 }
 
 /**

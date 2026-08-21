@@ -33,6 +33,7 @@
     "@montr/confirm": "workspace:*",
     "@montr/contracts": "workspace:*",
     "@montr/fixtures": "workspace:*",
+    "@montr/llm-gateway": "workspace:*",
     "fast-glob": "^3.3.3"
   }
 }

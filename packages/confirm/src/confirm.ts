@@ -5,7 +5,16 @@
  * Live DAST (3b) is attempted only when an approver authorized it and every
  * guardrail passes; a live proof upgrades a finding, but a failed live attempt
  * never discards the static proof. The kill switch halts probing instantly.
- * Findings that neither mode confirms are kept in the Unconfirmed appendix.
+ *
+ * A THIRD path (E1 + E2 + E4, `investigation-pipeline.ts`) is tried only when
+ * BOTH of the above miss: an agentic, tool-using investigation loop may
+ * propose the finding is exploitable, but that proposal can only become a
+ * real confirmation after it clears an executable-evidence gate (a real
+ * failing test found in the repo) AND an adversarial multi-verifier majority.
+ * OFF by default (`ConfirmDeps.investigation.enabled`) — see that file's
+ * header comment for the exact three-gate invariant.
+ *
+ * Findings that no mode confirms are kept in the Unconfirmed appendix.
  */
 import {
   KillSwitchActivatedError,
@@ -18,6 +27,7 @@ import { confirmStatic, toUnconfirmed } from "./static.js";
 import { confirmLive, isLiveEligible } from "./live.js";
 import { ScopeGuard, assertLiveAuthorized, buildDefaultEgressGuard } from "./guard.js";
 import { agentAudit, msg, safeAppend } from "./audit.js";
+import { attemptInvestigationConfirmation } from "./investigation-pipeline.js";
 import type { ConfirmDeps, ConfirmInput, EgressGuardLike } from "./types.js";
 
 function throwIfKilled(deps: ConfirmDeps): void {
@@ -170,10 +180,44 @@ export async function confirmFindings(
         ),
       );
     } else {
-      const reason =
-        [staticOutcome.reason, live?.reason].filter((r): r is string => Boolean(r)).join(" | ") ||
-        "not confirmed";
-      unconfirmed.push(toUnconfirmed(finding, reason));
+      // E1 + E2 + E4: neither the deterministic taint-proof path nor live
+      // DAST confirmed this finding. When explicitly enabled (OFF by
+      // default — see ConfirmDeps.investigation), give the agentic
+      // investigation loop a shot — but it can ONLY promote this finding
+      // when its candidate verdict clears BOTH E2's executable-evidence gate
+      // AND E4's adversarial majority (see investigation-pipeline.ts's header
+      // comment for the full invariant). Any miss falls through unchanged to
+      // the exact same unconfirmed-appendix path this code always took.
+      const investigated = await attemptInvestigationConfirmation(
+        finding,
+        input,
+        deps,
+        staticOutcome.reason,
+      );
+      if (investigated) {
+        confirmed.push(investigated.finding);
+        await safeAppend(
+          deps,
+          agentAudit(
+            input,
+            "finding.confirmed",
+            `Confirmed (investigation): ${investigated.finding.title}`,
+            {
+              proofType: "static",
+              investigationProof: true,
+              category: finding.category,
+              severity: investigated.finding.severity,
+              adversarialVotes: `${investigated.adversarial.confirmVotes}/${investigated.adversarial.totalVerifiers}`,
+            },
+            finding.id,
+          ),
+        );
+      } else {
+        const reason =
+          [staticOutcome.reason, live?.reason].filter((r): r is string => Boolean(r)).join(" | ") ||
+          "not confirmed";
+        unconfirmed.push(toUnconfirmed(finding, reason));
+      }
     }
   }
 

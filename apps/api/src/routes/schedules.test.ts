@@ -7,8 +7,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import type { ConfirmedFinding, Scan } from "@montr/contracts";
 import { buildServer, createInMemoryDeps } from "../server.js";
-import { cronIsValid, nextCronRun, parseCron } from "./schedules.js";
+import { computeFindingsDelta, cronIsValid, nextCronRun, parseCron } from "./schedules.js";
 
 /* ------------------------------- cron unit ------------------------------- */
 
@@ -237,6 +238,274 @@ describe("scan-schedule routes", () => {
     const res = await app.inject({
       method: "GET",
       url: "/api/v1/schedules/does-not-exist",
+      headers: auth(operator),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+/* --------------------------- delta reporting (E12) --------------------------- */
+
+function finding(
+  overrides: Partial<ConfirmedFinding> & { id: string; scanId: string },
+): ConfirmedFinding {
+  return {
+    clientId: overrides.clientId ?? "default",
+    title: "SQL injection",
+    category: "sql_injection",
+    cwe: [],
+    severity: "high",
+    exposure: "public",
+    location: { file: "src/db.ts", line: 10 },
+    impact: "database read/write",
+    proofType: "static",
+    proofArtifact: {
+      kind: "static",
+      argument: "tainted input reaches raw query",
+      dataFlow: [],
+      sanitizersBypassed: [],
+    },
+    status: "confirmed",
+    createdAt: "2026-07-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("computeFindingsDelta (pure)", () => {
+  it("treats a finding as new when its (category, file, line) identity is absent from the previous set", () => {
+    const previous = [finding({ id: "f1", scanId: "s1", location: { file: "a.ts", line: 1 } })];
+    const current = [
+      finding({ id: "f2", scanId: "s2", location: { file: "a.ts", line: 1 } }), // same identity, different id -> not new
+      finding({ id: "f3", scanId: "s2", location: { file: "b.ts", line: 5 }, category: "xss" }),
+    ];
+    const delta = computeFindingsDelta(previous, current);
+    expect(delta.newFindings).toHaveLength(1);
+    expect(delta.newFindings[0]!.id).toBe("f3");
+    expect(delta.resolvedCount).toBe(0);
+    expect(delta.currentConfirmedCount).toBe(2);
+    expect(delta.previousConfirmedCount).toBe(1);
+  });
+
+  it("counts a previous finding with no matching current identity as resolved", () => {
+    const previous = [
+      finding({ id: "f1", scanId: "s1", location: { file: "a.ts", line: 1 } }),
+      finding({ id: "f2", scanId: "s1", location: { file: "b.ts", line: 2 }, category: "xss" }),
+    ];
+    const current = [finding({ id: "f3", scanId: "s2", location: { file: "a.ts", line: 1 } })];
+    const delta = computeFindingsDelta(previous, current);
+    expect(delta.newFindings).toHaveLength(0);
+    expect(delta.resolvedCount).toBe(1);
+  });
+
+  it("is empty-safe on both sides", () => {
+    expect(computeFindingsDelta([], [])).toEqual({
+      newFindings: [],
+      resolvedCount: 0,
+      currentConfirmedCount: 0,
+      previousConfirmedCount: 0,
+    });
+  });
+});
+
+describe("GET /schedules/:id/delta (E12)", () => {
+  let app: FastifyInstance;
+  let deps: ReturnType<typeof createInMemoryDeps>;
+  let operator: string;
+  const CLIENT_ID = "default";
+
+  beforeAll(async () => {
+    deps = createInMemoryDeps({ clock: { now: () => NOW } });
+    app = await buildServer(deps);
+    operator = await token(app, "delta-operator@example.internal", "operator");
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  const auth = (t: string) => ({ authorization: `Bearer ${t}` });
+
+  function scanFixture(overrides: Partial<Scan> & { id: string; createdAt: string }): Scan {
+    return {
+      clientId: CLIENT_ID,
+      repo: "acme/delta-repo",
+      branch: "main",
+      mode: "full",
+      scope: {
+        mode: "full",
+        includePaths: [],
+        excludePaths: [],
+        changedFiles: [],
+        reachableFromChanges: false,
+      },
+      status: "completed",
+      gateState: "not_started",
+      operator: "scan-scheduler",
+      ...overrides,
+    };
+  }
+
+  it("reports 'no baseline yet' when no completed scheduled scan exists for the repo", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: auth(operator),
+      payload: { repo: "acme/delta-repo-none", cron: "0 0 * * *", budgetCeiling: 5, enabled: true },
+    });
+    const scheduleId = (create.json() as { schedule: { id: string } }).schedule.id;
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/schedules/${scheduleId}/delta`,
+      headers: auth(operator),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Record<string, unknown>;
+    expect(body.currentScanId).toBeNull();
+    expect(body.previousScanId).toBeNull();
+    expect(body.newFindings).toEqual([]);
+  });
+
+  it("treats a single completed scheduled run as the full baseline (all confirmed = new)", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: auth(operator),
+      payload: { repo: "acme/delta-repo-one", cron: "0 0 * * *", budgetCeiling: 5, enabled: true },
+    });
+    const scheduleId = (create.json() as { schedule: { id: string } }).schedule.id;
+
+    await deps.store.scans.create(
+      CLIENT_ID,
+      scanFixture({
+        id: "scan_one",
+        repo: "acme/delta-repo-one",
+        createdAt: "2026-07-01T00:00:00.000Z",
+      }),
+    );
+    await deps.store.confirmed.create(
+      CLIENT_ID,
+      finding({ id: "f_one", scanId: "scan_one", clientId: CLIENT_ID }),
+    );
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/schedules/${scheduleId}/delta`,
+      headers: auth(operator),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      currentScanId: string;
+      previousScanId: null;
+      newFindings: unknown[];
+    };
+    expect(body.currentScanId).toBe("scan_one");
+    expect(body.previousScanId).toBeNull();
+    expect(body.newFindings).toHaveLength(1);
+  });
+
+  it("diffs confirmed findings between the two most recent completed scheduled runs, ignoring manual scans", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: auth(operator),
+      payload: { repo: "acme/delta-repo-two", cron: "0 0 * * *", budgetCeiling: 5, enabled: true },
+    });
+    const scheduleId = (create.json() as { schedule: { id: string } }).schedule.id;
+
+    // A manual (non-scheduler) scan for the same repo must NOT participate.
+    await deps.store.scans.create(
+      CLIENT_ID,
+      scanFixture({
+        id: "scan_manual",
+        repo: "acme/delta-repo-two",
+        operator: "some-human-operator",
+        createdAt: "2026-06-15T00:00:00.000Z",
+      }),
+    );
+
+    await deps.store.scans.create(
+      CLIENT_ID,
+      scanFixture({
+        id: "scan_prev",
+        repo: "acme/delta-repo-two",
+        createdAt: "2026-07-01T00:00:00.000Z",
+      }),
+    );
+    await deps.store.confirmed.create(
+      CLIENT_ID,
+      finding({
+        id: "f_prev_persists",
+        scanId: "scan_prev",
+        clientId: CLIENT_ID,
+        location: { file: "a.ts", line: 1 },
+      }),
+    );
+    await deps.store.confirmed.create(
+      CLIENT_ID,
+      finding({
+        id: "f_prev_resolved",
+        scanId: "scan_prev",
+        clientId: CLIENT_ID,
+        category: "xss",
+        location: { file: "resolved.ts", line: 9 },
+      }),
+    );
+
+    await deps.store.scans.create(
+      CLIENT_ID,
+      scanFixture({
+        id: "scan_curr",
+        repo: "acme/delta-repo-two",
+        createdAt: "2026-07-08T00:00:00.000Z",
+      }),
+    );
+    await deps.store.confirmed.create(
+      CLIENT_ID,
+      finding({
+        id: "f_curr_persists",
+        scanId: "scan_curr",
+        clientId: CLIENT_ID,
+        location: { file: "a.ts", line: 1 }, // same identity as f_prev_persists -> not new
+      }),
+    );
+    await deps.store.confirmed.create(
+      CLIENT_ID,
+      finding({
+        id: "f_curr_new",
+        scanId: "scan_curr",
+        clientId: CLIENT_ID,
+        category: "path_traversal",
+        location: { file: "new.ts", line: 42 },
+      }),
+    );
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/schedules/${scheduleId}/delta`,
+      headers: auth(operator),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      currentScanId: string;
+      previousScanId: string;
+      newFindings: Array<{ id: string }>;
+      resolvedCount: number;
+      currentConfirmedCount: number;
+      previousConfirmedCount: number;
+    };
+    expect(body.currentScanId).toBe("scan_curr");
+    expect(body.previousScanId).toBe("scan_prev");
+    expect(body.newFindings.map((f) => f.id)).toEqual(["f_curr_new"]);
+    expect(body.resolvedCount).toBe(1); // f_prev_resolved
+    expect(body.currentConfirmedCount).toBe(2);
+    expect(body.previousConfirmedCount).toBe(2);
+  });
+
+  it("returns 404 for an unknown schedule", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/schedules/does-not-exist/delta",
       headers: auth(operator),
     });
     expect(res.statusCode).toBe(404);

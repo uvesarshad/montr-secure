@@ -75,6 +75,23 @@ export {
 // Versioned LLM prompt templates (§8.2, §15 regression-tuning loop).
 export { PromptVersionRepositoryImpl } from "./prompt-version.js";
 
+// Cross-scan memory — durable per-repo learned facts (§15 loop, E8).
+export { LearnedFactRepositoryImpl } from "./learned-facts.js";
+
+// Semantic codebase index (E5) — pgvector-backed CodeChunk storage + query.
+// Deliberately NOT part of the aggregate StateStore (see code-chunk.ts's doc
+// comment); construct it directly with a Prisma client.
+export {
+  createCodeChunkRepository,
+  PrismaCodeChunkRepository,
+  CODE_CHUNK_EMBEDDING_DIM,
+  type CodeChunkRepository,
+  type CodeChunkInput,
+  type CodeChunkRow,
+  type CodeChunkMatch,
+  type QuerySimilarOptions,
+} from "./code-chunk.js";
+
 // Audit log (Prisma-backed AuditLogClient) + export helpers.
 export { PrismaAuditLogClient, exportAuditLog, type AuditExportFormat } from "./audit.js";
 

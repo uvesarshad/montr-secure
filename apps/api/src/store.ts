@@ -83,6 +83,9 @@ export interface StateStoreLike {
   redTeamScenarios: RedTeamScenarioStore;
   scanSchedules: ScanScheduleStore;
   posture: PostureStore;
+  // §15 cross-scan memory (E8). Real StateStore's `LearnedFactRepository` is
+  // structurally assignable to `LearnedFactStore` below.
+  learnedFacts: LearnedFactStore;
 }
 
 /** A client-authorized live-DAST target (mirrors the Prisma `DastTarget` model). */
@@ -152,6 +155,52 @@ export interface PostureStore {
   latestForRepo(clientId: string, repo: string): Promise<PostureSnapshot | null>;
 }
 
+/* --------------------------------------------------------------------------- *
+ * §15 cross-scan memory (E8). Mirrors @montr/state-store's `LearnedFact` /
+ * `LearnedFactInput` / `LearnedFactRepository` (declared locally per this
+ * file's own decoupling convention — see the file header). Lets an operator
+ * explicitly record a durable, per-repo fact (a custom sanitizer name, a
+ * framework idiom, an explicit decision) that later scans of the SAME
+ * `(clientId, repo)` inject as additive LLM prompt context — see
+ * apps/worker/src/runners.ts's `loadLearnedFactsContext`.
+ * `confirmed_false_positive` facts are NOT recorded through this surface —
+ * they already have their own route, `POST /findings/:id/false-positive`
+ * (findings.ts), and are merged in at read time instead (see
+ * LearnedFactType's schema.prisma doc comment).
+ * --------------------------------------------------------------------------- */
+
+export type LearnedFactType = "custom_sanitizer" | "framework_idiom" | "operator_decision";
+
+export interface LearnedFactProvenance {
+  source: "operator" | "scan_derived";
+  scanId?: string;
+  operatorId?: string;
+  at: string;
+}
+
+export interface LearnedFactRecord {
+  id: string;
+  clientId: string;
+  repo: string;
+  type: LearnedFactType;
+  content: Record<string, unknown>;
+  provenance: LearnedFactProvenance;
+  createdAt: string;
+}
+
+export interface LearnedFactInput {
+  clientId: string;
+  repo: string;
+  type: LearnedFactType;
+  content: Record<string, unknown>;
+  provenance: LearnedFactProvenance;
+}
+
+export interface LearnedFactStore {
+  record(input: LearnedFactInput): Promise<LearnedFactRecord>;
+  listByRepo(clientId: string, repo: string, limit?: number): Promise<LearnedFactRecord[]>;
+}
+
 /** Everything the API routes read/write. */
 export interface ApiStore {
   users: UserStore;
@@ -168,6 +217,8 @@ export interface ApiStore {
   redTeamScenarios: RedTeamScenarioStore;
   scanSchedules: ScanScheduleStore;
   posture: PostureStore;
+  /** §15 cross-scan memory (E8) — durable per-repo learned facts. */
+  learnedFacts: LearnedFactStore;
 }
 
 export interface Clock {
@@ -359,6 +410,31 @@ class InMemoryPostureStore implements PostureStore {
   }
 }
 
+/** In-memory learned-fact store (§15 cross-scan memory, E8), dev/tests only. */
+class InMemoryLearnedFactStore implements LearnedFactStore {
+  private readonly rows: LearnedFactRecord[] = [];
+  private seq = 0;
+
+  async record(input: LearnedFactInput): Promise<LearnedFactRecord> {
+    const row: LearnedFactRecord = {
+      ...input,
+      id: `lf_${++this.seq}`,
+      createdAt: input.provenance.at,
+    };
+    this.rows.push(row);
+    return { ...row };
+  }
+
+  async listByRepo(clientId: string, repo: string, limit = 25): Promise<LearnedFactRecord[]> {
+    return this.rows
+      .filter((r) => r.clientId === clientId && r.repo === repo)
+      .slice()
+      .reverse()
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+}
+
 /**
  * Append-only, hash-chained audit log kept in memory for dev/tests. Reuses the
  * REAL `computeAuditHash` from @montr/state-store so the chain is genuinely
@@ -442,6 +518,7 @@ export function createInMemoryApiStore(opts: InMemoryApiStoreOptions = {}): ApiS
     redTeamScenarios: new InMemoryCrudStore<RedTeamScenario>(),
     scanSchedules: new InMemoryCrudStore<ScanSchedule>(),
     posture: new InMemoryPostureStore(),
+    learnedFacts: new InMemoryLearnedFactStore(),
   };
 }
 
@@ -470,6 +547,7 @@ export function apiStoreFromStateStore(
     redTeamScenarios: state.redTeamScenarios,
     scanSchedules: state.scanSchedules,
     posture: state.posture,
+    learnedFacts: state.learnedFacts,
   };
 }
 
