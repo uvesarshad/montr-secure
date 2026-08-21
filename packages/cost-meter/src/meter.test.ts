@@ -79,6 +79,24 @@ describe("live cost meter — running total accuracy", () => {
     expect(calls[0]!.fields).toMatchObject({ modelId: "gpt-4o" });
   });
 
+  it("prices a batch-billed entry at the 50% discount (A31), separately from a live entry in the same bucket", () => {
+    const meter = createCostMeter("scan_1");
+    meter.record({
+      modelId: "claude-sonnet-5",
+      usage: { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+      layer: "layer4",
+    });
+    const liveOnlyUsd = meter.actual().actualUsd; // $3 (Sonnet-5 input rate).
+    meter.record({
+      modelId: "claude-sonnet-5",
+      usage: { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+      layer: "layer4",
+      batch: true,
+    });
+    // The second (batch) call adds only half of what an identical live call would.
+    expect(meter.actual().actualUsd).toBeCloseTo(liveOnlyUsd + liveOnlyUsd * 0.5, 6);
+  });
+
   it("delegates estimate() to the pre-scan estimator using the meter's own clock + model options", () => {
     const now = () => new Date("2026-08-19T00:00:00.000Z");
     const meter = createCostMeter("scan_1", {

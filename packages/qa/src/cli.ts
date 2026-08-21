@@ -9,6 +9,12 @@ import { loadCorpus } from "./corpus.js";
 import { QA_EXIT, exitLabel } from "./exit-codes.js";
 import { loadScanFindingsFile } from "./findings-io.js";
 import { runModelVariance, type ModelScanner } from "./model-variance.js";
+import {
+  REAL_VARIANCE_BASELINE,
+  realConfirmedForRepo,
+  realVarianceCorpus,
+  realVarianceModelMatrix,
+} from "./real-confirmation-scanner.js";
 import { perfectScanner, runCorpus } from "./runner.js";
 import { formatCorpusScore, formatModelMatrix, formatRegression, toJsonReport } from "./report.js";
 import { scoreScanResults } from "./scorer.js";
@@ -38,7 +44,14 @@ Options:
   --findings <path>       Score a scan-results JSON file (default: self-check with a perfect scanner).
   --baseline <path>       Baseline thresholds JSON (default: corpus/baseline.json, else built-in DoD defaults).
   --line-tolerance <n>    Max line drift for a location match (default: 3).
-  --variance              Run the model-variance harness scaffold (fake adapter) and print the matrix.
+  --variance              Run the model-variance harness (A23): the REAL packages/confirm
+                           static-confirmation pipeline against the golden-corpus fixture repos,
+                           once per model in the matrix, with a fake (offline, no-provider-spend)
+                           gateway that genuinely differentiates behavior by model — never an
+                           identical score across models. Prints the per-model matrix.
+  --variance-selfcheck    With --variance: use the synthetic perfect-scanner self-check instead
+                           (echoes ground truth — ignores which model is passed; every model scores
+                           identically. Proves the matrix/scorer/baseline plumbing works, nothing more).
   --no-verify             Do not verify corpus repo directories exist on disk.
   --json                  Emit a machine-readable JSON report instead of text.
   -h, --help              Show this help.
@@ -50,6 +63,7 @@ interface ParsedArgs {
   baseline?: string;
   lineTolerance?: number;
   variance: boolean;
+  varianceSelfcheck: boolean;
   verify: boolean;
   json: boolean;
   help: boolean;
@@ -58,7 +72,13 @@ interface ParsedArgs {
 class UsageError extends Error {}
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const args: ParsedArgs = { variance: false, verify: true, json: false, help: false };
+  const args: ParsedArgs = {
+    variance: false,
+    varianceSelfcheck: false,
+    verify: true,
+    json: false,
+    help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const needValue = (): string => {
@@ -89,6 +109,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       }
       case "--variance":
         args.variance = true;
+        break;
+      case "--variance-selfcheck":
+        args.varianceSelfcheck = true;
         break;
       case "--no-verify":
         args.verify = false;
@@ -144,12 +167,48 @@ export async function run(
 
     if (args.variance) {
       const gateway = createFakeLlmGateway();
-      // Self-check scanner: a perfect scan for every model (real pipeline plugs in at integration).
-      const scan: ModelScanner = (repo) => perfectConfirmedForRepo(repo);
-      const matrix = await runModelVariance({ corpus, gateway, scan, baseline, scoreOptions });
+      // A23: default is the REAL scanner — packages/confirm's actual static
+      // confirmation, run once per model against the golden-corpus fixture
+      // repos with a gateway that genuinely differs per model (see
+      // real-confirmation-scanner.ts). --variance-selfcheck opts back into the
+      // OLD tautological perfect-scanner echo (ignores `model`; every row
+      // scores identically) purely as a plumbing smoke check, same convention
+      // as `qa:corpus` vs `qa:corpus:selfcheck`.
+      const scan: ModelScanner = args.varianceSelfcheck
+        ? (repo) => perfectConfirmedForRepo(repo)
+        : realConfirmedForRepo;
+      const models = args.varianceSelfcheck ? undefined : realVarianceModelMatrix();
+      // The real scanner only covers a narrow, hand-fixtured slice of the
+      // corpus (see real-confirmation-scanner.ts) — score + gate against that
+      // slice, not the full 16-repo corpus/baseline.json (whose
+      // minReposScored:14 would fail for reasons unrelated to model quality).
+      // --variance-selfcheck keeps the OLD full-corpus/default-baseline shape
+      // since the tautological scanner "covers" every repo by construction.
+      const varianceCorpus = args.varianceSelfcheck ? corpus : realVarianceCorpus(corpus);
+      const varianceBaseline = args.baseline
+        ? baseline
+        : args.varianceSelfcheck
+          ? baseline
+          : REAL_VARIANCE_BASELINE;
+      const matrix = await runModelVariance({
+        corpus: varianceCorpus,
+        gateway,
+        scan,
+        models,
+        baseline: varianceBaseline,
+        scoreOptions,
+      });
+      if (!args.json) {
+        out(
+          args.varianceSelfcheck
+            ? "VARIANCE SELF-CHECK MODE — synthetic perfect scanner (ignores `model`; every row is identical by construction). Run --variance without this flag for the real, model-differentiated harness."
+            : "VARIANCE MODE — real packages/confirm static confirmation per model (A23).",
+        );
+      }
       if (args.json) out(JSON.stringify(matrix, null, 2));
       else out(formatModelMatrix(matrix));
-      // Gate on floor-or-better models only; below-floor cliffs are informational.
+      // Gate on floor-or-better models only; below-floor cliffs are informational
+      // (see ModelMatrixRow.accuracyCliff — the number to watch, not this exit code).
       const floorRegressed = matrix.rows.some((r) => !r.belowFloor && !r.regression.passed);
       return floorRegressed ? QA_EXIT.REGRESSION : QA_EXIT.OK;
     }

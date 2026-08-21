@@ -22,6 +22,7 @@ import { createLogger, type Logger } from "@montr/telemetry";
 import {
   createBullMqScheduler,
   createOrchestrator,
+  deriveTenantSchedulerOptions,
   EventBus,
   type BullMqJobScheduler,
   type LayerRunners,
@@ -142,8 +143,12 @@ export function startWorker(config: MontrConfig, deps: WorkerRuntimeDeps): Worke
         deps.layerRunners ??
         createLayerRunners({ gateway: deps.gateway, ...(deps.runnerOptions ?? {}) });
 
-      // Durable BullMQ scheduler (one queue+worker per layer + a Redis kill channel).
-      scheduler = await createBullMqScheduler(deps.redis);
+      // Durable BullMQ scheduler (one queue+worker per layer + a Redis kill
+      // channel; A27 tenant options are OFF by default — see
+      // deriveTenantSchedulerOptions's doc comment — so this is unchanged
+      // unless config.queue.perTenantIsolation is explicitly set).
+      const tenantOptions = deriveTenantSchedulerOptions(config);
+      scheduler = await createBullMqScheduler(deps.redis, tenantOptions);
       // The orchestrator binds its processor onto the scheduler in its constructor,
       // so it MUST be created before we start the scheduler's workers.
       orchestrator = createOrchestrator({
@@ -159,7 +164,8 @@ export function startWorker(config: MontrConfig, deps: WorkerRuntimeDeps): Worke
       // Bring the per-layer BullMQ workers online — the processing loop begins here.
       await scheduler.start();
       started = true;
-      logger.info("worker.started", { queues: 6 });
+      const queues = tenantOptions.tenantIsolation ? 6 * (tenantOptions.tenantIds?.length ?? 0) : 6;
+      logger.info("worker.started", { queues, tenantIsolation: tenantOptions.tenantIsolation });
     },
 
     async stop(): Promise<void> {

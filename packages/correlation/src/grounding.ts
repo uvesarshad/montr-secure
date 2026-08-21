@@ -22,9 +22,49 @@ import type {
 } from "@montr/contracts";
 import { classifyCategory, type FindingClass } from "./taxonomy.js";
 
-/** Signals that a validator/sanitizer neutralizes tainted input before a sink. */
-const SANITIZER_RE =
-  /\b(validat|paramet|sanitiz|escap|encod|allowlist|whitelist|prepared|bind|zod|parseInt|number\()/i;
+/**
+ * Signals that a validator/sanitizer neutralizes tainted input before a sink
+ * — same-file fallback only (see `TaintFlowKind` below). Two tiers, in
+ * increasing order of how much they lean on uncontrolled text:
+ *
+ *  1. `KNOWN_SANITIZER_CALL_RE` — STRUCTURAL: every alternative is anchored to
+ *     require an actual call-expression shape (name immediately followed by
+ *     `(`), naming a real, importable sanitizer/validator/encoding API or a
+ *     well-established safe value-coercion idiom (DOMPurify, validator.js,
+ *     sanitize-html/escape-html, the `xss` package, zod's `.parse`/
+ *     `.safeParse`, `parseInt`/`Number`/`encodeURIComponent`). Because it
+ *     requires call syntax, not a bare word, it can't fire on English prose
+ *     ("no sanitization was applied" no longer inverts the verdict) or on an
+ *     unrelated identifier substring (`.bind(this)` no longer collides).
+ *     This is not full AST resolution (this package deliberately stays
+ *     language-agnostic and never parses source — see the AGENT NOTE in
+ *     docs/modules/correlation.md), but it is real evidence that a named,
+ *     recognizable sanitizer/coercion function is actually being CALLED,
+ *     not just mentioned — checked against the source/sink descriptions AND
+ *     the candidate's own evidence snippet, which for every injection-class
+ *     detector is the literal matched source line(s) reported by the tool
+ *     (e.g. `packages/discovery/src/detectors/sast.ts`'s `snippet:
+ *     r.extra?.lines` — real code, not analyst narrative).
+ *
+ *  2. `CURATED_SAFE_MARKER_RE` — the deterministic safe-marker vocabulary
+ *     some App Map language extractors deliberately author INTO a sink/
+ *     source description as an explicit contract with downstream consumers
+ *     (see e.g. `packages/appmap/src/languages/python/taint.ts`'s doc
+ *     comment: dangerous notes deliberately avoid every one of these
+ *     substrings so a raw sink can never be misread as sanitized). Checked
+ *     ONLY against `matchedSource`/`matchedSink` descriptions — NEVER the
+ *     candidate's evidence snippet, which is uncontrolled third-party
+ *     analyzer output that was never part of that vocabulary contract. Prior
+ *     to this change both tiers were merged into one regex applied to ALL
+ *     three text sources including the evidence snippet, which is exactly
+ *     the "brittle in both directions" pattern flagged by the audit: a raw
+ *     code line containing an unrelated `.bind(` call, or a comment reading
+ *     "missing sanitization", could flip the verdict either way.
+ */
+const KNOWN_SANITIZER_CALL_RE =
+  /\b(?:DOMPurify\.sanitize|sanitizeHtml|escapeHtml|xssFilters?\.\w+|validator\.(?:escape|isEmail|isURL|isUUID|isAlphanumeric|blacklist|whitelist|normalizeEmail)|mysql2?\.escape|pg_escape_string|encodeURIComponent|parseInt|Number|z(?:od)?\.\w+\([^()]*\)\.(?:parse|safeParse))\s*\(/;
+const CURATED_SAFE_MARKER_RE =
+  /\b(parameteri[sz]ed|prepared|sanitiz|sanitis|escap|validated|allowlist|whitelist|encoded|bound param|placeholder)\b/i;
 
 /**
  * How the taint reachability verdict was reached:
@@ -236,12 +276,13 @@ export function groundCandidate(cand: CandidateFinding, index: AppMapIndex): Gro
       ? nearestFlowByLine(index.flowsInFile(file), cand.location.line)
       : undefined;
 
-  const pathText = [
-    matchedSource?.description ?? "",
-    matchedSink?.description ?? "",
-    cand.evidenceSnippet,
-  ].join(" ");
-  const heuristicSanitizerInterrupts = klass === "injection" && SANITIZER_RE.test(pathText);
+  const sourceSinkText = [matchedSource?.description ?? "", matchedSink?.description ?? ""].join(
+    " ",
+  );
+  const pathText = [sourceSinkText, cand.evidenceSnippet].join(" ");
+  const heuristicSanitizerInterrupts =
+    klass === "injection" &&
+    (KNOWN_SANITIZER_CALL_RE.test(pathText) || CURATED_SAFE_MARKER_RE.test(sourceSinkText));
   const heuristicTaintReaches =
     klass === "injection" &&
     matchedSink !== undefined &&

@@ -5,12 +5,32 @@
  * the Pages Router (files under `pages/`, incl. `pages/api`), a `src/` prefix,
  * route groups `(group)`, and dynamic segments `[id]` / `[...slug]`. Methods for
  * App-Router API routes are the exported HTTP-verb functions, read via ts-morph.
- * Auth gates are detected syntactically (guard-identifier presence); the exact
- * public/authed boundary is refined later by the LLM semantic pass.
+ *
+ * Auth detection (A20 — real control-flow analysis, not identifier-text regex,
+ * at two levels, tried in order, both additive over the pre-A20 behavior):
+ *   1. HOC-wrap verification: `export const GET = withAuth(handler)` or the
+ *      factory form `export const GET = requireRole("admin")(handler)` — the
+ *      export's initializer is inspected as an AST `CallExpression` (its own
+ *      callee, or — for the factory form — the callee's OWN callee, must be an
+ *      identifier matching a known guard name) via {@link detectHocWrap}. This
+ *      is a real call-shape check, not a substring match: `const notAGuard =
+ *      "withAuth-adjacent text"` never matches, and `withAuth` must actually be
+ *      CALLED wrapping this specific export, not merely present anywhere.
+ *   2. Next.js `middleware.ts` global auth: a root (or `src/`) `middleware.ts`
+ *      whose body references a known guard identifier is treated as gating
+ *      every route matched by its exported `config.matcher` (or every route,
+ *      Next's own default when no `matcher` is declared) — see
+ *      {@link applyNextMiddlewareAuth}. Mirrors Express `app.use(authMiddleware)`
+ *      / Fastify global `preHandler` semantics for the framework that actually
+ *      has this file (Next has no `app.use`-style registration to trace).
+ * Only when NEITHER of the above resolves anything does detection fall back to
+ * the original whole-file guard-identifier-text scan ({@link detectAuth}) as
+ * the last-resort, already-fail-safe default (`unknown` otherwise).
  */
 import { Node } from "ts-morph";
 import type {
   ArrowFunction,
+  CallExpression,
   FunctionDeclaration,
   FunctionExpression,
   Project,
@@ -139,6 +159,173 @@ function detectAuth(text: string): { authState: AuthState; authGate?: string } {
   return { authState: "unknown" };
 }
 
+/**
+ * Verify an export's initializer is ACTUALLY a call wrapping the handler in a
+ * known guard — `withAuth(handler)` (direct) or `requireRole("admin")(handler)`
+ * (factory: the callee is itself a call). Real AST call-shape verification, not
+ * a text-substring match — `AUTH_GUARD_RE` is only tested against the CALLEE
+ * identifier text, never the whole expression or file.
+ */
+function authFromWrapCall(
+  call: CallExpression,
+): { authState: AuthState; authGate: string } | undefined {
+  const callee = call.getExpression();
+  if (Node.isIdentifier(callee)) {
+    const name = callee.getText();
+    if (AUTH_GUARD_RE.test(name)) return { authState: "authenticated", authGate: name };
+    return undefined;
+  }
+  // Factory form: `requireRole(...)(handler)` — the callee of the OUTER call
+  // is itself a CallExpression; check ITS callee identifier.
+  if (Node.isCallExpression(callee)) {
+    const inner = callee.getExpression();
+    if (Node.isIdentifier(inner)) {
+      const name = inner.getText();
+      if (AUTH_GUARD_RE.test(name)) return { authState: "authenticated", authGate: name };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Does `sf` export `exportName` as a variable whose initializer is a
+ * guard-wrapping call (see {@link authFromWrapCall})? Handles both the
+ * App-Router HTTP-verb export shape (`export const GET = withAuth(...)`) and
+ * the Pages-Router/App-Router-page default-export shape
+ * (`export default withAuth(Page)`).
+ */
+function detectHocWrap(
+  sf: SourceFile,
+  exportName: string,
+): { authState: AuthState; authGate: string } | undefined {
+  if (exportName === "default") {
+    const def = sf.getExportAssignments().find((ea) => !ea.isExportEquals());
+    const init = def?.getExpression();
+    if (init && Node.isCallExpression(init)) return authFromWrapCall(init);
+    return undefined;
+  }
+  for (const vs of sf.getVariableStatements()) {
+    if (!vs.isExported()) continue;
+    for (const d of vs.getDeclarations()) {
+      if (d.getName() !== exportName) continue;
+      const init = d.getInitializer();
+      if (init && Node.isCallExpression(init)) return authFromWrapCall(init);
+    }
+  }
+  return undefined;
+}
+
+/** Try the precise per-export HOC-wrap check first; fall back to the
+ * whole-file text scan (already-fail-safe) only when it resolves nothing. */
+function resolveRouteAuth(
+  sf: SourceFile,
+  exportName: string,
+  fallback: { authState: AuthState; authGate?: string },
+): { authState: AuthState; authGate?: string } {
+  return detectHocWrap(sf, exportName) ?? fallback;
+}
+
+/**
+ * Best-effort `path-to-regexp`-ish matcher-pattern → RegExp, covering the
+ * shapes Next.js's own middleware `config.matcher` docs show: a literal path,
+ * `:name`/`:name*`/`:name+` dynamic segments, and a bare `*` wildcard. This is
+ * intentionally NOT a full path-to-regexp implementation (no regex-group
+ * matcher objects, no negative lookaheads) — anything more exotic falls
+ * through to "no match" for that pattern (fail-safe: under-propagating auth
+ * is safe, over-propagating it is not).
+ */
+function matcherToRegex(pattern: string): RegExp | undefined {
+  if (typeof pattern !== "string" || pattern.length === 0) return undefined;
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/:[A-Za-z0-9_]+\*/g, ".*")
+    .replace(/:[A-Za-z0-9_]+\+/g, ".+")
+    .replace(/:[A-Za-z0-9_]+/g, "[^/]+")
+    .replace(/\*/g, ".*");
+  try {
+    return new RegExp(`^${escaped}$`);
+  } catch {
+    return undefined;
+  }
+}
+
+function literalTextOf(n: Node): string | undefined {
+  if (Node.isStringLiteral(n) || Node.isNoSubstitutionTemplateLiteral(n)) return n.getLiteralText();
+  return undefined;
+}
+
+/** String literals inside an array/single-string expression (matcher can be
+ * `"/x"` or `["/x", "/y"]`). */
+function stringLiteralsOf(expr: Node): string[] {
+  const direct = literalTextOf(expr);
+  if (direct !== undefined) return [direct];
+  if (Node.isArrayLiteralExpression(expr)) {
+    const out: string[] = [];
+    for (const el of expr.getElements()) {
+      const t = literalTextOf(el);
+      if (t !== undefined) out.push(t);
+    }
+    return out;
+  }
+  return [];
+}
+
+/**
+ * Next.js middleware global auth (A20 (a) — the real Next analog of Express
+ * `app.use(authMiddleware)` / Fastify's global `preHandler`: Next has no
+ * `app.use`-style per-route registration to trace, since routing itself is
+ * file-based, but a root/`src/` `middleware.ts` runs ahead of every matched
+ * request exactly the way registered middleware does elsewhere). Finds such a
+ * file; if its body looks like an auth check (a known guard identifier), every
+ * route matching its exported `config.matcher` (or EVERY route, when no
+ * `matcher` is declared — Next's own documented default) with a still-`unknown`
+ * authState is upgraded to `authenticated`. A route with an already-resolved,
+ * more specific auth signal (HOC-wrap or the per-file regex) is never
+ * overridden — global middleware only fills the gap, it never contradicts a
+ * signal the route's own file already gave.
+ */
+function applyNextMiddlewareAuth(project: Project, dir: string, routes: Route[]): void {
+  const mw = project.getSourceFiles().find((sf) => {
+    const abs = sf.getFilePath();
+    const rel = posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+    return /^(?:src\/)?middleware\.(ts|js|tsx|jsx)$/i.test(rel);
+  });
+  if (!mw) return;
+
+  const bodyText = mw.getFullText();
+  const guardMatch = AUTH_GUARD_RE.exec(bodyText);
+  if (!guardMatch || !guardMatch[1]) return; // no guard-shaped reference → not an auth middleware
+  const authGate = `middleware.ts (global: ${guardMatch[1]})`;
+
+  let matchers: string[] = [];
+  for (const vs of mw.getVariableStatements()) {
+    if (!vs.isExported()) continue;
+    for (const d of vs.getDeclarations()) {
+      if (d.getName() !== "config") continue;
+      const init = d.getInitializer();
+      if (init && Node.isObjectLiteralExpression(init)) {
+        for (const prop of init.getProperties()) {
+          if (!Node.isPropertyAssignment(prop) || prop.getName() !== "matcher") continue;
+          const val = prop.getInitializer();
+          if (val) matchers = stringLiteralsOf(val);
+        }
+      }
+    }
+  }
+
+  const patterns = matchers.map(matcherToRegex).filter((r): r is RegExp => r !== undefined);
+  const matches = (path: string): boolean =>
+    patterns.length === 0 || patterns.some((re) => re.test(path));
+
+  for (const route of routes) {
+    if (route.authState !== "unknown") continue; // never override a known signal
+    if (matches(route.path)) {
+      route.authState = "authenticated";
+      route.authGate = authGate;
+    }
+  }
+}
+
 /** Introspect all Next.js routes across the project's source files. */
 export function scanRoutes(project: Project, dir: string): RouteScanResult {
   const routes: Route[] = [];
@@ -182,15 +369,16 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
       for (const method of list) {
         const line = exported.get(method) ?? 1;
         const handler: SourceLocation = { file: rel, line };
+        const routeAuth = resolveRouteAuth(sf, method, auth);
         addRoute(
           {
             id: routeId(method, path),
             path,
             method,
-            authState: auth.authState,
+            authState: routeAuth.authState,
             isApiRoute: true,
             handler,
-            ...(auth.authGate ? { authGate: auth.authGate } : {}),
+            ...(routeAuth.authGate ? { authGate: routeAuth.authGate } : {}),
           },
           rel,
           exportedFns.get(method),
@@ -203,15 +391,16 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
       // App-Router page → a GET route rendering the page.
       const path = appRouterPath(root.rest);
       const def = exported.get("default") ?? 1;
+      const routeAuth = resolveRouteAuth(sf, "default", auth);
       addRoute(
         {
           id: routeId("GET", path),
           path,
           method: "GET",
-          authState: auth.authState,
+          authState: routeAuth.authState,
           isApiRoute: false,
           handler: { file: rel, line: def },
-          ...(auth.authGate ? { authGate: auth.authGate } : {}),
+          ...(routeAuth.authGate ? { authGate: routeAuth.authGate } : {}),
         },
         rel,
         exportedFns.get("default"),
@@ -225,16 +414,17 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
       const isApi = /^(?:src\/)?pages\/api\//.test(rel);
       const path = pagesRouterPath(root.rest);
       const def = exported.get("default") ?? 1;
+      const routeAuth = resolveRouteAuth(sf, "default", auth);
       if (isApi) {
         addRoute(
           {
             id: routeId("ALL", path),
             path,
             method: "ALL",
-            authState: auth.authState,
+            authState: routeAuth.authState,
             isApiRoute: true,
             handler: { file: rel, line: def },
-            ...(auth.authGate ? { authGate: auth.authGate } : {}),
+            ...(routeAuth.authGate ? { authGate: routeAuth.authGate } : {}),
           },
           rel,
           exportedFns.get("default"),
@@ -245,10 +435,10 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
             id: routeId("GET", path),
             path,
             method: "GET",
-            authState: auth.authState,
+            authState: routeAuth.authState,
             isApiRoute: false,
             handler: { file: rel, line: def },
-            ...(auth.authGate ? { authGate: auth.authGate } : {}),
+            ...(routeAuth.authGate ? { authGate: routeAuth.authGate } : {}),
           },
           rel,
           exportedFns.get("default"),
@@ -256,6 +446,8 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
       }
     }
   }
+
+  applyNextMiddlewareAuth(project, dir, routes);
 
   // Stable ordering: API routes first, then by path.
   routes.sort((a, b) =>

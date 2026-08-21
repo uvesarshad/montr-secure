@@ -200,6 +200,31 @@ export function buildAnthropicStyleFields(
   return fields;
 }
 
+/**
+ * Build the minimal body for Anthropic's real token-counting endpoint
+ * (`messages.countTokens` / `POST /v1/messages/count_tokens`, A19). Mirrors
+ * {@link buildAnthropicStyleFields}'s message/system/tools mapping (token
+ * count depends on all three) but deliberately omits `max_tokens`,
+ * `output_config`, `thinking`, and `cache_control` — none of those affect
+ * INPUT token count, which is all this endpoint reports, and `cache_control`
+ * specifically is meaningless here (count_tokens neither reads nor writes the
+ * prompt cache).
+ */
+export function buildAnthropicCountTokensBody(
+  request: LLMRequest,
+  modelId: string,
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = {
+    model: modelId,
+    messages: toAnthropicMessages(request),
+  };
+  const system = collectSystem(request);
+  if (system) fields.system = system;
+  const tools = toAnthropicTools(request);
+  if (tools) fields.tools = tools;
+  return fields;
+}
+
 /** Map an Anthropic (native or Bedrock) stop reason to the contract union. */
 export function mapAnthropicStopReason(reason: string | null | undefined): StopReason {
   switch (reason) {

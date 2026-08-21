@@ -34,6 +34,48 @@ export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 /** Redis pub/sub channel the kill switch broadcasts on. */
 export const KILL_SWITCH_CHANNEL = "montr.control.kill" as const;
 
+/**
+ * Per-tenant queue isolation (A27, opt-in — OFF by default everywhere it's
+ * wired). The documented deployment model is single-tenant on-prem — one
+ * worker process per client (see apps/worker/src/main.ts) — so the plain
+ * `QUEUE_NAMES[layer]` name is correct today and repository-layer `clientId`
+ * row-scoping already gives complete data isolation. This function is forward
+ * cover for a future multi-tenant deployment (one worker fleet serving
+ * several clientIds), where a single shared per-layer queue would let one
+ * client's backlog starve another client's newly-queued job on the same
+ * layer (noisy-neighbour, head-of-line blocking).
+ *
+ * `tenantIsolation: false` (default) returns exactly `QUEUE_NAMES[layer]`,
+ * byte-for-byte identical to today's behavior. `tenantIsolation: true`
+ * returns a per-client queue name (`montr.layer0.<clientId>` instead of
+ * `montr.layer0`), so each client gets a dedicated queue per layer.
+ */
+export function resolveQueueName(
+  layer: LayerId,
+  clientId: string,
+  tenantIsolation: boolean,
+): string {
+  if (!tenantIsolation) return QUEUE_NAMES[layer];
+  return `${QUEUE_NAMES[layer]}.${sanitizeClientIdForQueueName(clientId)}`;
+}
+
+/**
+ * BullMQ queue names become Redis keys, so keep them restricted to a
+ * conservative charset. `clientId` is operator-provisioned (config.clientId /
+ * the Client row id), never raw end-user input — but resolveQueueName still
+ * fails closed on anything outside `[A-Za-z0-9_-]` rather than silently
+ * mangling or colliding two different clients' queue names.
+ */
+export function sanitizeClientIdForQueueName(clientId: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(clientId)) {
+    throw new Error(
+      `resolveQueueName: clientId "${clientId}" contains characters outside [A-Za-z0-9_-], ` +
+        "which is unsafe to use in a BullMQ/Redis queue name",
+    );
+  }
+  return clientId;
+}
+
 /** Fields on every layer job. `idempotencyKey` dedupes retries/replays. */
 export const BaseJobDataSchema = z.object({
   scanId: IdSchema,

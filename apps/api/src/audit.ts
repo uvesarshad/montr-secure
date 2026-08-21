@@ -1,8 +1,12 @@
 /**
  * Audit binding (§8.5, golden rule #7). EVERY mutating action calls `recordAudit`
- * with the actor (id + role) and a typed AuditAction. Metadata is scrubbed of
- * code/secret bodies via @montr/telemetry's scrubber before it is persisted
- * (golden rule #1 — never store code or secret bodies).
+ * with the actor (id + role) and a typed AuditAction. Metadata is pre-scrubbed
+ * here via @montr/telemetry's scrubber as defense in depth, but this is NOT the
+ * enforcement point (golden rule #1 — never store code or secret bodies): the
+ * real, unconditional gate is `PrismaAuditLogClient.append` in
+ * `@montr/state-store/src/audit.ts`, which scrubs metadata AND summary with
+ * `@montr/security`'s stronger redactor regardless of what any caller —
+ * including this one — already did (audit finding A24).
  */
 import type { AuditAction, AuditActor, AuditEvent } from "@montr/contracts";
 import { scrubFields } from "@montr/telemetry";

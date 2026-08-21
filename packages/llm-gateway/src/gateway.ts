@@ -1,6 +1,7 @@
 import {
   BudgetExceededError,
   LLMRequestSchema,
+  NotImplementedError,
   type KeyTier,
   type LLMCallLog,
   type LLMCallMetadata,
@@ -13,6 +14,13 @@ import {
   type Provider,
   type TokenUsage,
 } from "@montr/contracts";
+import type {
+  LLMBatchHandle,
+  LLMBatchRequestItem,
+  LLMBatchResultItem,
+  LLMBatchResultsOptions,
+  LLMBatchStatus,
+} from "./batch.js";
 import type { MontrConfig } from "@montr/config";
 import {
   priceUsageUsd,
@@ -207,10 +215,55 @@ export class MontrLlmGateway implements LLMGateway {
     );
   }
 
+  /**
+   * Fast, LOCAL, offline token-count heuristic (A19; `chars/4`, unchanged).
+   * Deliberately kept this way: this is the estimator `assertPreCallBudget()`
+   * calls on EVERY gated `complete()`/`stream()` — a real per-call network
+   * round-trip to a provider's token-counting endpoint (see
+   * {@link MontrLlmGateway.countTokens}, added for A19) would add real
+   * latency and an extra request to every LLM call in the pipeline for a
+   * marginal accuracy gain over this heuristic, which already errs
+   * conservative (chars/4 is a reasonable upper-ish bound for English/JSON
+   * text — see https://github.com/anthropics tokenizer notes; the budget
+   * guard's whole job is to refuse BEFORE dispatch, so slightly
+   * over-estimating input tokens here is the safe failure direction, not a
+   * bug to "fix" by adding latency to the hot path). Callers that need a
+   * precise, provider-verified count and can afford the extra round-trip
+   * should call {@link MontrLlmGateway.countTokens} instead.
+   */
   estimateTokens(request: LLMRequest): Promise<number> {
     const text =
       (request.system ?? "") + request.messages.map((m) => contentToString(m.content)).join("");
     return Promise.resolve(Math.ceil(text.length / 4));
+  }
+
+  /**
+   * Real, provider-verified token count (A19) — calls the adapter's
+   * `countTokens` (Anthropic's `messages.countTokens` endpoint today; see
+   * `adapters/anthropic.ts`) when available. NOT used by the pre-call budget
+   * guard, which stays on the fast heuristic above for latency reasons — this
+   * is for callers that want precision and can afford a network round-trip
+   * (tooling, calibration, a future non-hot-path caller). Falls back to
+   * {@link estimateTokens}'s heuristic — logging a warning, never throwing —
+   * when the adapter has no real counting endpoint (Bedrock/Vertex/Azure
+   * today) or the real call itself fails.
+   */
+  async countTokens(request: LLMRequest): Promise<number> {
+    const parsed = LLMRequestSchema.parse(request);
+    const modelId = this.resolveModelId(parsed);
+    if (this.adapter.countTokens) {
+      try {
+        this.assertEgress();
+        return await this.adapter.countTokens(parsed, modelId);
+      } catch (err) {
+        this.logger.warn("llm.count_tokens_failed", {
+          provider: this.provider,
+          model: modelId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return this.estimateTokens(parsed);
   }
 
   async complete(request: LLMRequest): Promise<LLMResponse> {
@@ -329,6 +382,117 @@ export class MontrLlmGateway implements LLMGateway {
 
     const latencyMs = this.now().getTime() - start;
     if (!failed && usage) this.account(parsed.metadata, modelId, usage, latencyMs);
+  }
+
+  /**
+   * Submit a Batch API job (A31 item 3) — async, queued, 50% discounted,
+   * intended for non-latency-sensitive work with no user waiting
+   * synchronously. Requires an adapter that implements `submitBatch`
+   * (only `AnthropicAdapter` does today — see `adapters/anthropic.ts`);
+   * other providers throw `NotImplementedError`.
+   *
+   * Each item's own `request.metadata`/`request.tier`/`request.model` is
+   * resolved and floor-checked exactly like a `complete()` call, but there is
+   * NO pre-call budget guard here: `assertPreCallBudget` estimates a single
+   * call's worst-case cost against a scan's LIVE remaining budget, which is
+   * meaningless for a batch that may not resolve for up to 24 hours — by the
+   * time results come back, the scan's spend and ceiling may have moved. A
+   * caller that wants a budget check on batch spend must check its own
+   * estimate before submitting.
+   *
+   * NOT currently called by any pipeline layer (see docs/modules/llm-gateway.md's
+   * A31 section) — the orchestrator's FSM is built around synchronous layer
+   * completion, which a job that may take up to 24h to resolve cannot fit
+   * without deeper resumability work than this change's scope. Built and
+   * fully tested so the capability exists for a future layer or an offline/
+   * bulk consumer, mirroring how A10 handled gateway streaming.
+   */
+  async submitBatch(items: LLMBatchRequestItem[]): Promise<LLMBatchHandle> {
+    this.assertEgress();
+    if (!this.adapter.submitBatch) {
+      throw new NotImplementedError(`Batch API not supported for provider '${this.provider}'`, {
+        provider: this.provider,
+      });
+    }
+    const resolved = items.map((item) => {
+      const parsed = LLMRequestSchema.parse(item.request);
+      const modelId = this.resolveModelId(parsed);
+      this.maybeWarnFloor(parsed, modelId);
+      return { customId: item.customId, request: parsed, modelId };
+    });
+    const handle = await this.adapter.submitBatch(resolved);
+    return {
+      batchId: handle.batchId,
+      processingStatus: handle.processingStatus as LLMBatchHandle["processingStatus"],
+    };
+  }
+
+  /** Poll a submitted batch's processing status + per-outcome counts (A31). */
+  async pollBatch(batchId: string): Promise<LLMBatchStatus> {
+    this.assertEgress();
+    if (!this.adapter.pollBatch) {
+      throw new NotImplementedError(`Batch API not supported for provider '${this.provider}'`, {
+        provider: this.provider,
+      });
+    }
+    const status = await this.adapter.pollBatch(batchId);
+    return {
+      batchId: status.batchId,
+      processingStatus: status.processingStatus as LLMBatchStatus["processingStatus"],
+      requestCounts: status.counts,
+    };
+  }
+
+  /**
+   * Stream a completed (or partially completed) batch's per-request results
+   * (A31), normalized into `LLMResponse` shape like `complete()`'s return
+   * value. Pass `metadataByCustomId` (see {@link LLMBatchResultsOptions}) to
+   * also record each succeeded result's usage into that scan's CostMeter at
+   * the batch-discounted rate ({@link priceUsageUsd}'s `batch: true`) —
+   * mirroring `account()`, but keyed by the metadata the caller supplies
+   * rather than metadata the gateway tracked itself (see the interface's
+   * docstring for why: batch results may be polled well after this process
+   * restarted).
+   */
+  async *getBatchResults(
+    batchId: string,
+    opts: LLMBatchResultsOptions = {},
+  ): AsyncGenerator<LLMBatchResultItem, void, unknown> {
+    this.assertEgress();
+    if (!this.adapter.getBatchResults) {
+      throw new NotImplementedError(`Batch API not supported for provider '${this.provider}'`, {
+        provider: this.provider,
+      });
+    }
+    for await (const item of this.adapter.getBatchResults(batchId)) {
+      if (item.status === "succeeded") {
+        const response: LLMResponse = {
+          id: item.completion.id,
+          provider: this.provider,
+          model: item.completion.model,
+          content: item.completion.content,
+          stopReason: item.completion.stopReason,
+          usage: item.completion.usage,
+          // Batch responses have no meaningful single-call latency (the job
+          // may have run minutes to hours after submission).
+          latencyMs: 0,
+          ...(item.completion.toolCalls ? { toolCalls: item.completion.toolCalls } : {}),
+        };
+        const metadata = opts.metadataByCustomId?.[item.customId];
+        if (metadata)
+          this.account(metadata, item.completion.model, item.completion.usage, 0, { batch: true });
+        yield { customId: item.customId, status: "succeeded", response };
+      } else if (item.status === "errored") {
+        yield {
+          customId: item.customId,
+          status: "errored",
+          errorType: item.errorType,
+          message: item.message,
+        };
+      } else {
+        yield { customId: item.customId, status: item.status };
+      }
+    }
   }
 
   private resolveModelId(request: LLMRequest): string {
@@ -473,6 +637,7 @@ export class MontrLlmGateway implements LLMGateway {
     model: string,
     usage: TokenUsage,
     latencyMs: number,
+    opts: { batch?: boolean } = {},
   ): void {
     const log = buildCallLog({
       provider: this.provider,
@@ -489,6 +654,9 @@ export class MontrLlmGateway implements LLMGateway {
       modelId: model,
       usage,
       ...(metadata.layer ? { layer: metadata.layer } : {}),
+      // A31: Batch API results are billed at the 50% discount — carried
+      // through to CostMeter.record() -> priceUsageUsd's `batch` option.
+      ...(opts.batch ? { batch: true } : {}),
     };
 
     const scanMeter = metadata.scanId

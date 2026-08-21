@@ -21,6 +21,8 @@ export interface MeterEntry {
   modelId: string;
   usage: TokenUsage;
   layer?: LayerId;
+  /** True when this usage was billed via the Batch API at the 50% discount (A31). */
+  batch?: boolean;
 }
 
 /** Result of a budget-ceiling check. `exceeded` drives the hard halt. */
@@ -91,7 +93,7 @@ class LiveCostMeter implements CostMeter {
   }
 
   record(entry: MeterEntry): void {
-    const usd = priceUsageUsd(entry.usage, entry.modelId, this.logger);
+    const usd = priceUsageUsd(entry.usage, entry.modelId, this.logger, { batch: entry.batch });
     this.total = addUsage(this.total, entry.usage);
     this.totalUsd = roundUsd(this.totalUsd + usd);
     this.merge(this.byLayer, entry.layer ?? "unattributed", entry.usage, usd);

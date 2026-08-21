@@ -62,19 +62,77 @@ function findRoute(appMap: AppMap, finding: ProbableFinding): Route | undefined 
   return appMap.routes.find((r) => r.handler?.file === finding.location.file);
 }
 
+/**
+ * A21 cross-function fallback: when nothing SAME-FILE matches, consult the App
+ * Map's resolved `taintFlows` (interprocedural edges — TS/JS via
+ * `typescript/callgraph.ts`, and, as of A21, Python via `python/callgraph.ts`
+ * and Java via `java/callgraph.ts`) for an edge whose SOURCE sits in the
+ * finding's own file. `grounding.ts` (Layer 2) already reads this same field
+ * for scoring; this makes Layer 3's static proof see the same interprocedural
+ * evidence instead of only same-file taint sinks. A resolved edge's sink is
+ * looked up back in `appMap.taintSinks` (by exact location) so the FULL sink
+ * record — including its description, which `assessSink`'s marker heuristics
+ * depend on — is used, not a bare kind+location stub. Purely additive: when
+ * `taintFlows` is empty (or nothing matches), behavior is unchanged.
+ */
+function findSinkFromFlow(
+  appMap: AppMap,
+  finding: ProbableFinding,
+  kinds: ReadonlySet<TaintSink["kind"]>,
+): TaintSink | undefined {
+  const edges = (appMap.taintFlows ?? []).filter(
+    (e) =>
+      kinds.has(e.sinkKind) &&
+      (e.sourceLocation.file === finding.location.file ||
+        e.throughLocation?.file === finding.location.file),
+  );
+  if (edges.length === 0) return undefined;
+  const exact = edges.find((e) => e.sourceLocation.line === finding.location.line);
+  const edge =
+    exact ??
+    [...edges].sort(
+      (a, b) =>
+        Math.abs(a.sourceLocation.line - finding.location.line) -
+        Math.abs(b.sourceLocation.line - finding.location.line),
+    )[0];
+  if (!edge) return undefined;
+  const real = appMap.taintSinks.find(
+    (s) => s.location.file === edge.sinkLocation.file && s.location.line === edge.sinkLocation.line,
+  );
+  return real ?? { kind: edge.sinkKind, location: edge.sinkLocation };
+}
+
 function findSink(appMap: AppMap, finding: ProbableFinding): TaintSink | undefined {
   const kinds = new Set(DATAFLOW_SINK_KINDS[finding.category]);
   const inFile = appMap.taintSinks.filter(
     (s) => kinds.has(s.kind) && s.location.file === finding.location.file,
   );
-  if (inFile.length === 0) return undefined;
-  const exact = inFile.find((s) => s.location.line === finding.location.line);
-  if (exact) return exact;
-  return [...inFile].sort(
-    (a, b) =>
-      Math.abs(a.location.line - finding.location.line) -
-      Math.abs(b.location.line - finding.location.line),
-  )[0];
+  if (inFile.length > 0) {
+    const exact = inFile.find((s) => s.location.line === finding.location.line);
+    if (exact) return exact;
+    return [...inFile].sort(
+      (a, b) =>
+        Math.abs(a.location.line - finding.location.line) -
+        Math.abs(b.location.line - finding.location.line),
+    )[0];
+  }
+  return findSinkFromFlow(appMap, finding, kinds);
+}
+
+/** See {@link findSinkFromFlow} — the symmetric fallback for the SOURCE side,
+ * keyed off the sink's own resolved location (an edge whose sink matches). */
+function findSourceFromFlow(appMap: AppMap, sink: TaintSink): TaintSource | undefined {
+  const edge = (appMap.taintFlows ?? []).find(
+    (e) => e.sinkLocation.file === sink.location.file && e.sinkLocation.line === sink.location.line,
+  );
+  if (!edge) return undefined;
+  const real = appMap.taintSources.find(
+    (s) =>
+      s.location.file === edge.sourceLocation.file && s.location.line === edge.sourceLocation.line,
+  );
+  if (real) return real;
+  if (!edge.sourceKind) return undefined;
+  return { kind: edge.sourceKind, location: edge.sourceLocation };
 }
 
 function findSource(
@@ -88,10 +146,11 @@ function findSource(
     const byRoute = appMap.taintSources.find((s) => s.routeId === routeId);
     if (byRoute) return byRoute;
   }
-  return (
+  const sameFile =
     appMap.taintSources.find((s) => s.location.file === sink.location.file) ??
-    appMap.taintSources.find((s) => s.location.file === finding.location.file)
-  );
+    appMap.taintSources.find((s) => s.location.file === finding.location.file);
+  if (sameFile) return sameFile;
+  return findSourceFromFlow(appMap, sink);
 }
 
 function describeRoute(route: Route | undefined, exposure: Exposure): string {

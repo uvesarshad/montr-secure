@@ -34,6 +34,9 @@ DastTarget: Allowlisted staging URLs with approved rate limits and concurrency c
 AuditEvent: Immutable, append-only log record storing sequential actions, actor metadata, previous hash, and SHA-256 hash chaining.
 CustomRule, RedTeamScenario, ScanSchedule, PostureSnapshot: Scale and intelligence entities managing custom detection rules, attack playbooks, cron schedules, and historical trend snapshots.
 
+Audit Log Scrub Gate
+`PrismaAuditLogClient.append` in packages/state-store/src/audit.ts is the single write chokepoint for every AuditEvent, reached by all callers across apps/api and apps/worker. It unconditionally runs both free-form text fields — `metadata` and `summary` — through @montr/security's content-aware `redactSensitive` before hashing/persisting, then re-verifies the redacted output with that package's independent `findLogViolations` verifier as defense in depth. This promotes @montr/security's scrubber (previously exercised only by tests certifying @montr/telemetry's separate hot-path log scrubber) into a real runtime gate on the persistence path itself, closing the gap where AuditEventInput.metadata's Zod type (`z.record(z.string(), z.unknown())`) could not enforce "MUST be scrubbed" beyond a code comment. The gate is fail-safe rather than fail-closed: on the residual case where content still trips the verifier after redaction, the event is still persisted with an anomaly-marker payload rather than being rejected, so a safety-relevant write (e.g. a kill-switch event) is never silently lost.
+
 Migration Strategy
 Schema Migrations: Schema modifications are authored in packages/state-store/prisma/schema.prisma and validated using pnpm prisma:validate and pnpm prisma:format.
 Generation: Client code generation is triggered via pnpm prisma:generate during root postinstall hooks.

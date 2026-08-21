@@ -186,6 +186,37 @@ export const DiscoveryConfigSchema = z.object({
 });
 export type DiscoveryConfig = z.infer<typeof DiscoveryConfigSchema>;
 
+/**
+ * Per-tenant BullMQ queue isolation (A27). `perTenantIsolation` is OFF by
+ * default: today's six shared per-layer queues (`montr.layer0`…`montr.layer5`,
+ * packages/contracts/src/queue.ts's QUEUE_NAMES) are unchanged — correct for
+ * the documented single-tenant on-prem deployment model (one worker process
+ * per client, apps/worker/src/main.ts). When enabled, each layer gets one
+ * queue PER CLIENT (`montr.layer0.<clientId>`, via `resolveQueueName`) and the
+ * worker/API producer fan out one BullMQ Queue + Worker per (layer, client)
+ * pair, each independently polling Redis — so a large backlog on one
+ * client's queue cannot block a newly-queued job on another client's queue
+ * for the same layer.
+ *
+ * `tenantIds` lists which clients to fan out queues/workers for; empty
+ * (default) resolves to just this deployment's own `clientId`, so turning
+ * isolation on with no other config is a same-tenant no-op rename — useful
+ * to validate the mechanism before a deployment actually serves more than
+ * one tenant.
+ *
+ * Not recommended past a modest tenant count per worker process: this repo
+ * ships plain (non-Pro) BullMQ, which has no group-based fair-scheduling
+ * primitive, so enabling this multiplies physical queues, BullMQ Workers, and
+ * Redis connections linearly with `tenantIds.length × 6`. A hosted
+ * multi-tenant deployment with many clients should shard tenants across
+ * several worker processes/pools rather than growing this list unbounded.
+ */
+export const QueueConfigSchema = z.object({
+  perTenantIsolation: z.boolean().default(false),
+  tenantIds: z.array(z.string().min(1)).default([]),
+});
+export type QueueConfig = z.infer<typeof QueueConfigSchema>;
+
 export const SecurityConfigSchema = z.object({
   /** Reference to the AES-256-GCM field-encryption key (KMS/Vault/k8s secret). */
   fieldEncryptionKeyRef: z.string().optional(),
@@ -211,6 +242,7 @@ export const MontrConfigSchema = z.object({
   telemetry: TelemetryConfigSchema.default({}),
   security: SecurityConfigSchema.default({}),
   discovery: DiscoveryConfigSchema.default({}),
+  queue: QueueConfigSchema.default({}),
 });
 export type MontrConfig = z.infer<typeof MontrConfigSchema>;
 

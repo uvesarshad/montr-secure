@@ -1,10 +1,13 @@
 /**
  * User model + persistence interface.
  *
- * The canonical User entity lives in the Prisma schema (owned by WS-C) and will
- * be surfaced by @montr/state-store; until then the API depends on this narrow
- * `UserStore` interface (mirroring the schema columns) and ships an in-memory
- * implementation for local dev + unit tests. Roles come from @montr/contracts.
+ * The canonical User entity lives in the Prisma schema (owned by WS-C); no
+ * @montr/state-store repository was ever added for it, so production queries
+ * the already-migrated `User` table directly (`PrismaUserStore`, see
+ * ../prisma-store.ts). This file only declares the narrow `UserStore`
+ * interface (mirroring the schema columns) and ships the in-memory
+ * implementation used for local dev + unit tests. Roles come from
+ * @montr/contracts.
  */
 import { z } from "zod";
 import { RoleSchema, type Role } from "@montr/contracts";

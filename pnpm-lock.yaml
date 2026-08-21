@@ -443,6 +443,12 @@ importers:
 
   packages/qa:
     dependencies:
+      '@montr/config':
+        specifier: workspace:*
+        version: link:../config
+      '@montr/confirm':
+        specifier: workspace:*
+        version: link:../confirm
       '@montr/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -488,6 +494,9 @@ importers:
       '@montr/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@montr/security':
+        specifier: workspace:*
+        version: link:../security
       '@montr/telemetry':
         specifier: workspace:*
         version: link:../telemetry

@@ -38,6 +38,7 @@ import {
   findAnnotation,
   lineOf,
   namedKids,
+  unquote,
   type AnnotationInfo,
   type TSNode,
 } from "./parser.js";
@@ -622,4 +623,149 @@ function extractValueKey(raw: string | undefined): string | undefined {
 function unquoteText(text: string): string {
   if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1);
   return text;
+}
+
+// ---------------------------------------------------------------------------
+// Spring Security declarative filter chain (A20) — the real JVM analog of
+// Express `app.use(authMiddleware)` / Fastify's global `preHandler`: auth is
+// enforced by a PROJECT-WIDE config bean, not per-controller annotations, so
+// this is a cross-file pass run over every parsed file (see
+// `applySpringSecurityAuth`), not per-file extraction like the rest of this
+// module. Bounded to the modern `SecurityFilterChain` / `HttpSecurity`
+// `authorizeHttpRequests(auth -> auth.requestMatchers(...).hasRole(...)…)`
+// (and the legacy `authorizeRequests`/`antMatchers`/`mvcMatchers` spellings)
+// lambda-chain shape actually verified against real Spring Security code —
+// NOT the older `WebSecurityConfigurerAdapter#configure` override alone
+// (deprecated since Spring Security 5.7, but its BODY uses the exact same
+// `http.authorizeRequests(...)` chain shape, so it is covered incidentally,
+// just not specially detected by class name).
+// ---------------------------------------------------------------------------
+
+const AUTHZ_CHAIN_METHODS = new Set(["authorizeHttpRequests", "authorizeRequests"]);
+const MATCHER_METHODS = new Set(["requestMatchers", "antMatchers", "mvcMatchers"]);
+const AUTHZ_VERBS = new Set([
+  "permitAll",
+  "denyAll",
+  "authenticated",
+  "hasRole",
+  "hasAnyRole",
+  "hasAuthority",
+  "hasAnyAuthority",
+]);
+
+export interface SpringAuthPattern {
+  /** Ant-style path pattern (`/admin/**`), or `/**` for a bare `anyRequest()`. */
+  pattern: string;
+  authState: "public" | "authenticated" | "role_gated";
+  authGate: string;
+}
+
+/** Flatten a fluent `a.b().c().d()` method-invocation chain, outermost-last,
+ * into caller order (left to right, matching source/declaration order). */
+function flattenInvocationChain(node: TSNode): TSNode[] {
+  const out: TSNode[] = [];
+  let cur: TSNode | undefined = node;
+  while (cur && cur.type === "method_invocation") {
+    out.unshift(cur);
+    cur = field(cur, "object");
+  }
+  return out;
+}
+
+function verdictForVerb(verb: string): {
+  authState: SpringAuthPattern["authState"];
+  authGate: string;
+} {
+  if (verb === "permitAll") return { authState: "public", authGate: "permitAll" };
+  if (verb === "denyAll") return { authState: "authenticated", authGate: "denyAll" };
+  if (verb === "authenticated") return { authState: "authenticated", authGate: "authenticated" };
+  return { authState: "role_gated", authGate: verb }; // hasRole/hasAnyRole/hasAuthority/hasAnyAuthority
+}
+
+/** Every `requestMatchers(pattern...).<verb>(...)` / `anyRequest().<verb>()`
+ * pair inside one file's `authorizeHttpRequests`/`authorizeRequests` lambdas,
+ * in declaration order (Spring evaluates the FIRST matching rule, so callers
+ * must preserve this order when applying the result). */
+export function extractSpringAuthPatterns(root: TSNode): SpringAuthPattern[] {
+  const out: SpringAuthPattern[] = [];
+  for (const call of descendantsOfType(root, "method_invocation")) {
+    const name = field(call, "name")?.text ?? "";
+    if (!AUTHZ_CHAIN_METHODS.has(name)) continue;
+    const args = field(call, "arguments");
+    const lambda = args ? namedKids(args)[0] : undefined;
+    if (!lambda || lambda.type !== "lambda_expression") continue;
+    const body = field(lambda, "body") ?? namedKids(lambda).at(-1);
+    if (!body || body.type !== "method_invocation") continue;
+
+    let pendingPatterns: string[] = [];
+    for (const step of flattenInvocationChain(body)) {
+      const stepName = field(step, "name")?.text ?? "";
+      if (MATCHER_METHODS.has(stepName)) {
+        const argsNode = field(step, "arguments");
+        const lits = argsNode ? namedKids(argsNode).filter((a) => a.type === "string_literal") : [];
+        // An HttpMethod-only matcher (`requestMatchers(HttpMethod.POST)`, no
+        // string pattern) carries no path signal we can bind to a route —
+        // skipped rather than guessed (fail-safe).
+        pendingPatterns = lits.map((l) => unquote(l));
+        continue;
+      }
+      if (stepName === "anyRequest") {
+        pendingPatterns = ["/**"];
+        continue;
+      }
+      if (AUTHZ_VERBS.has(stepName) && pendingPatterns.length > 0) {
+        const v = verdictForVerb(stepName);
+        for (const pattern of pendingPatterns) out.push({ pattern, ...v });
+        pendingPatterns = [];
+      }
+    }
+  }
+  return out;
+}
+
+/** Ant-style path pattern (`/admin/**`, `/users/*`) → RegExp. `**` = any
+ * number of segments, `*` = one segment. Best-effort — patterns using
+ * Spring's `{variable}` placeholders or regex matchers are not specially
+ * unwrapped (they pass through literally, so they simply won't match). */
+function antPatternToRegex(pattern: string): RegExp | undefined {
+  if (!pattern) return undefined;
+  const placeholder = " DOUBLESTAR ";
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, placeholder)
+    .replace(/\*/g, "[^/]*")
+    .split(placeholder)
+    .join(".*");
+  try {
+    return new RegExp(`^${escaped}$`);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Apply project-wide `SecurityFilterChain` auth config to already-extracted
+ * routes: a route still at `unknown` after per-file annotation resolution
+ * that matches a captured Ant pattern is upgraded to that pattern's verdict,
+ * in DECLARATION order (first match wins, mirroring real Spring evaluation).
+ * A route with a more specific per-method/per-class annotation signal is
+ * NEVER overridden.
+ */
+export function applySpringSecurityAuth(files: readonly { root: TSNode }[], routes: Route[]): void {
+  const patterns: SpringAuthPattern[] = [];
+  for (const f of files) patterns.push(...extractSpringAuthPatterns(f.root));
+  if (patterns.length === 0) return;
+
+  const compiled = patterns
+    .map((p) => ({ ...p, re: antPatternToRegex(p.pattern) }))
+    .filter((p): p is SpringAuthPattern & { re: RegExp } => p.re !== undefined);
+
+  for (const route of routes) {
+    if (route.authState !== "unknown") continue;
+    const hit = compiled.find((p) => p.re.test(route.path));
+    if (hit) {
+      route.authState = hit.authState;
+      route.authGate = `SecurityFilterChain:${hit.authGate}(${hit.pattern})`;
+    }
+  }
 }

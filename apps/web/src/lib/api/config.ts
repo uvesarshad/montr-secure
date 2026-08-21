@@ -74,8 +74,8 @@ export const endpoints = {
   dastTargets: () => `${v1}/dast/targets`,
   authorizeDastTarget: (targetId: string) => `${v1}/dast/targets/${targetId}/authorize`,
 
-  // Coming in A15 (apps/api has no /scans/:id/kill route yet) — wired ahead of
-  // the backend route landing per that task's instructions; 404s until then.
+  // Implemented — POST /scans/:id/kill (apps/api/src/routes/scans.ts) invokes
+  // the orchestrator's cross-process kill switch (Redis pub/sub + DAST abort).
   killSwitch: (scanId: string) => `${v1}/scans/${scanId}/kill`,
 
   // ---- audit (apps/api/src/routes/audit.ts) ----

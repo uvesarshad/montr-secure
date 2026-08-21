@@ -46,10 +46,27 @@ describe("qa:corpus CLI exit codes", () => {
     expect(report.headline.fpRate).toBe(0);
   });
 
-  it("--variance => OK and prints the model matrix", async () => {
+  it("--variance => OK, prints the REAL per-model matrix, and models genuinely differ (A23)", async () => {
     const c = capture();
     const code = await run(["--variance"], c.out, c.err);
     expect(code).toBe(QA_EXIT.OK);
+    expect(c.outText()).toMatch(/VARIANCE MODE — real packages\/confirm/);
+    expect(c.outText()).toMatch(/Model-variance matrix/);
+    // The regression this whole harness exists to catch: every model scoring
+    // an identical number. Assert the printed table is NOT that.
+    const recallColumn = c
+      .outText()
+      .split("\n")
+      .filter((line) => /^ {2}[a-z]/i.test(line) && /%/.test(line))
+      .map((line) => line.trim().split(/\s+/)[1]);
+    expect(new Set(recallColumn).size).toBeGreaterThan(1);
+  });
+
+  it("--variance --variance-selfcheck => OK and prints the OLD tautological self-check", async () => {
+    const c = capture();
+    const code = await run(["--variance", "--variance-selfcheck"], c.out, c.err);
+    expect(code).toBe(QA_EXIT.OK);
+    expect(c.outText()).toMatch(/VARIANCE SELF-CHECK MODE/);
     expect(c.outText()).toMatch(/Model-variance matrix/);
   });
 

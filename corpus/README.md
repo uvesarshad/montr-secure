@@ -21,14 +21,14 @@ corpus/
     clean-nextjs-owasp/             the secured counterpart (0 confirmed findings)
   python-vuln/, python-clean/       synthetic Django app (SQLi, XSS, SSRF, IDOR, hardcoded secret)
   jvm-vuln/, jvm-clean/             synthetic Spring Boot app (SQLi, cmd-injection, deser, BAC, secret)
-  dvna/                             REAL: appsecco/dvna (Damn Vulnerable NodeJS Application)
-  pygoat/                           REAL: OWASP PyGoat (Django OWASP Top-10 labs)
-  javaseccode/                      REAL: JoyChou93/java-sec-code (Spring Boot, one class per vuln)
-  log4shell-vulnerable-app/         REAL: christophetd/log4shell-vulnerable-app (CVE-2021-44228)
-  spring-petclinic/                 REAL: spring-projects/spring-petclinic (production-grade, 1 real finding)
-  validatorjs-clean/                REAL clean: validatorjs/validator.js (JS/TS negative example)
-  requests-clean/                   REAL clean: psf/requests (Python negative example)
-  gson-clean/                       REAL clean: google/gson (JVM negative example)
+  dvna/                             REAL (excerpt, 15 files): appsecco/dvna (Damn Vulnerable NodeJS Application) — trimmed to config/core/models/routes, not the whole app
+  pygoat/                           REAL (excerpt, 18 files): OWASP PyGoat (Django OWASP Top-10 labs) — trimmed to the `introduction` lab app, not the whole project
+  javaseccode/                      REAL (excerpt, 7 files): JoyChou93/java-sec-code (Spring Boot, one class per vuln) — trimmed to 4 of ~30 controllers
+  log4shell-vulnerable-app/         REAL (full, 2 Java files + build config): christophetd/log4shell-vulnerable-app (CVE-2021-44228) — vendored in full, nothing trimmed
+  spring-petclinic/                 REAL (excerpt, 87 files): spring-projects/spring-petclinic (production-grade, 1 real finding) — src/main + pom.xml + LICENSE only, docs/tests/static-assets/CI-config dropped, NOT the full clone
+  validatorjs-clean/                REAL clean (full library, 117 files): validatorjs/validator.js (JS/TS negative example)
+  requests-clean/                   REAL clean (full package, 21 files): psf/requests (Python negative example)
+  gson-clean/                       REAL clean (full library, 91 files): google/gson (JVM negative example)
 ```
 
 Every directory above (both the `corpus/repos/*` entries in the shared
@@ -165,16 +165,16 @@ real-world representation at all. Selection criteria, in order:
 
 **Provenance (source URL, pinned commit, license) for every new repo:**
 
-| Repo                        | Source                                                          | Commit (pinned)                            | License          |
-| ---------------------------- | ---------------------------------------------------------------- | ------------------------------------------- | ----------------- |
-| `dvna`                       | https://github.com/appsecco/dvna                                 | `9ba473add536f66ac9007966acb2a775dd31277`   | MIT               |
-| `pygoat`                     | https://github.com/adeyosemanputra/pygoat                        | `19d17cc8874861142b330636d068bbde54e86b85`  | MIT               |
-| `javaseccode`                | https://github.com/JoyChou93/java-sec-code                       | `4711f4e186258c6e0dd5c3863e7c9592e7e9026a`  | none upstream (small excerpt, internal QA use only, same basis as other vendored teaching apps) |
-| `log4shell-vulnerable-app`   | https://github.com/christophetd/log4shell-vulnerable-app         | `c962aabb31a6af0a77f0e9bbc7100e175c7c04e`   | MIT               |
-| `spring-petclinic`           | https://github.com/spring-projects/spring-petclinic              | `88e37c15cf6fc8490b01bc3e8e2c800cec1ac272`  | Apache-2.0        |
-| `validatorjs-clean`          | https://github.com/validatorjs/validator.js                      | `a79ff980ab14257e795332989e497bdff3218e87`  | MIT               |
-| `requests-clean`             | https://github.com/psf/requests                                  | `8f8b212de8c2129d7954c6cd373762880375620a`  | Apache-2.0        |
-| `gson-clean`                 | https://github.com/google/gson                                   | `dae37cf0fe12235b76fb09f01118a0a8c8823f42`  | Apache-2.0        |
+| Repo                        | Source                                                          | Commit (pinned)                            | License          | Vendored scope |
+| ---------------------------- | ---------------------------------------------------------------- | ------------------------------------------- | ----------------- | ---------------- |
+| `dvna`                       | https://github.com/appsecco/dvna                                 | `9ba473add536f66ac9007966acb2a775dd31277`   | MIT               | **excerpt**, 15 files |
+| `pygoat`                     | https://github.com/adeyosemanputra/pygoat                        | `19d17cc8874861142b330636d068bbde54e86b85`  | MIT               | **excerpt**, 18 files |
+| `javaseccode`                | https://github.com/JoyChou93/java-sec-code                       | `4711f4e186258c6e0dd5c3863e7c9592e7e9026a`  | none upstream (small excerpt, internal QA use only, same basis as other vendored teaching apps) | **excerpt**, 7 files |
+| `log4shell-vulnerable-app`   | https://github.com/christophetd/log4shell-vulnerable-app         | `c962aabb31a6af0a77f0e9bbc7100e175c7c04e`   | MIT               | full, 2 Java files |
+| `spring-petclinic`           | https://github.com/spring-projects/spring-petclinic              | `88e37c15cf6fc8490b01bc3e8e2c800cec1ac272`  | Apache-2.0        | **excerpt**, 87 files |
+| `validatorjs-clean`          | https://github.com/validatorjs/validator.js                      | `a79ff980ab14257e795332989e497bdff3218e87`  | MIT               | full, 117 files |
+| `requests-clean`             | https://github.com/psf/requests                                  | `8f8b212de8c2129d7954c6cd373762880375620a`  | Apache-2.0        | full, 21 files |
+| `gson-clean`                 | https://github.com/google/gson                                   | `dae37cf0fe12235b76fb09f01118a0a8c8823f42`  | Apache-2.0        | full, 91 files |
 
 **Real, measured numbers (not aspirational) as of this growth — see
 `corpus/baseline.json`'s `$measurement` for the full detail:** running the

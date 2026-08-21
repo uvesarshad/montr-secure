@@ -15,6 +15,7 @@ Queue Execution: apps/worker/src/runners.ts pulls Layer 3 jobs from BullMQ and e
 Static Exploit Proof Engine
 Static Solver: packages/confirm/src/static.ts uses the confirmation tier model (Claude Opus 4.8) via packages/llm-gateway to construct formal data-flow proofs.
 Taint Path Analysis: The engine traces user inputs from Route entrypoints through intermediate variable assignments, function calls, and sanitizers down to dangerous TaintSinks.
+Cross-Function Fallback (A21): findSink/findSource in static.ts first look for a same-file taint sink/source (unchanged prior behavior); only when that finds nothing do they now fall back to AppMap.taintFlows — the same interprocedural edge data packages/correlation/src/grounding.ts already reads for Layer 2 scoring — resolving the real TaintSink/TaintSource record by the edge's exact location so assessSink's description-marker heuristics still see the full sink text. This is language-agnostic and purely additive (identical behavior when taintFlows is empty or nothing matches); it is what actually wires the new Python/Java call graphs (packages/appmap/src/languages/{python,java}/callgraph.ts) into Layer 3 confirmation rather than leaving them consumed only by Layer 2 grounding, which was previously the ONLY consumer of taintFlows even for TypeScript.
 Static Proof Artifact: Generates a structured ProofArtifact object detailing the exact source-to-sink variable path and sanitization gaps.
 
 Live DAST Engine and Safety Guards

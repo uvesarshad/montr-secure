@@ -30,8 +30,9 @@ import type {
 } from "@montr/contracts";
 import type { AnalyzerInput, AppMapContribution, LanguageAnalyzer } from "../types.js";
 import { parseJava } from "./parser.js";
-import { extractFile } from "./extract.js";
+import { extractFile, applySpringSecurityAuth } from "./extract.js";
 import { scanJavaConfig } from "./config.js";
+import { scanJavaTaintFlows } from "./callgraph.js";
 
 /** Build dirs + VCS noise never worth parsing. */
 const JAVA_IGNORE = [
@@ -129,6 +130,10 @@ export const javaAnalyzer: LanguageAnalyzer = {
     const envSecretSurfaces: EnvSecretSurface[] = [];
     const thirdPartyCalls: ThirdPartyCall[] = [];
     let usesSpring = false;
+    // A21 — parsed roots kept (per file) for the bounded interprocedural call
+    // graph pass below; extraction itself stays per-file/streaming above.
+    const parsedFiles: { rel: string; root: NonNullable<Awaited<ReturnType<typeof parseJava>>> }[] =
+      [];
 
     for (const rel of files) {
       if (signal?.aborted) break;
@@ -142,7 +147,8 @@ export const javaAnalyzer: LanguageAnalyzer = {
       const root = await parseJava(source);
       if (!root) continue;
 
-      const ex = extractFile(root, posix(rel));
+      const relPosix = posix(rel);
+      const ex = extractFile(root, relPosix);
       routes.push(...ex.routes);
       entrypoints.push(...ex.entrypoints);
       ormModels.push(...ex.ormModels);
@@ -151,6 +157,7 @@ export const javaAnalyzer: LanguageAnalyzer = {
       envSecretSurfaces.push(...ex.envSecretSurfaces);
       thirdPartyCalls.push(...ex.thirdPartyCalls);
       usesSpring = usesSpring || ex.usesSpring;
+      parsedFiles.push({ rel: relPosix, root });
     }
 
     // Spring config: datasources + secret-looking config surfaces (offline).
@@ -183,6 +190,12 @@ export const javaAnalyzer: LanguageAnalyzer = {
       /* manifests optional */
     }
 
+    // A20 — Spring Security's declarative `authorizeHttpRequests` filter chain
+    // is project-wide config, not a per-controller annotation; apply it across
+    // every parsed file (reusing the roots already kept for A21's call graph)
+    // to routes still at `unknown` after per-file annotation resolution.
+    applySpringSecurityAuth(parsedFiles, routes);
+
     // Dedupe + stably sort (registry returns a single contribution verbatim).
     const dedupeRoutes = dedupeByKey(routes, (r) => `${r.method} ${r.path}`).sort((a, b) =>
       a.isApiRoute === b.isApiRoute
@@ -209,10 +222,10 @@ export const javaAnalyzer: LanguageAnalyzer = {
       ).sort(byName),
       taintSources: dedupeByLoc(taintSources).sort(byLocation),
       taintSinks: dedupeByLoc(taintSinks).sort(byLocation),
-      // No interprocedural/cross-file resolution for JVM yet (TS/JS only, see
-      // typescript/callgraph.ts) — Layer 2 falls back to its same-file
-      // proximity heuristic, unchanged.
-      taintFlows: [],
+      // A21 — bounded interprocedural resolution (same-class + same-file
+      // cross-class method calls; no cross-file resolution yet — see
+      // callgraph.ts's doc comment for exactly which tiers are reached).
+      taintFlows: scanJavaTaintFlows(parsedFiles),
     };
   },
 };
@@ -237,5 +250,12 @@ function entrypointKey(e: Entrypoint): string {
 // Re-export the deterministic builders so `@montr/appmap` keeps exposing them
 // (focused reuse + testing) even though they live behind the plugin.
 export { parseJava, getJavaParser } from "./parser.js";
-export { extractFile, type FileExtraction } from "./extract.js";
+export {
+  extractFile,
+  applySpringSecurityAuth,
+  extractSpringAuthPatterns,
+  type FileExtraction,
+  type SpringAuthPattern,
+} from "./extract.js";
 export { scanJavaConfig, type ConfigScan } from "./config.js";
+export { scanJavaTaintFlows, type JavaFileForCallgraph } from "./callgraph.js";

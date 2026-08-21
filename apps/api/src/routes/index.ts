@@ -11,8 +11,10 @@ import { registerDastRoutes } from "./dast.js";
 import { registerFindingRoutes } from "./findings.js";
 import { registerAuditRoutes } from "./audit.js";
 import { registerWebhookRoutes } from "./webhooks.js";
-// Phase-4 (Wave 5) — scale & intelligence. Stub seams registered here; the
-// feature agents (WS-R) fill the handler bodies in these owned files only.
+// Phase-4 (Wave 5) — scale & intelligence: custom rules, red-team scenarios,
+// scheduled scans, and cross-scan analytics. Fully implemented, not stubs
+// (analytics' aggregation reads stay honestly empty only because no writer
+// yet records posture snapshots — see analytics.ts's own header comment).
 import { registerAnalyticsRoutes } from "./analytics.js";
 import { registerRuleRoutes } from "./rules.js";
 import { registerScenarioRoutes } from "./scenarios.js";
@@ -41,7 +43,7 @@ export function registerRoutes(app: FastifyInstance, deps: ResolvedDeps): void {
       registerAuditRoutes(api, deps);
       registerWebhookRoutes(api, deps);
 
-      // Phase-4 (Wave 5) — scale & intelligence stubs.
+      // Phase-4 (Wave 5) — scale & intelligence.
       registerAnalyticsRoutes(api, deps);
       registerRuleRoutes(api, deps);
       registerScenarioRoutes(api, deps);

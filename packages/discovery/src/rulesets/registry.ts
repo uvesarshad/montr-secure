@@ -14,9 +14,11 @@ import { pythonRuleset } from "./python/index.js";
 import { javaRuleset } from "./java/index.js";
 
 /**
- * Registered per-language rulesets, stable order. Phase 1 ships TypeScript;
- * Python + JVM are pre-registered stubs (build-plan §7 Wave 4) their stack
- * agents fill under `rulesets/<lang>/` WITHOUT editing this list.
+ * Registered per-language rulesets, stable order. TypeScript, Python, and JVM
+ * are all fully implemented (build-plan §7 Wave 4) under `rulesets/<lang>/` —
+ * each declares real curated Semgrep rulesets, custom detectors, and SCA
+ * ecosystems, not stubs. A future stack is added by appending its ruleset
+ * here WITHOUT editing this list's callers.
  */
 export const LANGUAGE_RULESETS: readonly LanguageRuleset[] = [
   typescriptRuleset,

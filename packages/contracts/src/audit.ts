@@ -76,7 +76,15 @@ export type AuditAction = z.infer<typeof AuditActionSchema>;
  * One append-only audit record.
  * `hash = sha256(prevHash + canonicalJson({ ...event, hash: undefined }))`.
  * `prevHash` of the first record per client is the empty string.
- * `metadata` MUST be scrubbed of code/secret bodies before writing.
+ * `metadata` and `summary` MUST be scrubbed of code/secret bodies before
+ * writing. A Zod type cannot express that constraint (it requires runtime
+ * content inspection, not a shape check), so `z.record(z.string(),
+ * z.unknown())` below stays deliberately permissive — the constraint is
+ * enforced for real, unconditionally, at the single write chokepoint instead:
+ * `PrismaAuditLogClient.append` in `@montr/state-store/src/audit.ts`, via
+ * `@montr/security`'s `redactSensitive` + `findLogViolations` (audit finding
+ * A24). Every caller of `append()` gets this for free; nothing upstream needs
+ * to remember to scrub.
  */
 export const AuditEventSchema = z.object({
   id: IdSchema,

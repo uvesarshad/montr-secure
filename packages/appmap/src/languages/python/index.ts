@@ -24,6 +24,7 @@ import { scanPythonRoutes } from "./routes.js";
 import { scanPythonModels } from "./models.js";
 import { scanPythonSurfaces } from "./surfaces.js";
 import { scanPythonTaint } from "./taint.js";
+import { scanPythonTaintFlows } from "./callgraph.js";
 
 const PY_IGNORE = [
   "**/node_modules/**",
@@ -147,10 +148,10 @@ export const pythonAnalyzer: LanguageAnalyzer = {
       envSecretSurfaces: surfaces.envSecretSurfaces,
       taintSources: taint.taintSources,
       taintSinks: taint.taintSinks,
-      // No interprocedural/cross-file resolution for Python yet (TS/JS only,
-      // see typescript/callgraph.ts) — Layer 2 falls back to its same-file
-      // proximity heuristic, unchanged.
-      taintFlows: [],
+      // A21 — bounded interprocedural resolution (module-level functions,
+      // same-file + one-hop relative-import). See callgraph.ts's doc comment
+      // for exactly which patterns are (and are not) resolved.
+      taintFlows: scanPythonTaintFlows(mods),
     };
   },
 };

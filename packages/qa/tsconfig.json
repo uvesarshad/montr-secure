@@ -12,6 +12,12 @@
       "path": "../contracts"
     },
     {
+      "path": "../config"
+    },
+    {
+      "path": "../confirm"
+    },
+    {
       "path": "../fixtures"
     }
   ]

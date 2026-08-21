@@ -25,9 +25,12 @@
     "qa:corpus": "tsc -b && node dist/cli.js",
     "qa:corpus:selfcheck": "tsc -b && node dist/cli.js",
     "qa:variance": "tsc -b && node dist/cli.js --variance",
+    "qa:variance:selfcheck": "tsc -b && node dist/cli.js --variance --variance-selfcheck",
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {
+    "@montr/config": "workspace:*",
+    "@montr/confirm": "workspace:*",
     "@montr/contracts": "workspace:*",
     "@montr/fixtures": "workspace:*",
     "fast-glob": "^3.3.3"

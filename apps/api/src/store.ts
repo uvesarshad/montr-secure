@@ -3,10 +3,14 @@
  *
  * Scan / finding / audit repository shapes MIRROR the @montr/state-store (WS-C)
  * contracts but are declared locally (structural typing) so the API build is not
- * coupled to that package while it is in flight. Users, reports and DAST targets
- * are not yet on the shared StateStore, so the API owns those interfaces too.
- * `apiStoreFromStateStore` documents the integration path — the real StateStore
- * is structurally assignable to `StateStoreLike`.
+ * coupled to that package while it is in flight. Users and DAST targets are not
+ * on the shared StateStore, so the API owns those interfaces and queries the
+ * already-migrated Prisma tables directly (see prisma-store.ts). Reports DO have
+ * a real @montr/state-store repository (`ReportRepository`) — `ReportStore` here
+ * is only a structural-shape mirror, bridged to it in production by
+ * `ReportRepositoryAdapter` (prisma-store.ts). `apiStoreFromStateStore` documents
+ * the integration path — the real StateStore is structurally assignable to
+ * `StateStoreLike`.
  */
 import {
   AuditEventSchema,
@@ -443,8 +447,9 @@ export function createInMemoryApiStore(opts: InMemoryApiStoreOptions = {}): ApiS
 
 /**
  * Compose a production ApiStore from the shared StateStore (scans/findings/audit)
- * plus the API-owned stores for users/reports/DAST targets. Used at integration
- * once @montr/state-store surfaces the extra repositories.
+ * plus the API-owned stores for users/DAST targets (Prisma-direct) and reports
+ * (adapted from the real @montr/state-store `ReportRepository`). Called from
+ * production-deps.ts's real production bootstrap, not just at test integration.
  */
 export function apiStoreFromStateStore(
   state: StateStoreLike,

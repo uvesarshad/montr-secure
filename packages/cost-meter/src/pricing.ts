@@ -71,6 +71,26 @@ export function findModelRate(modelId: string): ModelCostRate | undefined {
 }
 
 /**
+ * The Batch API's flat discount (A31): "50% cost reduction on all token
+ * usage" per the current Claude API — applied uniformly across fresh input,
+ * output, and cache read/write components, on top of (not instead of) the
+ * cache multipliers above, matching how batch + prompt caching stack in
+ * practice.
+ */
+export const BATCH_DISCOUNT_MULTIPLIER = 0.5;
+
+export interface PriceUsageOptions {
+  /**
+   * True when this usage was billed via the Batch API (A31) — applies
+   * {@link BATCH_DISCOUNT_MULTIPLIER} to the whole computed price. Batch
+   * results are asynchronous (minutes to 24h) so this only ever applies to
+   * usage recorded from `LlmGateway.getBatchResults()`, never `complete()`/
+   * `stream()`.
+   */
+  batch?: boolean;
+}
+
+/**
  * Deterministic USD price for a token usage against a model's reference rate.
  * Cache reads bill at ~0.1× and cache writes at ~1.25× the input rate (matching
  * the platform's prompt-cache economics).
@@ -82,7 +102,12 @@ export function findModelRate(modelId: string): ModelCostRate | undefined {
  * error metric; pass `logger` (e.g. from `CostMeterOptions`) to also emit a
  * structured warning with the model id.
  */
-export function priceUsageUsd(usage: TokenUsage, modelId: string, logger?: Logger): number {
+export function priceUsageUsd(
+  usage: TokenUsage,
+  modelId: string,
+  logger?: Logger,
+  opts: PriceUsageOptions = {},
+): number {
   const rate = findModelRate(modelId);
   const effectiveRate = rate ?? UNKNOWN_MODEL_FALLBACK_RATE;
   if (!rate) {
@@ -100,5 +125,5 @@ export function priceUsageUsd(usage: TokenUsage, modelId: string, logger?: Logge
     (cacheRead / 1_000_000) * effectiveRate.inputPerMillionUsd * 0.1 +
     (cacheWrite / 1_000_000) * effectiveRate.inputPerMillionUsd * 1.25 +
     (usage.outputTokens / 1_000_000) * effectiveRate.outputPerMillionUsd;
-  return roundUsd(usd);
+  return roundUsd(opts.batch ? usd * BATCH_DISCOUNT_MULTIPLIER : usd);
 }

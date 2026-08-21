@@ -71,7 +71,8 @@ export {
 } from "./auth/csrf.js";
 export { SESSION_COOKIE } from "./auth/session.js";
 
-// Orchestrator stub (dev/tests until WS-D wiring)
+// Orchestrator stub — dev/tests only. Production wires the real orchestrator
+// via production-deps.ts's createProductionDeps, not this stub.
 export { createStubOrchestrator, type StubOrchestratorDeps } from "./stub-orchestrator.js";
 
 // DAST allowlist helper (also enforced at the route layer)

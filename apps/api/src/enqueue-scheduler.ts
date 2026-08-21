@@ -26,6 +26,7 @@
 import {
   LAYER_ORDER,
   createRealBullMqTransport,
+  type BullMqSchedulerOptions,
   type BullMqTransport,
   type JobProcessor,
   type JobScheduler,
@@ -35,19 +36,43 @@ import {
 } from "@montr/orchestrator";
 import {
   QUEUE_NAMES,
+  resolveQueueName,
   type KillSwitchSignal,
+  type LayerId,
   type LayerJobData,
-  type QueueName,
   type RetryPolicy,
 } from "@montr/contracts";
 
+/**
+ * A27 (opt-in, off by default): mirrors `@montr/orchestrator`'s
+ * `BullMqJobScheduler` tenant-isolation options exactly. apps/api only ever
+ * PRODUCES jobs (see the file doc comment above), but the queue names it
+ * enqueues into must match apps/worker's consumer-side names byte for byte,
+ * or a tenant-isolated job silently lands in a queue nothing ever drains.
+ * Callers should derive this from the SAME config both processes load
+ * (`deriveTenantSchedulerOptions`, packages/orchestrator/src/bullmq-scheduler.ts).
+ */
 export class EnqueueOnlyScheduler implements JobScheduler {
-  private readonly queues = new Map<QueueName, QueueHandle>();
+  /** Keyed by layer (shared mode) or `${layer}:${clientId}` (tenant-isolated mode). */
+  private readonly queues = new Map<string, QueueHandle>();
   private killHandler?: (signal: KillSwitchSignal) => void;
   private channel?: KillChannel;
   private started = false;
+  private readonly tenantIsolation: boolean;
+  private readonly tenantIds: string[];
 
-  constructor(private readonly transport: BullMqTransport) {}
+  constructor(
+    private readonly transport: BullMqTransport,
+    options: BullMqSchedulerOptions = {},
+  ) {
+    this.tenantIsolation = options.tenantIsolation ?? false;
+    this.tenantIds = options.tenantIds ?? [];
+    if (this.tenantIsolation && this.tenantIds.length === 0) {
+      throw new Error(
+        "EnqueueOnlyScheduler: tenantIsolation is enabled but no tenantIds were provided",
+      );
+    }
+  }
 
   /** Never invoked: this scheduler never creates a consumer for any queue. */
   setProcessor(_processor: JobProcessor): void {
@@ -57,17 +82,28 @@ export class EnqueueOnlyScheduler implements JobScheduler {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    const tenants: (string | undefined)[] = this.tenantIsolation ? this.tenantIds : [undefined];
     for (const layer of LAYER_ORDER) {
-      const name = QUEUE_NAMES[layer];
-      this.queues.set(name, this.transport.createQueue(name));
+      for (const tenantId of tenants) {
+        const name = this.queueName(layer, tenantId);
+        this.queues.set(this.queueKey(layer, tenantId), this.transport.createQueue(name));
+      }
     }
     this.channel = this.transport.killChannel();
     this.channel.subscribe((signal) => this.killHandler?.(signal));
   }
 
   async enqueue(job: LayerJobData, policy: RetryPolicy): Promise<void> {
-    const queue = this.queues.get(QUEUE_NAMES[job.layer]);
-    if (!queue) throw new Error(`EnqueueOnlyScheduler: no queue for layer ${job.layer}`);
+    const key = this.queueKey(job.layer, this.tenantIsolation ? job.clientId : undefined);
+    const queue = this.queues.get(key);
+    if (!queue) {
+      throw new Error(
+        this.tenantIsolation
+          ? `EnqueueOnlyScheduler: no queue for layer ${job.layer} clientId ${job.clientId} ` +
+              "(clientId is not in the configured tenantIds)"
+          : `EnqueueOnlyScheduler: no queue for layer ${job.layer}`,
+      );
+    }
     // Mirrors BullMqJobScheduler.enqueue: retry is centralized in the
     // controller, so BullMQ delivers each job once (attempts: 1); the
     // idempotencyKey is the jobId so replays dedupe.
@@ -93,12 +129,21 @@ export class EnqueueOnlyScheduler implements JobScheduler {
     await this.channel?.close();
     await this.transport.close();
   }
+
+  private queueName(layer: LayerId, tenantId: string | undefined): string {
+    return tenantId ? resolveQueueName(layer, tenantId, true) : QUEUE_NAMES[layer];
+  }
+
+  private queueKey(layer: LayerId, tenantId: string | undefined): string {
+    return tenantId ? `${layer}:${tenantId}` : layer;
+  }
 }
 
 /** Build the produce-only scheduler over the real BullMQ/ioredis transport. */
 export async function createEnqueueOnlyScheduler(
   connection: RedisConnection,
+  options?: BullMqSchedulerOptions,
 ): Promise<EnqueueOnlyScheduler> {
   const transport = await createRealBullMqTransport(connection);
-  return new EnqueueOnlyScheduler(transport);
+  return new EnqueueOnlyScheduler(transport, options);
 }

@@ -2,7 +2,8 @@
 # Montr Secure — CI (build-plan §3.7 / §4.7 / §4.8).
 #
 # Pipeline: install → lint → typecheck → test → build, plus:
-#   - golden-corpus  : precision/recall/FP-rate regression gate (@montr/qa), non-zero on regression.
+#   - golden-corpus  : precision/recall/FP-rate regression gate (@montr/qa), non-zero on regression,
+#                      plus the A23 model-variance matrix (per-model accuracy-cliff check).
 #   - self-scan      : dogfood Semgrep SAST + Gitleaks secrets on our OWN source.
 #   - docker         : compose config validate + image build.
 #   - helm           : lint (strict) + template (permutations) + kubeconform.
@@ -121,6 +122,24 @@ jobs:
           name: golden-corpus-scan
           path: scan.json
           if-no-files-found: ignore
+
+      # ⛔ Model-variance harness (A23 — PRD §15/§17: publish the model matrix
+      # and catch accuracy cliffs). Prior to A23 this ran the tautological
+      # `perfectConfirmedForRepo` echo, which ignores the model entirely — every
+      # row scored an identical 100% and no cliff could ever show up. `qa:variance`
+      # (no flags) now runs the REAL `@montr/confirm` static-confirmation engine
+      # once per model in the matrix — same offline pattern as the golden-corpus
+      # scan above (FAKE in-process LLM gateway, no live provider credentials or
+      # spend needed), except the fake gateway here is deliberately configured to
+      # DIFFER per model (`packages/qa/src/real-confirmation-scanner.ts`'s
+      # `gatewayForModel`), so a genuine accuracy cliff (a below-floor model
+      # missing findings a floor-or-better model catches) produces a REAL,
+      # different recall per row rather than reproducing today's bug. Gates on
+      # floor-or-better models only (`qa:variance`'s own exit code); a
+      # below-floor cliff is surfaced in the printed matrix as informational,
+      # never a blocker — see `docs/infra/testing.md`.
+      - name: Model-variance matrix — per-model accuracy cliff check (non-zero on a floor-or-better regression)
+        run: pnpm --filter @montr/qa qa:variance
 
   # ---------------------------------------------------------------------------
   # Self-scan / dogfood (§4.8, §14, §19 DoD "scans itself clean"; fixes A7).

@@ -14,11 +14,13 @@ import {
   KillSwitchSignalSchema,
   LayerJobDataSchema,
   QUEUE_NAMES,
+  resolveQueueName,
   type KillSwitchSignal,
+  type LayerId,
   type LayerJobData,
-  type QueueName,
   type RetryPolicy,
 } from "@montr/contracts";
+import type { MontrConfig } from "@montr/config";
 import { LAYER_ORDER } from "./fsm.js";
 import type { JobProcessor, JobScheduler } from "./scheduler.js";
 
@@ -47,24 +49,75 @@ export interface JobEnqueueOptions {
   removeOnFail?: boolean | number;
 }
 
-/** Everything the scheduler needs from BullMQ/Redis, so it can be faked in tests. */
+/**
+ * Everything the scheduler needs from BullMQ/Redis, so it can be faked in
+ * tests. `createQueue`/`createWorker` take a plain `string` (not `QueueName`)
+ * because per-tenant queue isolation (A27) derives names dynamically via
+ * `resolveQueueName` — they are no longer limited to the fixed
+ * `QUEUE_NAMES` literal set.
+ */
 export interface BullMqTransport {
-  createQueue(name: QueueName): QueueHandle;
-  createWorker(name: QueueName, processor: JobProcessor): WorkerHandle;
+  createQueue(name: string): QueueHandle;
+  createWorker(name: string, processor: JobProcessor): WorkerHandle;
   killChannel(): KillChannel;
   close(): Promise<void>;
+}
+
+/**
+ * Per-tenant queue isolation (A27, opt-in). `tenantIsolation: false`
+ * (default) is byte-for-byte identical to pre-A27 behavior: one shared queue
+ * per layer, keyed by `QUEUE_NAMES[layer]`. `tenantIsolation: true` fans out
+ * one queue + one BullMQ Worker per (layer, tenantId) pair instead — each
+ * Worker independently polls Redis, so a large backlog on one tenant's queue
+ * cannot block a newly-queued job on another tenant's queue for the same
+ * layer (no shared head-of-line). `tenantIds` must be non-empty when
+ * `tenantIsolation` is true.
+ */
+export interface BullMqSchedulerOptions {
+  tenantIsolation?: boolean;
+  tenantIds?: string[];
+}
+
+/**
+ * Derive {@link BullMqSchedulerOptions} from a loaded `MontrConfig`. Shared by
+ * apps/worker (consumer: queues + workers) and apps/api's produce-only
+ * scheduler, so both processes agree on exactly the same queue names — a
+ * mismatch here would mean apps/api enqueues into a queue apps/worker never
+ * listens on. See `QueueConfigSchema`'s doc comment (packages/config/src/
+ * schema.ts) for the off-by-default rationale and the tenantIds default.
+ */
+export function deriveTenantSchedulerOptions(
+  config: Pick<MontrConfig, "clientId" | "queue">,
+): BullMqSchedulerOptions {
+  if (!config.queue.perTenantIsolation) return { tenantIsolation: false };
+  const tenantIds = config.queue.tenantIds.length > 0 ? config.queue.tenantIds : [config.clientId];
+  return { tenantIsolation: true, tenantIds };
 }
 
 /* ------------------------------- scheduler ------------------------------- */
 
 export class BullMqJobScheduler implements JobScheduler {
   private processor?: JobProcessor;
-  private readonly queues = new Map<QueueName, QueueHandle>();
+  /** Keyed by layer (shared mode) or `${layer}:${clientId}` (tenant-isolated mode). */
+  private readonly queues = new Map<string, QueueHandle>();
   private readonly workers: WorkerHandle[] = [];
   private channel?: KillChannel;
   private killHandler?: (signal: KillSwitchSignal) => void;
+  private readonly tenantIsolation: boolean;
+  private readonly tenantIds: string[];
 
-  constructor(private readonly transport: BullMqTransport) {}
+  constructor(
+    private readonly transport: BullMqTransport,
+    options: BullMqSchedulerOptions = {},
+  ) {
+    this.tenantIsolation = options.tenantIsolation ?? false;
+    this.tenantIds = options.tenantIds ?? [];
+    if (this.tenantIsolation && this.tenantIds.length === 0) {
+      throw new Error(
+        "BullMqJobScheduler: tenantIsolation is enabled but no tenantIds were provided",
+      );
+    }
+  }
 
   setProcessor(processor: JobProcessor): void {
     this.processor = processor;
@@ -72,12 +125,25 @@ export class BullMqJobScheduler implements JobScheduler {
 
   async start(): Promise<void> {
     if (!this.processor) throw new Error("BullMqJobScheduler.start(): processor not set");
+    // Shared mode: one [undefined] "tenant" per layer, i.e. today's behavior
+    // unchanged. Tenant-isolated mode: one real tenantId per layer.
+    const tenants: (string | undefined)[] = this.tenantIsolation ? this.tenantIds : [undefined];
     for (const layer of LAYER_ORDER) {
-      const name = QUEUE_NAMES[layer];
-      this.queues.set(name, this.transport.createQueue(name));
+      for (const tenantId of tenants) {
+        const name = this.queueName(layer, tenantId);
+        this.queues.set(this.queueKey(layer, tenantId), this.transport.createQueue(name));
+      }
     }
+    // A separate loop (queues first, then workers) preserves the pre-A27
+    // ordering and, in tenant-isolated mode, gives every tenant's queue a
+    // dedicated Worker that polls Redis concurrently and independently of
+    // every other tenant's Worker — no queue is fully drained before another
+    // tenant's jobs are picked up.
     for (const layer of LAYER_ORDER) {
-      this.workers.push(this.transport.createWorker(QUEUE_NAMES[layer], this.processor));
+      for (const tenantId of tenants) {
+        const name = this.queueName(layer, tenantId);
+        this.workers.push(this.transport.createWorker(name, this.processor));
+      }
     }
     this.channel = this.transport.killChannel();
     this.channel.subscribe((signal) => this.killHandler?.(signal));
@@ -85,8 +151,16 @@ export class BullMqJobScheduler implements JobScheduler {
   }
 
   async enqueue(job: LayerJobData, policy: RetryPolicy): Promise<void> {
-    const queue = this.queues.get(QUEUE_NAMES[job.layer]);
-    if (!queue) throw new Error(`BullMqJobScheduler: no queue for layer ${job.layer}`);
+    const key = this.queueKey(job.layer, this.tenantIsolation ? job.clientId : undefined);
+    const queue = this.queues.get(key);
+    if (!queue) {
+      throw new Error(
+        this.tenantIsolation
+          ? `BullMqJobScheduler: no queue for layer ${job.layer} clientId ${job.clientId} ` +
+              "(clientId is not in the configured tenantIds)"
+          : `BullMqJobScheduler: no queue for layer ${job.layer}`,
+      );
+    }
     // Retry is centralized in the controller, so BullMQ delivers each job once
     // (attempts: 1); the idempotencyKey is the jobId so replays dedupe.
     await queue.add(job.layer, job, {
@@ -111,6 +185,14 @@ export class BullMqJobScheduler implements JobScheduler {
     for (const queue of this.queues.values()) await queue.close();
     await this.channel?.close();
     await this.transport.close();
+  }
+
+  private queueName(layer: LayerId, tenantId: string | undefined): string {
+    return tenantId ? resolveQueueName(layer, tenantId, true) : QUEUE_NAMES[layer];
+  }
+
+  private queueKey(layer: LayerId, tenantId: string | undefined): string {
+    return tenantId ? `${layer}:${tenantId}` : layer;
   }
 }
 
@@ -170,7 +252,7 @@ export async function createRealBullMqTransport(
   const openConnections: RedisConn[] = [sharedConnection];
 
   return {
-    createQueue(name: QueueName): QueueHandle {
+    createQueue(name: string): QueueHandle {
       const queue = new bullmq.Queue(name, { connection: sharedConnection });
       return {
         async add(jobName, data, opts): Promise<void> {
@@ -186,7 +268,7 @@ export async function createRealBullMqTransport(
       };
     },
 
-    createWorker(name: QueueName, processor: JobProcessor): WorkerHandle {
+    createWorker(name: string, processor: JobProcessor): WorkerHandle {
       // Each worker gets its own blocking connection (BullMQ requirement).
       const workerConnection = connect();
       openConnections.push(workerConnection);
@@ -264,7 +346,8 @@ export async function createRealBullMqTransport(
 /** Convenience: a BullMQ scheduler wired to the real transport (apps/worker). */
 export async function createBullMqScheduler(
   connection: RedisConnection,
+  options?: BullMqSchedulerOptions,
 ): Promise<BullMqJobScheduler> {
   const transport = await createRealBullMqTransport(connection);
-  return new BullMqJobScheduler(transport);
+  return new BullMqJobScheduler(transport, options);
 }

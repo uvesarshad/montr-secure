@@ -62,6 +62,26 @@ function lineItem(
  * Project the LLM cost of a scan from its App-Map size and mode. Only the
  * LLM-using layers are modeled (L0 labeling, L2 correlation, L3 confirmation,
  * L5 report) — deterministic tool layers (L1 discovery) burn no tokens.
+ *
+ * A19: the per-unit constants below (`files*300 + routes*250`, etc.) are
+ * DELIBERATE heuristics, not calibrated against real captured prompt sizes —
+ * this repo has no such data source today. Checked before writing this note:
+ * `corpus/baseline.json` records recall/precision/FP-rate only, never prompt
+ * or token sizes; there is no scan-log or fixture capture anywhere in the repo
+ * of real per-layer prompt byte/token counts (`grep -r
+ * "observedTokens|promptSize|actualTokens"` across the repo returns nothing).
+ * Fabricating a calibration dataset would be worse than an honest heuristic,
+ * so these constants are left as-is, clearly labeled. This estimator runs
+ * BEFORE Layer 0 produces any real prompt text — it projects from App-Map
+ * *counts* (files/routes/sinks), not text, so it structurally cannot call a
+ * token-counting endpoint the way `MontrLlmGateway.countTokens()` (A19, real
+ * per-call counting via the Anthropic adapter) can for an already-built
+ * prompt. When real per-scan prompt-size telemetry exists — e.g. by
+ * aggregating `CostMeter.actual().byLayer` token counts across production
+ * scans and comparing them against the App-Map counts that produced them —
+ * recalibrate these constants against that real distribution rather than
+ * against this note's guesses. See docs/modules/llm-gateway.md's A19 section
+ * for the same tradeoff record.
  */
 export function estimateScanCost(input: EstimateInput, opts: EstimateOptions = {}): CostEstimate {
   const mult = MODE_MULTIPLIER[input.mode];

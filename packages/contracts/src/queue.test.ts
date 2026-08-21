@@ -11,6 +11,8 @@ import {
   buildIdempotencyKey,
   QUEUE_NAMES,
   KILL_SWITCH_CHANNEL,
+  resolveQueueName,
+  sanitizeClientIdForQueueName,
 } from "./queue.js";
 
 /**
@@ -289,5 +291,43 @@ describe("QUEUE_NAMES / KILL_SWITCH_CHANNEL constants", () => {
 
   it("exposes the kill-switch pub/sub channel name", () => {
     expect(KILL_SWITCH_CHANNEL).toBe("montr.control.kill");
+  });
+});
+
+describe("resolveQueueName (A27 — per-tenant queue isolation, opt-in)", () => {
+  it("tenantIsolation=false returns the shared QUEUE_NAMES entry unchanged (regression safety)", () => {
+    for (const layer of ["layer0", "layer1", "layer2", "layer3", "layer4", "layer5"] as const) {
+      expect(resolveQueueName(layer, "client_1", false)).toBe(QUEUE_NAMES[layer]);
+    }
+  });
+
+  it("tenantIsolation=false ignores clientId entirely", () => {
+    expect(resolveQueueName("layer2", "client_a", false)).toBe(
+      resolveQueueName("layer2", "client_b", false),
+    );
+  });
+
+  it("tenantIsolation=true derives a distinct queue name per clientId", () => {
+    expect(resolveQueueName("layer2", "client_a", true)).toBe("montr.layer2.client_a");
+    expect(resolveQueueName("layer2", "client_b", true)).toBe("montr.layer2.client_b");
+  });
+
+  it("tenantIsolation=true never collides with the shared (off) queue name", () => {
+    const shared = resolveQueueName("layer0", "client_1", false);
+    const isolated = resolveQueueName("layer0", "client_1", true);
+    expect(isolated).not.toBe(shared);
+    expect(isolated.startsWith(shared)).toBe(true);
+  });
+
+  it("rejects a clientId with characters unsafe for a Redis/BullMQ queue name", () => {
+    expect(() => resolveQueueName("layer0", "client with spaces", true)).toThrow(
+      /unsafe to use in a BullMQ\/Redis queue name/,
+    );
+    expect(() => resolveQueueName("layer0", "client:1", true)).toThrow();
+    expect(() => resolveQueueName("layer0", "", true)).toThrow();
+  });
+
+  it("accepts a clientId of letters, digits, dashes and underscores", () => {
+    expect(sanitizeClientIdForQueueName("Client-9_ok")).toBe("Client-9_ok");
   });
 });

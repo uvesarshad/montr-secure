@@ -1,12 +1,25 @@
 import {
+  NotImplementedError,
   ProviderNotConfiguredError,
   type LLMRequest,
   type LLMStreamEvent,
   type LLMToolCall,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
-import { buildAnthropicStyleFields, mapAnthropicStopReason } from "../mapping.js";
-import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types.js";
+import {
+  buildAnthropicCountTokensBody,
+  buildAnthropicStyleFields,
+  mapAnthropicStopReason,
+} from "../mapping.js";
+import {
+  makeUsage,
+  type AdapterBatchHandle,
+  type AdapterBatchResultItem,
+  type AdapterBatchStatus,
+  type AdapterBatchSubmitItem,
+  type AdapterCompletion,
+  type ProviderAdapter,
+} from "./types.js";
 import { resolveOutboundTarget, type AdapterEgress } from "./egress.js";
 
 /** Anthropic's default API host, contacted when no `llm.endpoint` is configured. */
@@ -68,11 +81,59 @@ export type AnthropicStreamEventLike =
   | { type: "message_stop" }
   | { type: "ping" };
 
+/** Result of `messages.countTokens` (A19) — only `input_tokens` is used. */
+export interface AnthropicCountTokensResultLike {
+  input_tokens: number;
+}
+
+/** One request row of a `messages.batches.create` submission (A31). */
+export interface AnthropicBatchRequestLike {
+  custom_id: string;
+  params: Record<string, unknown>;
+}
+
+/** Shape of `messages.batches.create`/`.retrieve` (A31). */
+export interface AnthropicBatchLike {
+  id: string;
+  processing_status: string;
+  request_counts: {
+    processing: number;
+    succeeded: number;
+    errored: number;
+    canceled: number;
+    expired: number;
+  };
+}
+
+/** One row of `messages.batches.results` (A31). */
+export interface AnthropicBatchResultLike {
+  custom_id: string;
+  result:
+    | { type: "succeeded"; message: AnthropicMessageLike }
+    | { type: "errored"; error: { type: string; message?: string } }
+    | { type: "canceled" }
+    | { type: "expired" };
+}
+
+/** `messages.batches` sub-client (A31, Batch API). Optional — only Anthropic wires this today. */
+export interface AnthropicBatchesLike {
+  create(body: { requests: AnthropicBatchRequestLike[] }): Promise<AnthropicBatchLike>;
+  retrieve(batchId: string): Promise<AnthropicBatchLike>;
+  results(batchId: string): Promise<AsyncIterable<AnthropicBatchResultLike>>;
+}
+
 export interface AnthropicMessagesLike {
   create(
     body: Record<string, unknown>,
     options?: { signal?: AbortSignal },
   ): Promise<AnthropicMessageLike | AsyncIterable<AnthropicStreamEventLike>>;
+  /** Real token-counting endpoint (A19). Optional — injected test clients may omit it. */
+  countTokens?(
+    body: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
+  ): Promise<AnthropicCountTokensResultLike>;
+  /** Batch API (A31). Optional — injected test clients may omit it. */
+  batches?: AnthropicBatchesLike;
 }
 
 export interface AnthropicClientLike {
@@ -220,6 +281,95 @@ export class AnthropicAdapter implements ProviderAdapter {
     )) as AsyncIterable<AnthropicStreamEventLike>;
     yield* mapAnthropicStream(events);
   }
+
+  /**
+   * Real token count via Anthropic's `messages.countTokens` (A19) — see
+   * {@link buildAnthropicCountTokensBody}. Not used by the pre-call budget
+   * guard (`gateway.ts`'s `estimateTokens` stays a fast local heuristic for
+   * that hot path) — this is for callers that want a precise, provider-
+   * verified count and can afford the extra round-trip.
+   */
+  async countTokens(request: LLMRequest, modelId: string, signal?: AbortSignal): Promise<number> {
+    this.assertEgress();
+    const client = await this.getClient();
+    if (!client.messages.countTokens) {
+      throw new NotImplementedError(
+        "Anthropic client has no countTokens — real token counting unavailable",
+        { provider: "anthropic" },
+      );
+    }
+    const result = await client.messages.countTokens(
+      buildAnthropicCountTokensBody(request, modelId),
+      signal ? { signal } : undefined,
+    );
+    return result.input_tokens;
+  }
+
+  /** Submit a Batch API job (A31). Requires `messages.batches` on the injected/real client. */
+  async submitBatch(items: AdapterBatchSubmitItem[]): Promise<AdapterBatchHandle> {
+    this.assertEgress();
+    const client = await this.getClient();
+    if (!client.messages.batches) {
+      throw new NotImplementedError("Anthropic client has no batches API", {
+        provider: "anthropic",
+      });
+    }
+    const requests = items.map((item): AnthropicBatchRequestLike => ({
+      custom_id: item.customId,
+      params: buildBody(item.request, item.modelId),
+    }));
+    const batch = await client.messages.batches.create({ requests });
+    return { batchId: batch.id, processingStatus: batch.processing_status };
+  }
+
+  /** Poll a submitted batch's status + per-outcome counts (A31). */
+  async pollBatch(batchId: string): Promise<AdapterBatchStatus> {
+    this.assertEgress();
+    const client = await this.getClient();
+    if (!client.messages.batches) {
+      throw new NotImplementedError("Anthropic client has no batches API", {
+        provider: "anthropic",
+      });
+    }
+    const batch = await client.messages.batches.retrieve(batchId);
+    return {
+      batchId: batch.id,
+      processingStatus: batch.processing_status,
+      counts: { ...batch.request_counts },
+    };
+  }
+
+  /** Stream a completed (or partially completed) batch's per-request results (A31). */
+  async *getBatchResults(batchId: string): AsyncGenerator<AdapterBatchResultItem> {
+    this.assertEgress();
+    const client = await this.getClient();
+    if (!client.messages.batches) {
+      throw new NotImplementedError("Anthropic client has no batches API", {
+        provider: "anthropic",
+      });
+    }
+    const results = await client.messages.batches.results(batchId);
+    for await (const row of results) {
+      if (row.result.type === "succeeded") {
+        yield {
+          customId: row.custom_id,
+          status: "succeeded",
+          completion: mapAnthropicMessage(row.result.message, batchId),
+        };
+      } else if (row.result.type === "errored") {
+        yield {
+          customId: row.custom_id,
+          status: "errored",
+          errorType: row.result.error.type,
+          message: row.result.error.message ?? "batch request errored",
+        };
+      } else if (row.result.type === "canceled") {
+        yield { customId: row.custom_id, status: "canceled" };
+      } else {
+        yield { customId: row.custom_id, status: "expired" };
+      }
+    }
+  }
 }
 
 /** Build a real Anthropic SDK client. Requires a configured BYO key. */
@@ -232,7 +382,15 @@ async function createDefaultAnthropicClient(config: MontrConfig): Promise<Anthro
   }
   const mod = (await import("@anthropic-ai/sdk")) as unknown as {
     default: new (opts: Record<string, unknown>) => {
-      messages: { create: (body: unknown, options?: unknown) => unknown };
+      messages: {
+        create: (body: unknown, options?: unknown) => unknown;
+        countTokens: (body: unknown, options?: unknown) => unknown;
+        batches: {
+          create: (body: unknown) => unknown;
+          retrieve: (batchId: string) => unknown;
+          results: (batchId: string) => unknown;
+        };
+      };
     };
   };
   const client = new mod.default({
@@ -246,6 +404,30 @@ async function createDefaultAnthropicClient(config: MontrConfig): Promise<Anthro
         client.messages.create(body, options) as Promise<
           AnthropicMessageLike | AsyncIterable<AnthropicStreamEventLike>
         >,
+      // A19: real token counting. Older `@anthropic-ai/sdk` releases may not
+      // expose `messages.countTokens` — guarded so a stale SDK version
+      // degrades to the gateway's heuristic fallback instead of throwing at
+      // client-construction time.
+      ...(typeof client.messages.countTokens === "function"
+        ? {
+            countTokens: (body, options) =>
+              client.messages.countTokens(body, options) as Promise<AnthropicCountTokensResultLike>,
+          }
+        : {}),
+      // A31: Batch API. Same guard as above for SDK-version safety.
+      ...(client.messages.batches
+        ? {
+            batches: {
+              create: (body) => client.messages.batches.create(body) as Promise<AnthropicBatchLike>,
+              retrieve: (batchId) =>
+                client.messages.batches.retrieve(batchId) as Promise<AnthropicBatchLike>,
+              results: (batchId) =>
+                client.messages.batches.results(batchId) as Promise<
+                  AsyncIterable<AnthropicBatchResultLike>
+                >,
+            },
+          }
+        : {}),
     },
   };
 }

@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@montr/contracts": "workspace:*",
+    "@montr/security": "workspace:*",
     "@montr/telemetry": "workspace:*",
     "@prisma/client": "^5.20.0"
   },

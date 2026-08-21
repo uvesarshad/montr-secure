@@ -12,6 +12,8 @@ export {
   addUsage,
   zeroUsage,
   roundUsd,
+  BATCH_DISCOUNT_MULTIPLIER,
+  type PriceUsageOptions,
 } from "./pricing.js";
 export { UNKNOWN_MODEL_FALLBACK_RATE } from "@montr/contracts";
 

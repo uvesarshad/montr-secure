@@ -14,6 +14,18 @@ export {
   type CreateGatewayOptions,
 } from "./gateway.js";
 
+// A31 — Batch API types (submitBatch/pollBatch/getBatchResults are additive
+// methods on MontrLlmGateway; see gateway.ts and docs/modules/llm-gateway.md).
+export {
+  type LLMBatchRequestItem,
+  type LLMBatchHandle,
+  type LLMBatchProcessingStatus,
+  type LLMBatchCounts,
+  type LLMBatchStatus,
+  type LLMBatchResultItem,
+  type LLMBatchResultsOptions,
+} from "./batch.js";
+
 // Re-exported for convenience: callers wiring `budgetRegistry` (A2 pre-call
 // budget guard) into `createLlmGateway` shouldn't need a direct
 // `@montr/cost-meter` import just for the type.
@@ -96,6 +108,7 @@ export {
   toVertexTools,
   toOpenAiTools,
   buildAnthropicStyleFields,
+  buildAnthropicCountTokensBody,
   type AnthropicToolLike,
   type VertexToolLike,
   type VertexFunctionDeclaration,

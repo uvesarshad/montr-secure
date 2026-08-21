@@ -102,6 +102,11 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
   // Air-gap SAST (A4): local Semgrep ruleset dir, in place of hosted `p/...`
   // registry packs. See packages/discovery/src/detectors/sast.ts.
   set("MONTR_DISCOVERY_RULESETS_DIR", ["discovery", "rulesetsDir"]);
+  // Per-tenant BullMQ queue isolation (A27). OFF by default — see
+  // QueueConfigSchema's doc comment (packages/config/src/schema.ts) and
+  // packages/orchestrator/src/bullmq-scheduler.ts.
+  set("MONTR_QUEUE_PER_TENANT_ISOLATION", ["queue", "perTenantIsolation"], parseBool);
+  set("MONTR_QUEUE_TENANT_IDS", ["queue", "tenantIds"], parseList);
   // HashiCorp Vault connection (only consulted when MONTR_KEY_SOURCE=vault).
   set("VAULT_ADDR", ["security", "vault", "addr"]);
   set("VAULT_TOKEN", ["security", "vault", "token"]);

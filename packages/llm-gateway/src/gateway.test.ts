@@ -4,6 +4,7 @@ import {
   BudgetPolicySchema,
   KeyTierRejectedError,
   ModelBelowFloorError,
+  NotImplementedError,
   type LLMRequest,
   type LLMStreamEvent,
   type Provider,
@@ -12,7 +13,15 @@ import { parseConfig, type MontrConfig } from "@montr/config";
 import { getMetrics, type Logger } from "@montr/telemetry";
 import { createBudgetRegistry, createCostMeter } from "@montr/cost-meter";
 import { MontrLlmGateway, createLlmGateway, type CreateGatewayOptions } from "./gateway.js";
-import { makeUsage, type ProviderAdapter, type AdapterCompletion } from "./adapters/index.js";
+import {
+  makeUsage,
+  type ProviderAdapter,
+  type AdapterCompletion,
+  type AdapterBatchResultItem,
+  type AdapterBatchStatus,
+  type AdapterBatchHandle,
+  type AdapterBatchSubmitItem,
+} from "./adapters/index.js";
 
 /**
  * Integration coverage for the gateway's retry/backoff, model-floor, and
@@ -775,5 +784,202 @@ describe("A13 — LLM response parse-failure metric", () => {
 
     expect(response.toolCalls).toEqual([{ id: "call_1", name: "grep", input: { pattern: "x" } }]);
     expect(logger.warn).not.toHaveBeenCalledWith("llm.response_parse_failure", expect.anything());
+  });
+});
+
+/**
+ * A19 — real token counting. `gateway.countTokens()` prefers the adapter's
+ * real provider-verified count and falls back to the fast heuristic
+ * (`estimateTokens`) when the adapter doesn't support it or the real call
+ * fails — never throws.
+ */
+describe("gateway.countTokens() (A19)", () => {
+  class CountingAdapter extends FakeAdapter {
+    calls: LLMRequest[] = [];
+    constructor(private readonly behavior: () => number | Error) {
+      super(() => ok());
+    }
+    async countTokens(request: LLMRequest): Promise<number> {
+      this.calls.push(request);
+      const outcome = this.behavior();
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    }
+  }
+
+  it("uses the adapter's real count when available", async () => {
+    const adapter = new CountingAdapter(() => 999);
+    const gateway = makeGateway(adapter);
+    const count = await gateway.countTokens(req({ messages: [{ role: "user", content: "hi" }] }));
+    expect(count).toBe(999);
+    expect(adapter.calls).toHaveLength(1);
+  });
+
+  it("falls back to the length/4 heuristic when the adapter has no countTokens", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const gateway = makeGateway(adapter);
+    const request = req({ messages: [{ role: "user", content: "a".repeat(40) }] });
+    const count = await gateway.countTokens(request);
+    expect(count).toBe(await gateway.estimateTokens(request));
+  });
+
+  it("falls back to the heuristic (and logs a warning, never throws) when the real count fails", async () => {
+    const adapter = new CountingAdapter(() => new Error("network down"));
+    const logger = spyLogger();
+    const gateway = makeGateway(adapter, { logger });
+    const request = req({ messages: [{ role: "user", content: "a".repeat(40) }] });
+    const count = await gateway.countTokens(request);
+    expect(count).toBe(await gateway.estimateTokens(request));
+    expect(logger.warn).toHaveBeenCalledWith(
+      "llm.count_tokens_failed",
+      expect.objectContaining({ error: "network down" }),
+    );
+  });
+});
+
+/**
+ * A31 — Batch API. Orchestration-level coverage: model/floor resolution on
+ * submit, NotImplementedError for adapters without batch support (every
+ * provider but Anthropic today), result normalization, and batch-discounted
+ * accounting into the registry-resolved per-scan CostMeter.
+ */
+describe("gateway Batch API orchestration (A31)", () => {
+  class BatchAdapter extends FakeAdapter {
+    submitted: AdapterBatchSubmitItem[] = [];
+    constructor(
+      private readonly resultItems: AdapterBatchResultItem[] = [],
+      private readonly status: AdapterBatchStatus = {
+        batchId: "batch_1",
+        processingStatus: "ended",
+        counts: { processing: 0, succeeded: 1, errored: 0, canceled: 0, expired: 0 },
+      },
+    ) {
+      super(() => ok());
+    }
+    async submitBatch(items: AdapterBatchSubmitItem[]): Promise<AdapterBatchHandle> {
+      this.submitted = items;
+      return { batchId: "batch_1", processingStatus: "in_progress" };
+    }
+    async pollBatch(): Promise<AdapterBatchStatus> {
+      return this.status;
+    }
+
+    async *getBatchResults(): AsyncGenerator<AdapterBatchResultItem> {
+      for (const item of this.resultItems) yield item;
+    }
+  }
+
+  function succeededResult(customId: string): AdapterBatchResultItem {
+    return {
+      customId,
+      status: "succeeded",
+      completion: {
+        id: `c_${customId}`,
+        model: "claude-sonnet-5",
+        content: "{}",
+        stopReason: "end_turn",
+        usage: makeUsage(1_000_000, 0), // $3 at Sonnet-5 live rate, $1.50 batched.
+      },
+    };
+  }
+
+  it("submitBatch() resolves each item's model and forwards customId + request to the adapter", async () => {
+    const adapter = new BatchAdapter();
+    const gateway = makeGateway(adapter);
+    const handle = await gateway.submitBatch([
+      { customId: "a", request: req({ model: "claude-sonnet-5" }) },
+      { customId: "b", request: req({ tier: "triage" }) },
+    ]);
+    expect(handle).toEqual({ batchId: "batch_1", processingStatus: "in_progress" });
+    expect(adapter.submitted.map((i) => i.customId)).toEqual(["a", "b"]);
+    expect(adapter.submitted[0]?.modelId).toBe("claude-sonnet-5");
+    expect(adapter.submitted[1]?.modelId).toBe("claude-haiku-4-5"); // triage tier default
+  });
+
+  it("pollBatch() passes through the adapter's status/counts", async () => {
+    const adapter = new BatchAdapter();
+    const gateway = makeGateway(adapter);
+    const status = await gateway.pollBatch("batch_1");
+    expect(status).toEqual({
+      batchId: "batch_1",
+      processingStatus: "ended",
+      requestCounts: { processing: 0, succeeded: 1, errored: 0, canceled: 0, expired: 0 },
+    });
+  });
+
+  it("getBatchResults() normalizes a succeeded row into LLMResponse shape with latencyMs: 0", async () => {
+    const adapter = new BatchAdapter([succeededResult("a")]);
+    const gateway = makeGateway(adapter);
+    const rows: unknown[] = [];
+    for await (const row of gateway.getBatchResults("batch_1")) rows.push(row);
+    expect(rows).toEqual([
+      {
+        customId: "a",
+        status: "succeeded",
+        response: expect.objectContaining({
+          latencyMs: 0,
+          content: "{}",
+          model: "claude-sonnet-5",
+        }),
+      },
+    ]);
+  });
+
+  it("throws NotImplementedError for submitBatch/pollBatch/getBatchResults on a provider without batch support", async () => {
+    const adapter = new FakeAdapter(() => ok()); // plain adapter — no batch methods
+    const gateway = makeGateway(adapter);
+    await expect(gateway.submitBatch([{ customId: "a", request: req() }])).rejects.toBeInstanceOf(
+      NotImplementedError,
+    );
+    await expect(gateway.pollBatch("batch_1")).rejects.toBeInstanceOf(NotImplementedError);
+    await expect(async () => {
+      for await (const _ of gateway.getBatchResults("batch_1")) {
+        // never reached
+      }
+    }).rejects.toBeInstanceOf(NotImplementedError);
+  });
+
+  it("records a succeeded result's usage into the registry-resolved scan meter at the 50% batch discount, when metadataByCustomId is supplied", async () => {
+    const SCAN_ID = "scan_batch_acct_1";
+    const adapter = new BatchAdapter([succeededResult("a")]);
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(
+      SCAN_ID,
+      meter,
+      BudgetPolicySchema.parse({ enforcement: "hard_halt", maxUsd: 100 }),
+    );
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    const rows: unknown[] = [];
+    for await (const row of gateway.getBatchResults("batch_1", {
+      metadataByCustomId: { a: { purpose: "fix_generation", scanId: SCAN_ID, layer: "layer4" } },
+    })) {
+      rows.push(row);
+    }
+    expect(rows).toHaveLength(1);
+
+    // 1,000,000 Sonnet-5 input tokens: $3 live, $1.50 at the batch discount.
+    expect(meter.actual().actualUsd).toBeCloseTo(1.5, 6);
+    const layer4 = meter.actual().byLayer.find((l) => l.key === "layer4");
+    expect(layer4?.usd).toBeCloseTo(1.5, 6);
+  });
+
+  it("does NOT record accounting when metadataByCustomId is omitted (no scan to attribute spend to)", async () => {
+    const SCAN_ID = "scan_batch_acct_2";
+    const adapter = new BatchAdapter([succeededResult("a")]);
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(
+      SCAN_ID,
+      meter,
+      BudgetPolicySchema.parse({ enforcement: "hard_halt", maxUsd: 100 }),
+    );
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    for await (const _ of gateway.getBatchResults("batch_1")) {
+      // draining only
+    }
+    expect(meter.actual().actualUsd).toBe(0);
   });
 });

@@ -44,6 +44,11 @@ export {
   type AnthropicMessageLike,
   type AnthropicContentBlockLike,
   type AnthropicStreamEventLike,
+  type AnthropicCountTokensResultLike,
+  type AnthropicBatchesLike,
+  type AnthropicBatchRequestLike,
+  type AnthropicBatchLike,
+  type AnthropicBatchResultLike,
 } from "./anthropic.js";
 export { BedrockAdapter, type BedrockAdapterOptions, type BedrockTransport } from "./bedrock.js";
 export {
@@ -61,5 +66,14 @@ export {
   type OpenAiChatCompletionLike,
   type OpenAiChatChunkLike,
 } from "./azure.js";
-export { type ProviderAdapter, type AdapterCompletion, makeUsage } from "./types.js";
+export {
+  type ProviderAdapter,
+  type AdapterCompletion,
+  type AdapterBatchSubmitItem,
+  type AdapterBatchHandle,
+  type AdapterBatchCounts,
+  type AdapterBatchStatus,
+  type AdapterBatchResultItem,
+  makeUsage,
+} from "./types.js";
 export { type AdapterEgress, resolveOutboundTarget } from "./egress.js";

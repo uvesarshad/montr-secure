@@ -73,6 +73,25 @@ export const SEVERITY_WEIGHT: Record<Severity, number> = {
  * Intrinsic impact prior per category, [0,1] — the damage if exploited, before
  * reachability/exposure. Ranking is reachability × exposure × impact, never raw
  * CVSS, so this is only one of the three factors.
+ *
+ * AGENT NOTE (A26 calibration, 2026-08-22): `vulnerable_dependency` was 0.5 —
+ * lower than every injection/access-control category (0.7-0.95) — which,
+ * blended at `impactScoreFor`'s 0.6*base + 0.4*severity, caps a `critical`-
+ * severity dependency finding at impact 0.70, BELOW several `high`-severity
+ * findings of other categories (0.72-0.81). Demonstrated concretely against
+ * the golden corpus (`corpus/log4shell-vulnerable-app`): a real `critical`
+ * CVE-2021-44228 (Log4Shell, unauthenticated RCE) scored lower than a `high`
+ * `xss`/`idor`/`broken_access_control` finding purely because of this prior,
+ * not because of the CVE's actual real-world severity — a genuine mis-
+ * ranking, not a defensible category judgment (unlike most other category
+ * priors, whose severity is genuinely bounded by the vulnerability class
+ * itself, a `vulnerable_dependency` finding's `rawSeverity` already reflects
+ * a real per-CVE/CVSS-derived rating from the OSV mirror, so the category
+ * prior should not additionally suppress it below its peers). Raised to 0.7
+ * — on par with other single-target categories (`xss`, `sensitive_data_exposure`,
+ * `idor`) — so severity, which for this category is the more informative,
+ * externally-sourced signal, does the differentiating work. See the
+ * `tests/correlation.scoring-calibration.test.ts` regression guard.
  */
 export const CATEGORY_IMPACT_BASE: Record<Category, number> = {
   sql_injection: 0.9,
@@ -83,7 +102,7 @@ export const CATEGORY_IMPACT_BASE: Record<Category, number> = {
   path_traversal: 0.75,
   insecure_deserialization: 0.9,
   hardcoded_secret: 0.85,
-  vulnerable_dependency: 0.5,
+  vulnerable_dependency: 0.7,
   permissive_cors: 0.35,
   missing_security_headers: 0.25,
   insecure_cookie: 0.35,

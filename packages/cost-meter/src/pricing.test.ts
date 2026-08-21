@@ -3,6 +3,7 @@ import { UNKNOWN_MODEL_FALLBACK_RATE, type TokenUsage } from "@montr/contracts";
 import { createNullLogger, type Logger, type LogFields } from "@montr/telemetry";
 import {
   addUsage,
+  BATCH_DISCOUNT_MULTIPLIER,
   findModelRate,
   normalizeModelId,
   priceUsageUsd,
@@ -261,6 +262,65 @@ describe("priceUsageUsd", () => {
       expect(() =>
         priceUsageUsd({ inputTokens: 100, outputTokens: 10, totalTokens: 110 }, "gpt-4o"),
       ).not.toThrow();
+    });
+  });
+
+  describe("Batch API discount (A31)", () => {
+    it("is exactly 0.5", () => {
+      expect(BATCH_DISCOUNT_MULTIPLIER).toBe(0.5);
+    });
+
+    it("halves the price for a plain input/output usage when batch: true", () => {
+      const usage: TokenUsage = {
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        totalTokens: 2_000_000,
+      };
+      const live = priceUsageUsd(usage, "claude-sonnet-5");
+      const batched = priceUsageUsd(usage, "claude-sonnet-5", undefined, { batch: true });
+      expect(batched).toBeCloseTo(live * BATCH_DISCOUNT_MULTIPLIER, 6);
+    });
+
+    it("applies the discount on top of the cache-read/cache-write multipliers, not instead of them", () => {
+      const usage: TokenUsage = {
+        inputTokens: 1_000_000,
+        outputTokens: 500_000,
+        totalTokens: 2_500_000,
+        cacheReadTokens: 1_000_000,
+        cacheWriteTokens: 1_000_000,
+      };
+      const live = priceUsageUsd(usage, "claude-sonnet-5");
+      const batched = priceUsageUsd(usage, "claude-sonnet-5", undefined, { batch: true });
+      // Same formula as the non-batch test above (3 + 7.5 + 0.3 + 3.75 = 14.55), halved.
+      expect(batched).toBeCloseTo(14.55 * 0.5, 6);
+      expect(batched).toBeCloseTo(live / 2, 6);
+    });
+
+    it("is still fail-closed (never $0) for an unknown model under batch pricing", () => {
+      const usage: TokenUsage = {
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        totalTokens: 2_000_000,
+      };
+      const batched = priceUsageUsd(usage, "gpt-4o", undefined, { batch: true });
+      expect(batched).toBeGreaterThan(0);
+      expect(batched).toBeCloseTo(
+        (UNKNOWN_MODEL_FALLBACK_RATE.inputPerMillionUsd +
+          UNKNOWN_MODEL_FALLBACK_RATE.outputPerMillionUsd) *
+          0.5,
+        6,
+      );
+    });
+
+    it("zero usage still prices at exactly $0 under the batch discount", () => {
+      expect(priceUsageUsd(zeroUsage(), "claude-sonnet-5", undefined, { batch: true })).toBe(0);
+    });
+
+    it("defaults to non-batch pricing when opts is omitted", () => {
+      const usage: TokenUsage = { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 };
+      expect(priceUsageUsd(usage, "claude-sonnet-5")).toBe(
+        priceUsageUsd(usage, "claude-sonnet-5", undefined, {}),
+      );
     });
   });
 });

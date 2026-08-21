@@ -17,6 +17,7 @@ import { loadConfig, resolveFieldEncryptionKey } from "@montr/config";
 import { createLogger } from "@montr/telemetry";
 import {
   createOrchestrator,
+  deriveTenantSchedulerOptions,
   type LayerRunner,
   type LayerRunners,
   type Orchestrator,
@@ -131,7 +132,13 @@ export async function createProductionDeps(): Promise<ProductionDeps> {
     ownsClient: true,
   });
 
-  const scheduler = await createEnqueueOnlyScheduler(redisUrl);
+  // A27 (opt-in, off by default): MUST derive from the exact same config
+  // shape apps/worker's startWorker() does, or a tenant-isolated job apps/api
+  // enqueues here lands in a queue apps/worker never listens on.
+  const scheduler = await createEnqueueOnlyScheduler(
+    redisUrl,
+    deriveTenantSchedulerOptions(config),
+  );
   const orchestrator: Orchestrator = createOrchestrator({
     config,
     store: state,

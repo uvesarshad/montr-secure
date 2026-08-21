@@ -6,17 +6,78 @@
  *
  * The append is transactional + serialized so per-client `sequence` numbers are
  * gap-free and monotonic; a concurrent writer that loses the (clientId, sequence)
- * unique race retries. Metadata is scrubbed on the way in (defense in depth) so a
- * caller can never persist a secret or code body.
+ * unique race retries.
+ *
+ * RUNTIME SCRUB GATE (audit finding A24): `metadata` AND `summary` — the two
+ * free-form text surfaces on an audit event — are unconditionally scrubbed here,
+ * in `append()`, before either is hashed or persisted. This is the single real
+ * chokepoint: every caller across apps/api and apps/worker (`recordAudit`,
+ * `store.audit.append`, the scan scheduler, …) ultimately calls THIS method, so
+ * a caller cannot forget to scrub — it is not optional and not left to a code
+ * comment. Two layers:
+ *
+ *   1. `redactSensitive` (`@montr/security`) — the SAME content-aware redactor
+ *      whose certification (`tests/security.scrubber.test.ts`,
+ *      ADVERSARIAL_LOG_THREATS) previously only ran against `@montr/telemetry`'s
+ *      independent hot-path scrubber in tests. Wiring it in here promotes
+ *      `@montr/security`'s scrubber from a test-time certifier to an actual
+ *      runtime gate, per A24. (`@montr/telemetry`'s `scrubValue` is
+ *      intentionally left alone and dependency-free for its own hot
+ *      stdout/OTel logging path — see that module's doc comment; this is a
+ *      separate, non-hot-path write and can afford the stronger, self-contained
+ *      redactor.)
+ *   2. `findLogViolations` (`@montr/security`) — the independent VERIFIER run
+ *      against the ALREADY-redacted output as defense in depth. In normal
+ *      operation this always passes (that's what "certified" means); it exists
+ *      to catch a genuine, undiscovered gap in step 1. On a real audit trail, a
+ *      write can itself be safety-relevant (e.g. a kill-switch event), so this
+ *      gate is fail-safe, not fail-closed: a residual violation forces a hard
+ *      anomaly-marker fallback (never the offending content) and the event is
+ *      still persisted — never dropped. The audit trail's job is to be
+ *      trustworthy AND complete; hard-rejecting the write would sacrifice
+ *      completeness to guard against a case the redactor is already certified
+ *      not to hit.
  */
 import { randomUUID } from "node:crypto";
 import type { ActorType, AuditAction, AuditEvent, AuditEventInput } from "@montr/contracts";
-import { scrubValue, type AuditListOptions, type AuditLogClient } from "@montr/telemetry";
+import { findLogViolations, redactSensitive } from "@montr/security";
+import type { AuditListOptions, AuditLogClient } from "@montr/telemetry";
 import { hashAuditEvent, verifyChainRecords, type ChainVerification } from "./hash-chain.js";
 import { Prisma, fromJson, toJson, type MontrPrismaClient } from "./prisma.js";
 import { toIso } from "./mappers.js";
 
 const MAX_APPEND_ATTEMPTS = 5;
+
+/** Placeholder persisted in place of `summary` when the fail-safe fallback fires. */
+const SCRUB_FAILSAFE_SUMMARY = "[REDACTED]:audit-scrub-failsafe";
+
+/**
+ * Scrub `metadata` and `summary` for persistence (see module doc for the
+ * two-layer rationale). Never throws; on a residual verifier violation after
+ * redaction, returns an anomaly-marker payload instead of the offending
+ * content — the event is still written, just with everything free-form
+ * replaced.
+ */
+export function scrubAuditInput(input: AuditEventInput): {
+  summary: string;
+  metadata: Record<string, unknown>;
+} {
+  const scrubbedMetadata = redactSensitive(input.metadata ?? {}) as Record<string, unknown>;
+  const scrubbedSummary = redactSensitive(input.summary) as string;
+
+  const violations = findLogViolations({ summary: scrubbedSummary, metadata: scrubbedMetadata });
+  if (violations.length > 0) {
+    return {
+      summary: SCRUB_FAILSAFE_SUMMARY,
+      metadata: {
+        auditScrubFailsafe: true,
+        violationCount: violations.length,
+        violationKinds: [...new Set(violations.map((v) => v.kind))],
+      },
+    };
+  }
+  return { summary: scrubbedSummary, metadata: scrubbedMetadata };
+}
 
 interface AuditEventRow {
   id: string;
@@ -66,7 +127,7 @@ export class PrismaAuditLogClient implements AuditLogClient {
   constructor(private readonly prisma: MontrPrismaClient) {}
 
   async append(input: AuditEventInput): Promise<AuditEvent> {
-    const scrubbedMetadata = scrubValue(input.metadata ?? {}) as Record<string, unknown>;
+    const { summary: scrubbedSummary, metadata: scrubbedMetadata } = scrubAuditInput(input);
 
     for (let attempt = 0; attempt < MAX_APPEND_ATTEMPTS; attempt++) {
       try {
@@ -92,7 +153,7 @@ export class PrismaAuditLogClient implements AuditLogClient {
               action: input.action,
               targetType: input.targetType,
               targetId: input.targetId,
-              summary: input.summary,
+              summary: scrubbedSummary,
               metadata: scrubbedMetadata,
               prevHash,
               hash: "",
@@ -112,7 +173,7 @@ export class PrismaAuditLogClient implements AuditLogClient {
                 action: input.action,
                 targetType: input.targetType ?? null,
                 targetId: input.targetId ?? null,
-                summary: input.summary,
+                summary: scrubbedSummary,
                 metadata: toJson(scrubbedMetadata),
                 prevHash,
                 hash,

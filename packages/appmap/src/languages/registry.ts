@@ -19,9 +19,11 @@ import type { AnalyzerInput, AppMapContribution, LanguageAnalyzer } from "./type
 
 /**
  * Registered stack analyzers, in a stable, deterministic order. TypeScript,
- * Python, and JVM are all fully implemented (build-plan §7 Wave 4) — each
- * uses real `web-tree-sitter` WASM parsing (not regex) under `languages/<lang>/`.
- * A future stack is added by appending its analyzer here.
+ * Python, and JVM are all fully implemented (build-plan §7 Wave 4) under
+ * `languages/<lang>/` — none of them use regex. TypeScript parses via the
+ * real `ts-morph` / TS Compiler API; Python and Java parse via real
+ * `web-tree-sitter` WASM grammars. A future stack is added by appending its
+ * analyzer here.
  */
 export const LANGUAGE_ANALYZERS: readonly LanguageAnalyzer[] = [
   typescriptAnalyzer,

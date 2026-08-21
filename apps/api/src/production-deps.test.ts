@@ -19,6 +19,10 @@ const testConfig = {
     keySource: "vault",
     vault: { addr: "https://vault.internal:8200", token: "t", secretPath: "montr/key" },
   },
+  // A27 (opt-in, off by default) — createProductionDeps() derives
+  // EnqueueOnlyScheduler's tenant options from this; a real loadConfig()
+  // always fully-defaults it via Zod, but this test hand-mocks loadConfig().
+  queue: { perTenantIsolation: false, tenantIds: [] },
 };
 const loadConfigMock = vi.fn(() => testConfig);
 
@@ -33,6 +37,9 @@ vi.mock("@montr/telemetry", () => ({
 
 vi.mock("@montr/orchestrator", () => ({
   createOrchestrator: vi.fn(() => ({})),
+  // A27 — real implementation is a pure function of config; mock it the same
+  // way so this test doesn't need to know its internals.
+  deriveTenantSchedulerOptions: vi.fn(() => ({ tenantIsolation: false })),
 }));
 
 const createStateStoreFromClientMock = vi.fn(() => ({

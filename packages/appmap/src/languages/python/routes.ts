@@ -8,11 +8,25 @@
  *   • FastAPI / Flask — decorator routes `@app.get("/x")`, `@router.post(...)`,
  *     `@app.route("/x", methods=[...])`, honouring an `APIRouter(prefix=…)`.
  *
- * Auth is detected syntactically (a guard decorator like `@login_required` or a
- * `Depends(get_current_user)` parameter) → `authenticated`; otherwise `unknown`
- * (fail-safe — the LLM semantic pass refines it later, never this file).
- * Entrypoints mirror routes, plus management commands (`cli`) and Celery tasks
- * (`job`). Every emitted shape is a frozen `@montr/contracts` type.
+ * Auth is detected syntactically at two levels (A20 — the second is real
+ * control-flow analysis of a declarative global-auth switch, not per-route
+ * identifier-text matching):
+ *   1. Per-route: a guard decorator like `@login_required`, a class-based-view
+ *      auth mixin, or a `Depends(get_current_user)` parameter → `authenticated`.
+ *   2. Global (Django only): `MIDDLEWARE` in a settings module containing
+ *      `django.contrib.auth.middleware.LoginRequiredMiddleware` (Django 5.1+)
+ *      makes EVERY view require login by default — this is Django's real
+ *      declarative analog of Express `app.use(authMiddleware)` / Fastify's
+ *      global `preHandler` (see {@link detectDjangoGlobalLoginRequired}); it
+ *      upgrades every URLConf route still at `unknown` to `authenticated`. The
+ *      per-view `@login_not_required` opt-out is NOT resolved (the view is
+ *      typically declared in a different file than the URLConf entry this
+ *      module reads, and cross-file view resolution is out of scope here —
+ *      the same bounded-hop philosophy `typescript/callgraph.ts` documents).
+ * Otherwise `unknown` (fail-safe — the LLM semantic pass refines it later,
+ * never this file). Entrypoints mirror routes, plus management commands
+ * (`cli`) and Celery tasks (`job`). Every emitted shape is a frozen
+ * `@montr/contracts` type.
  */
 import type { Node } from "web-tree-sitter";
 import type { AuthState, Entrypoint, HttpMethod, Route } from "@montr/contracts";
@@ -77,6 +91,27 @@ function normalisePath(pattern: string, isRegex: boolean): string {
 
 function isApi(path: string): boolean {
   return /(^|\/)(api|v\d+|graphql)(\/|$)/i.test(path);
+}
+
+/**
+ * Django 5.1+ global auth switch (A20): `MIDDLEWARE = [..., "django.contrib.
+ * auth.middleware.LoginRequiredMiddleware", ...]` in a settings module makes
+ * every view require a logged-in user by default. Real AST inspection of the
+ * `MIDDLEWARE` list assignment's right-hand side, not a whole-file text scan —
+ * a module containing the string "LoginRequiredMiddleware" somewhere unrelated
+ * (a comment, an unrelated variable) does not trigger this.
+ */
+function detectDjangoGlobalLoginRequired(mods: ParsedModule[]): boolean {
+  for (const mod of mods) {
+    if (!/MIDDLEWARE/.test(mod.source)) continue; // cheap pre-filter
+    for (const assign of descendants(mod.root, "assignment")) {
+      const left = field(assign, "left");
+      if (!left || left.type !== "identifier" || left.text !== "MIDDLEWARE") continue;
+      const right = field(assign, "right");
+      if (right && /LoginRequiredMiddleware/.test(right.text)) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +377,20 @@ export function scanPythonRoutes(mods: ParsedModule[]): PythonRouteResult {
     scanDjangoUrls(mod, res, seen);
     scanDecoratorRoutes(mod, res, seen);
     scanNonHttpEntrypoints(mod, res);
+  }
+
+  if (detectDjangoGlobalLoginRequired(mods)) {
+    for (const route of res.routes) {
+      // Django dispatches ALL methods to the view for a URLConf entry
+      // (`scanDjangoUrls`'s own `method: "ALL"`) — a reliable proxy for
+      // "this route came from the URLConf" vs. a FastAPI/Flask decorator
+      // route (always a specific verb), without needing a separate per-route
+      // provenance flag.
+      if (route.method === "ALL" && route.authState === "unknown") {
+        route.authState = "authenticated";
+        route.authGate = "LoginRequiredMiddleware (global)";
+      }
+    }
   }
 
   res.routes.sort((a, b) =>
