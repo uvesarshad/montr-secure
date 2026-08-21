@@ -64,6 +64,13 @@ export function createStubOrchestrator(deps: StubOrchestratorDeps): Orchestrator
       await mutate(scanId, { status: "paused" });
     },
     async resume(scanId: string): Promise<void> {
+      // Mirror @montr/orchestrator's real terminal-state guard (controller.ts
+      // resume()): `completed`/`cancelled` scans are never resumable — everything
+      // else (queued/running/paused/failed/partial) is, since recovering a
+      // stuck/failed scan is exactly what resume() exists for (A3).
+      const scan = await loadScan(scanId);
+      if (!scan) throw new Error(`scan not found: ${scanId}`);
+      if (scan.status === "completed" || scan.status === "cancelled") return;
       await mutate(scanId, { status: "running" });
     },
     async cancel(scanId: string): Promise<void> {

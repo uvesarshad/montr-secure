@@ -32,6 +32,13 @@ describe("@montr/config hardened defaults (§11)", () => {
     expect(cfg.llm.modelMatrix.confirmation).toBe("claude-opus-4-8");
     expect(cfg.llm.enforceModelFloor).toBe(true);
   });
+
+  // A4 (P0): air-gap SAST ruleset dir. Unset by default -> byte-for-byte
+  // unchanged (hosted Semgrep Registry packs) behavior for every existing
+  // non-air-gapped install.
+  it("discovery.rulesetsDir is unset by default", () => {
+    expect(cfg.discovery.rulesetsDir).toBeUndefined();
+  });
 });
 
 describe("@montr/config loader", () => {
@@ -57,5 +64,11 @@ describe("@montr/config loader", () => {
     expect(() => loadConfig({ overrides: { llm: { provider: "not-a-provider" } } })).toThrow(
       ConfigValidationError,
     );
+  });
+
+  // A4 (P0): MONTR_DISCOVERY_RULESETS_DIR wires the air-gap SAST ruleset dir.
+  it("MONTR_DISCOVERY_RULESETS_DIR sets discovery.rulesetsDir", () => {
+    const cfg = loadConfig({ env: { MONTR_DISCOVERY_RULESETS_DIR: "/opt/montr/airgap/semgrep" } });
+    expect(cfg.discovery.rulesetsDir).toBe("/opt/montr/airgap/semgrep");
   });
 });

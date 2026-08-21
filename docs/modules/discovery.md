@@ -13,7 +13,7 @@ Layer 1 Runner: packages/discovery/src/index.ts exports runLayer1Discovery, whic
 Queue Execution: apps/worker/src/runners.ts pulls Layer 1 jobs from BullMQ and executes discovery against the local repository checkout.
 
 Key Components and Detection Engines
-SAST Engine: Located in packages/discovery/src/detectors. Executes Semgrep static analysis rulesets targeting code vulnerabilities across supported programming languages.
+SAST Engine: Located in packages/discovery/src/detectors/sast.ts. Executes Semgrep static analysis rulesets targeting code vulnerabilities across supported programming languages. Uses hosted Semgrep Registry pack IDs (p/owasp-top-ten, p/typescript, p/nextjs, p/react, p/secrets, plus per-language packs from packages/discovery/src/rulesets) by default, or a local ruleset directory when discovery.rulesetsDir is configured (air-gap mode, see Constraints below).
 Secret Scanner: Executes Gitleaks to identify hardcoded API keys, private certificates, and credentials within source files and commit history.
 Dependency Reachability Scanner: packages/discovery/src/advisories.ts and detectors query Open Source Vulnerabilities (OSV) databases and match manifest versions against published CVE and GHSA advisories.
 Custom Rule Engine: packages/discovery/src/custom-rules.ts compiles and executes client-authored Semgrep YAML rules and regex secret detectors persisted in the CustomRule database table.
@@ -25,7 +25,8 @@ Candidate Finding Entity: Every detected issue is recorded with source tool name
 Golden Rule Guarantee: Candidate findings represent raw input for Layer 2 correlation. They are never displayed as finalized vulnerabilities or used for headline statistics without undergoing correlation and exploit confirmation.
 
 Constraints and Edge Cases
-AGENT NOTE: Scanner binaries (Semgrep, gitleaks) execute locally within the worker container environment. In air-gapped deployments, scanners run using offline rulesets bundled in deploy/airgap.
+AGENT NOTE: Scanner binaries (Semgrep, gitleaks) execute locally within the worker container environment. In air-gapped deployments, Semgrep runs against a local ruleset directory set via the discovery.rulesetsDir config key (env MONTR_DISCOVERY_RULESETS_DIR), populated by deploy/airgap/build-bundle.sh --semgrep-rules-dir and deploy/airgap/import-bundle.sh (installed under <dest-dir>/semgrep). Unset, SAST is unchanged and uses the hosted Semgrep Registry packs.
+AGENT NOTE: SAST is a required detector. detectSast throws RequiredDetectorUnavailableError (packages/contracts/src/errors.ts) instead of degrading to an empty result when Semgrep is missing, errors, or a configured rulesetsDir is missing or has no rule files. The throw propagates through runDiscovery to the Layer 1 orchestrator runner and fails the scan via packages/orchestrator/src/controller.ts failScan, so a scan can never complete successfully with silent zero SAST coverage. Gitleaks and the SCA/dependency detector are unaffected and keep degrading gracefully with a warning.
 AGENT AVOID: Never surface raw CandidateFinding counts directly in the UI as confirmed vulnerabilities. Always filter through Layer 2 correlation and Layer 3 confirmation.
 
 Update Triggers

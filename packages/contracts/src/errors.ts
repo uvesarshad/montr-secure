@@ -19,6 +19,7 @@ export const ErrorCodeSchema = z.enum([
   "HUMAN_APPROVAL_REQUIRED",
   "RATE_LIMIT_EXCEEDED",
   "NOT_IMPLEMENTED",
+  "REQUIRED_DETECTOR_UNAVAILABLE",
   "INTERNAL",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
@@ -156,5 +157,20 @@ export class RateLimitExceededError extends MontrError {
 export class NotImplementedError extends MontrError {
   constructor(what = "Not implemented", details?: Record<string, unknown>) {
     super("NOT_IMPLEMENTED", what, { retriable: false, details });
+  }
+}
+
+/**
+ * ⛔ A REQUIRED detector (e.g. SAST/Semgrep) could not run at all — binary
+ * missing, execution error, or a configured local ruleset source that is
+ * absent/empty (air-gap `discovery.rulesetsDir`, A4). Layer 1 must NEVER
+ * complete successfully on an empty scan and have it look clean: this error
+ * propagates out of the layer runner and fails the scan (see
+ * `packages/orchestrator/src/controller.ts` `failScan`), rather than being
+ * swallowed into a warning + `[]`.
+ */
+export class RequiredDetectorUnavailableError extends MontrError {
+  constructor(message = "Required detector unavailable", details?: Record<string, unknown>) {
+    super("REQUIRED_DETECTOR_UNAVAILABLE", message, { retriable: false, details });
   }
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { BudgetPolicySchema } from "@montr/contracts";
+import { createNullLogger, type Logger, type LogFields } from "@montr/telemetry";
 import { createCostMeter } from "./meter.js";
 
 /**
@@ -58,6 +59,24 @@ describe("live cost meter — running total accuracy", () => {
     expect(actual.byLayer[0]!.usage.totalTokens).toBe(3300);
     expect(actual.byModel.length).toBe(1);
     expect(actual.byModel[0]!.usage.totalTokens).toBe(3300);
+  });
+
+  it("fails closed and warns through the injected logger when recording an unknown model (A1)", () => {
+    const calls: Array<{ message: string; fields?: LogFields }> = [];
+    const warn: Logger["warn"] = (message, fields) => {
+      calls.push({ message, fields });
+    };
+    const logger: Logger = { ...createNullLogger(), warn };
+    const meter = createCostMeter("scan_1", { logger });
+    meter.record({
+      modelId: "gpt-4o",
+      usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 },
+    });
+    // Never $0 — bills the conservative fallback ceiling.
+    expect(meter.actual().actualUsd).toBeGreaterThan(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.message).toBe("cost_meter.unknown_model_rate");
+    expect(calls[0]!.fields).toMatchObject({ modelId: "gpt-4o" });
   });
 
   it("delegates estimate() to the pre-scan estimator using the meter's own clock + model options", () => {

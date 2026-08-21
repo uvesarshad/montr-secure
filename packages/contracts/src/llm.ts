@@ -212,9 +212,22 @@ export interface ModelCostRate {
 export const MODEL_COST_RATES: readonly ModelCostRate[] = [
   {
     provider: "anthropic",
+    modelId: "claude-opus-5",
+    inputPerMillionUsd: 5,
+    outputPerMillionUsd: 25,
+  },
+  {
+    provider: "anthropic",
     modelId: "claude-opus-4-8",
     inputPerMillionUsd: 5,
     outputPerMillionUsd: 25,
+  },
+  {
+    provider: "anthropic",
+    modelId: "claude-fable-5",
+    inputPerMillionUsd: 10,
+    outputPerMillionUsd: 50,
+    note: "Anthropic's most capable widely released model (Project Glasswing/Mythos-5 pricing parity).",
   },
   {
     provider: "anthropic",
@@ -230,3 +243,20 @@ export const MODEL_COST_RATES: readonly ModelCostRate[] = [
     outputPerMillionUsd: 5,
   },
 ];
+
+/**
+ * Conservative ceiling rate for a model id absent from {@link MODEL_COST_RATES}
+ * (audit A1). Deliberately set to the highest input/output rate on the whole
+ * card (currently `claude-fable-5`'s $10/$50) so an unlisted BYO model is
+ * NEVER cheaper to meter than the priciest known model — an unrecognized
+ * model id must not be able to defeat the budget hard-halt (DECIDE-4) by
+ * pricing at $0. Not a real billable model — `findModelRate` never returns
+ * this row; only `priceUsageUsd`'s fail-closed fallback path uses it.
+ */
+export const UNKNOWN_MODEL_FALLBACK_RATE: ModelCostRate = {
+  provider: "anthropic",
+  modelId: "__unknown_model_fallback__",
+  inputPerMillionUsd: 10,
+  outputPerMillionUsd: 50,
+  note: "Fail-closed ceiling rate for unrecognized model ids (A1) — matches the highest rate on the card, not a real billable model.",
+};

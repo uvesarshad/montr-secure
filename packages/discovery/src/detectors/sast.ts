@@ -4,12 +4,28 @@
  * run here — Semgrep (deterministic) detects; any LLM triage/explain happens
  * afterward, separately (golden rule #6).
  *
- * ⛔ Graceful degradation: if the Semgrep binary is absent or fails, this returns
- * an empty list plus a warning — the pipeline never hard-fails on a missing
- * scanner. Tests inject a canned {@link SemgrepRunner}; production shells out.
+ * ⛔ SAST is a REQUIRED detector (A4): unlike the graceful "degrade to []"
+ * posture Layer 1's other detectors use for genuinely optional tooling, an
+ * unavailable Semgrep means the scan has NO static analysis coverage at all —
+ * so `detectSast` THROWS ({@link RequiredDetectorUnavailableError}) rather than
+ * warn-and-return `[]`. A scan can never complete successfully and look clean
+ * while its SAST pass silently didn't run. This propagates out of the Layer 1
+ * runner and fails the scan via the orchestrator's `failScan` path (see
+ * `packages/orchestrator/src/controller.ts`).
+ *
+ * ⛔ Air-gap support (A4): when `config.discovery.rulesetsDir` is set, Semgrep
+ * is invoked against that LOCAL directory of rule YAML instead of the hosted
+ * `p/...` Semgrep Registry pack IDs, which require network egress the
+ * air-gap NetworkPolicy forbids. This is the runtime consumer of
+ * `deploy/airgap/build-bundle.sh --semgrep-rules-dir` /
+ * `import-bundle.sh` (which installs artifacts flat under
+ * `<dest-dir>/semgrep/`). Unset (default): behavior is byte-for-byte
+ * unchanged — hosted registry packs, exactly as before.
  */
 import nodePath from "node:path";
+import { readdir } from "node:fs/promises";
 import type { CandidateFinding } from "@montr/contracts";
+import { RequiredDetectorUnavailableError } from "@montr/contracts";
 import type { DetectorContext, SemgrepJson, SemgrepResult, SemgrepRunner } from "../types.js";
 import { buildCandidate } from "../util/candidate.js";
 import {
@@ -71,6 +87,24 @@ function extractCwes(metadata: Record<string, unknown> | undefined): string[] {
   return [];
 }
 
+/**
+ * Recursively check a local ruleset directory contains at least one Semgrep
+ * rule file (`*.yml`/`*.yaml`) — matches how `build-bundle.sh --semgrep-rules-dir`
+ * discovers source files (`find ... -name '*.yml' -o -name '*.yaml'`) and
+ * tolerates both `import-bundle.sh`'s flat `<dest-dir>/semgrep/` install
+ * layout and an operator pointing `rulesetsDir` straight at a nested source
+ * tree. Missing directory, non-directory path, or zero rule files -> false.
+ */
+async function localRulesetDirHasRules(dir: string): Promise<boolean> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true, recursive: true });
+  } catch {
+    return false; // missing, not a directory, or unreadable
+  }
+  return entries.some((e) => e.isFile() && (e.name.endsWith(".yml") || e.name.endsWith(".yaml")));
+}
+
 /** Relativize an absolute semgrep path against the scanned repo root. */
 function relPath(p: string, repoRoot: string | undefined): string {
   if (!repoRoot) return p.replace(/^\.\//, "");
@@ -124,18 +158,51 @@ export function parseSemgrepJson(json: SemgrepJson, ctx: DetectorContext): Candi
   return out;
 }
 
-/** Run the SAST agent. Deterministic tools detect; never throws on a missing binary. */
+/**
+ * Run the SAST agent. SAST is a REQUIRED detector (A4): once we know a real
+ * Semgrep invocation was attempted, an unavailable/erroring/misconfigured
+ * scanner THROWS {@link RequiredDetectorUnavailableError} instead of degrading
+ * to `[]` + a warning — an empty scan must never complete and look clean.
+ *
+ * The one case left as a graceful skip (unchanged from before A4) is having
+ * neither an injected runner nor a `repoRoot`: that is the in-memory-only
+ * scan shape (`RunDiscoveryInput.files` with no repo checkout), which is
+ * never used by the production Layer 1 runner
+ * (`apps/worker/src/runners.ts` always resolves a `repoRoot`) — a
+ * structurally different, pre-existing situation than A4's "Semgrep was
+ * reachable but network/config broke it" failure mode.
+ */
 export async function detectSast(
   ctx: DetectorContext,
   opts: DetectSastOptions = {},
 ): Promise<CandidateFinding[]> {
   if (ctx.signal?.aborted) return [];
-  const rulesets = opts.rulesets ?? [...DEFAULT_SEMGREP_RULESETS];
   const runner = opts.runner;
 
   if (!runner && !ctx.repoRoot) {
     ctx.warn("sast", "Semgrep skipped: no repoRoot and no runner injected.");
     return [];
+  }
+
+  // Air-gap (A4): a configured local ruleset dir REPLACES the hosted
+  // `p/...` Semgrep Registry pack IDs, which need network egress the air-gap
+  // NetworkPolicy forbids. Non-registry entries the caller already resolved
+  // (materialized client custom-rule temp files — local paths, never
+  // `p/...` ids) still run alongside it. Missing/empty dir -> the required
+  // detector is unavailable; throw before even attempting to run Semgrep.
+  const rulesetsDir = ctx.config.discovery?.rulesetsDir;
+  let rulesets: string[];
+  if (rulesetsDir) {
+    if (!(await localRulesetDirHasRules(rulesetsDir))) {
+      throw new RequiredDetectorUnavailableError(
+        `SAST is a required detector but the configured rulesetsDir '${rulesetsDir}' does not exist or contains no rule files.`,
+        { detector: "sast", rulesetsDir },
+      );
+    }
+    const extra = (opts.rulesets ?? []).filter((r) => !r.startsWith("p/"));
+    rulesets = [rulesetsDir, ...extra];
+  } else {
+    rulesets = opts.rulesets ?? [...DEFAULT_SEMGREP_RULESETS];
   }
 
   let json: SemgrepJson | null;
@@ -146,12 +213,16 @@ export async function detectSast(
       signal: ctx.signal,
     });
   } catch (err) {
-    ctx.warn("sast", `Semgrep run failed; SAST degraded to empty. ${errMessage(err)}`);
-    return [];
+    throw new RequiredDetectorUnavailableError(
+      `SAST is a required detector but the Semgrep run failed: ${errMessage(err)}`,
+      { detector: "sast" },
+    );
   }
   if (!json) {
-    ctx.warn("sast", "Semgrep binary unavailable; SAST degraded to empty.");
-    return [];
+    throw new RequiredDetectorUnavailableError(
+      "SAST is a required detector but the Semgrep binary is unavailable.",
+      { detector: "sast" },
+    );
   }
   return parseSemgrepJson(json, ctx);
 }

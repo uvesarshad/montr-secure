@@ -104,6 +104,14 @@ export class ScanRepositoryImpl implements ScanRepository {
       return scanFromRow(row);
     });
   }
+
+  async listByStatus(clientId: string, status: ScanStatus): Promise<Scan[]> {
+    const rows = await this.prisma.scan.findMany({
+      where: { clientId, status },
+      orderBy: { startedAt: "asc" },
+    });
+    return rows.map(scanFromRow);
+  }
 }
 
 /* ============================== AppMap ============================== */
@@ -233,7 +241,21 @@ class FindingRepo<
 
   async bulkCreate(clientId: string, findings: TContract[]): Promise<TContract[]> {
     if (findings.length === 0) return [];
-    await this.delegate.createMany({ data: findings.map((f) => this.toCreate(clientId, f)) });
+    // `id` is a DETERMINISTIC hash of the finding's content — not a random uuid —
+    // for every caller of this generic repo: candidateId() (discovery/src/util/ids.ts),
+    // makeProbableId() (correlation/src/hash.ts), and defaultConfirmedId()
+    // (confirm/src/static.ts) all derive the id from (scanId + rule/location/root
+    // cause), never from time or randomness. So when a BullMQ stalled-job
+    // redelivery re-runs a layer (A3, §8.1), the SAME findings are recomputed
+    // with the SAME ids. `skipDuplicates` therefore skips a genuine no-op replay
+    // of an already-persisted row (primary-key collision on `id`) — never a
+    // distinct finding silently dropped — and turns what used to be a hard
+    // unique-constraint failure (-> failScan, permanently `failed`, unresumable)
+    // into the idempotent no-op the retry contract requires.
+    await this.delegate.createMany({
+      data: findings.map((f) => this.toCreate(clientId, f)),
+      skipDuplicates: true,
+    });
     return findings.map((f) => ({ ...f, clientId }) as TContract);
   }
 

@@ -1,4 +1,5 @@
 import {
+  BudgetExceededError,
   LLMRequestSchema,
   type KeyTier,
   type LLMCallLog,
@@ -13,9 +14,9 @@ import {
   type TokenUsage,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
-import type { CostMeter } from "@montr/cost-meter";
+import { priceUsageUsd, type BudgetRegistry, type CostMeter } from "@montr/cost-meter";
 import { createEgressGuard, type EgressGuard } from "@montr/security";
-import { createLogger, type Logger } from "@montr/telemetry";
+import { createLogger, getMetrics, type Logger } from "@montr/telemetry";
 import { createAdapter, type ProviderAdapter } from "./adapters/index.js";
 import { toGatewayError } from "./errors.js";
 import { assertModelFloor, buildDescriptors, isBelowFloor, resolveDescriptor } from "./models.js";
@@ -67,6 +68,18 @@ export interface CreateGatewayOptions {
    * to each call's hardcoded fallback (today's behavior, unchanged).
    */
   promptSource?: PromptVersionSource;
+  /**
+   * ⛔ PRE-call budget guard (A2, DECIDE-4). Looked up per request by
+   * `request.metadata.scanId` — one gateway instance serves every concurrent
+   * scan, so the fixed `costMeter` above can't carry a per-scan ceiling. When
+   * a registry is supplied and the scan has a registered `CostMeter` +
+   * `BudgetPolicy`, `complete()`/`stream()` estimate the pending call's cost
+   * and refuse to dispatch it (`BudgetExceededError`) when spend-so-far plus
+   * that estimate would clear the ceiling — BEFORE the provider is called,
+   * not just between layers. Omit to leave today's between-layers-only
+   * enforcement (`orchestrator/controller.ts`'s `enforceBudget`) unchanged.
+   */
+  budgetRegistry?: BudgetRegistry;
 }
 
 /**
@@ -88,6 +101,8 @@ export class MontrLlmGateway implements LLMGateway {
   private readonly warnedFloorModels = new Set<string>();
   /** Versioned-prompt lookup (§8.2, §15) — undefined means "no DB, use hardcoded". */
   private readonly promptSource?: PromptVersionSource;
+  /** ⛔ PRE-call budget guard (A2) — see {@link CreateGatewayOptions.budgetRegistry}. */
+  private readonly budgetRegistry?: BudgetRegistry;
 
   /**
    * ⛔ Default-deny egress guard (golden rule #1, §4.8). Compiled + validated at
@@ -105,6 +120,7 @@ export class MontrLlmGateway implements LLMGateway {
       opts.logger ??
       createLogger({ name: "llm-gateway", bindings: { clientId: opts.config.clientId } });
     this.costMeter = opts.costMeter;
+    this.budgetRegistry = opts.budgetRegistry;
     this.promptSource = opts.promptSource;
     this.onCall = opts.onCall;
     this.now = opts.now ?? (() => new Date());
@@ -197,6 +213,8 @@ export class MontrLlmGateway implements LLMGateway {
     this.assertEgress();
     const modelId = this.resolveModelId(parsed);
     this.maybeWarnFloor(parsed, modelId);
+    // ⛔ PRE-call budget guard (A2, DECIDE-4) — BEFORE dispatch, not just between layers.
+    await this.assertPreCallBudget(parsed, modelId);
 
     const start = this.now().getTime();
     let completion;
@@ -233,6 +251,8 @@ export class MontrLlmGateway implements LLMGateway {
     this.assertEgress();
     const modelId = this.resolveModelId(parsed);
     this.maybeWarnFloor(parsed, modelId);
+    // ⛔ PRE-call budget guard (A2, DECIDE-4) — BEFORE dispatch, not just between layers.
+    await this.assertPreCallBudget(parsed, modelId);
 
     const start = this.now().getTime();
     const controller = new AbortController();
@@ -278,6 +298,79 @@ export class MontrLlmGateway implements LLMGateway {
       model: modelId,
       purpose: request.metadata.purpose,
     });
+  }
+
+  /**
+   * ⛔ PRE-call budget guard (A2, DECIDE-4). Estimates the pending call's cost
+   * (input tokens via `estimateTokens`; output tokens conservatively taken as
+   * `request.maxTokens` — the worst case the model is allowed to spend) and
+   * refuses to dispatch it when spend-so-far plus that estimate would clear
+   * the scan's ceiling. A no-op when no `budgetRegistry` was configured, the
+   * request carries no `scanId`, no context is registered for that scan (e.g.
+   * a non-`hard_halt` policy scan, or one that hasn't started a layer), or
+   * neither budget dimension is configured on the policy. This is ADDITIVE to
+   * `orchestrator/controller.ts`'s post-layer `enforceBudget` — that check
+   * still runs, catching drift between estimates and provider-reported
+   * actuals; this one stops a single call from ever reaching the provider in
+   * the first place.
+   */
+  private async assertPreCallBudget(request: LLMRequest, modelId: string): Promise<void> {
+    if (!this.budgetRegistry) return;
+    const scanId = request.metadata.scanId;
+    if (!scanId) return;
+    const ctx = this.budgetRegistry.get(scanId);
+    if (!ctx) return;
+    const { meter, policy } = ctx;
+    if (policy.maxUsd === undefined && policy.maxTotalTokens === undefined) return;
+    if (policy.enforcement !== "hard_halt") return;
+
+    const estimatedInputTokens = await this.estimateTokens(request);
+    // Worst-case output: the model is free to use the entire requested budget.
+    const estimatedOutputTokens = request.maxTokens;
+    const estimatedUsage: TokenUsage = {
+      inputTokens: estimatedInputTokens,
+      outputTokens: estimatedOutputTokens,
+      totalTokens: estimatedInputTokens + estimatedOutputTokens,
+    };
+    const estimatedUsd = priceUsageUsd(estimatedUsage, modelId);
+
+    const spent = meter.checkBudget(policy);
+    const projectedUsd = spent.spentUsd + estimatedUsd;
+    const projectedTokens = spent.spentTokens + estimatedUsage.totalTokens;
+    const overUsd = policy.maxUsd !== undefined && projectedUsd > policy.maxUsd;
+    const overTokens =
+      policy.maxTotalTokens !== undefined && projectedTokens > policy.maxTotalTokens;
+    if (!overUsd && !overTokens) return;
+
+    getMetrics().recordBudgetBreach(1, { enforcement: policy.enforcement, phase: "pre_call" });
+    this.logger.error("llm.budget_precall_refused", {
+      scanId,
+      provider: this.provider,
+      model: modelId,
+      purpose: request.metadata.purpose,
+      layer: request.metadata.layer,
+      estimatedUsd,
+      estimatedTokens: estimatedUsage.totalTokens,
+      spentUsd: spent.spentUsd,
+      spentTokens: spent.spentTokens,
+      maxUsd: policy.maxUsd,
+      maxTotalTokens: policy.maxTotalTokens,
+    });
+    throw new BudgetExceededError(
+      "Budget ceiling would be exceeded by this call — refused before dispatch",
+      {
+        phase: "pre_call",
+        scanId,
+        provider: this.provider,
+        modelId,
+        estimatedUsd,
+        estimatedTokens: estimatedUsage.totalTokens,
+        spentUsd: spent.spentUsd,
+        spentTokens: spent.spentTokens,
+        maxUsd: policy.maxUsd,
+        maxTotalTokens: policy.maxTotalTokens,
+      },
+    );
   }
 
   /** ⛔ Metadata-only accounting: cost meter + audit hook + structured log. */

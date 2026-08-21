@@ -18,11 +18,23 @@ import {
   type Fix,
   type LayerContext,
   type PipelineEvent,
+  type Provider,
   type Scan,
 } from "@montr/contracts";
 import type { StateStore } from "@montr/state-store";
 import type { Logger } from "@montr/telemetry";
-import type { CostMeter, BudgetCheck } from "@montr/cost-meter";
+import {
+  createBudgetRegistry,
+  createCostMeter,
+  type CostMeter,
+  type BudgetCheck,
+} from "@montr/cost-meter";
+import {
+  createLlmGateway,
+  makeUsage,
+  type AdapterCompletion,
+  type ProviderAdapter,
+} from "@montr/llm-gateway";
 import {
   mockLayer0Output,
   mockLayer1Output,
@@ -581,6 +593,92 @@ describe("orchestrator FSM — budget hard-halt (DECIDE-4)", () => {
     const evs = await peekEvents(orch, scan.id);
     expect(evs.some((e) => e.type === "budget_exceeded")).toBe(true);
     expect(evs.some((e) => e.type === "scan_completed" && e.partial === true)).toBe(true);
+  });
+});
+
+describe("orchestrator FSM — PRE-call budget guard (A2, DECIDE-4)", () => {
+  /** Minimal fake provider adapter — never actually reached when the guard fires. */
+  class FakeAdapter implements ProviderAdapter {
+    calls = 0;
+    readonly provider: Provider = "anthropic";
+    resolveModelId(modelId: string): string {
+      return modelId;
+    }
+    async complete(): Promise<AdapterCompletion> {
+      this.calls++;
+      return {
+        id: "c1",
+        model: "claude-sonnet-5",
+        content: "hi",
+        stopReason: "end_turn",
+        usage: makeUsage(10, 5),
+      };
+    }
+    // eslint-disable-next-line require-yield -- never driven when the guard fires first
+    async *stream(): AsyncGenerator<never, void, unknown> {
+      throw new Error("not used in this test");
+    }
+  }
+
+  it("⛔ refuses a single over-budget call DURING a layer — the between-layers enforceBudget check alone would have let it through (nothing had been recorded yet)", async () => {
+    const { store, audit } = makeStore();
+    // A near-zero ceiling: the FIRST call's own estimated cost already clears it,
+    // while RECORDED spend (what the post-layer enforceBudget reads) is still $0.
+    const config = MontrConfigSchema.parse({
+      clientId: CLIENT_ID,
+      budget: { requireEstimateApproval: false, maxUsdPerScan: 0.0001, enforcement: "hard_halt" },
+    });
+
+    const adapter = new FakeAdapter();
+    // The SAME registry instance is threaded into both the gateway (reader) and
+    // the orchestrator (writer) — exactly the production wiring in
+    // apps/worker/src/main.ts.
+    const budgetRegistry = createBudgetRegistry();
+    const gateway = createLlmGateway({ config, adapter, sleep: async () => {}, budgetRegistry });
+
+    const { runners, calls } = makeRunners({
+      layer2: async (ctx) => {
+        // What a real correlation call looks like today (packages/correlation
+        // calls gateway.complete() once per candidate batch) — sized so its
+        // OWN estimated cost alone blows the ceiling above.
+        await gateway.complete({
+          messages: [{ role: "user", content: "correlate these findings against the app map" }],
+          maxTokens: 100_000,
+          metadata: { purpose: "correlation", scanId: ctx.scanId },
+        });
+        return mockLayer2Output;
+      },
+    });
+
+    let tick = 0;
+    let idc = 0;
+    const base = Date.parse("2026-02-01T00:00:00.000Z");
+    const orch = createOrchestrator({
+      config,
+      store,
+      logger: silent,
+      createCostMeter: (scanId) => createCostMeter(scanId),
+      layerRunners: runners,
+      clock: () => new Date(base + tick++ * 1000),
+      ids: () => `scan_${idc++}`,
+      sleep: () => Promise.resolve(),
+      budgetRegistry,
+    });
+
+    const scan = await orch.createScan(createInput());
+    await orch.start(scan.id);
+
+    const done = await settle(store, scan.id, isTerminal);
+    // ⛔ The layer FAILED — the call was refused, not silently sent and only
+    // discovered afterwards. A pure between-layers check would have measured
+    // $0 recorded spend here and let this call through.
+    expect(done.status).toBe("failed");
+    expect(calls.layer0).toBe(1);
+    expect(calls.layer1).toBe(1);
+    expect(calls.layer2).toBe(1); // entered layer 2 — refused DURING it
+    expect(calls.layer3).toBe(0); // never advanced past the refused layer
+    expect(adapter.calls).toBe(0); // ⛔ the provider adapter was never dispatched
+    expect(actions(audit)).toContain("scan.failed");
   });
 });
 

@@ -14,6 +14,11 @@ export {
   type CreateGatewayOptions,
 } from "./gateway.js";
 
+// Re-exported for convenience: callers wiring `budgetRegistry` (A2 pre-call
+// budget guard) into `createLlmGateway` shouldn't need a direct
+// `@montr/cost-meter` import just for the type.
+export { createBudgetRegistry, type BudgetContext, type BudgetRegistry } from "@montr/cost-meter";
+
 export {
   resolvePromptTemplate,
   type PromptVersionSource,

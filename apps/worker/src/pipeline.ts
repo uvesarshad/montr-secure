@@ -15,7 +15,7 @@ import {
   type LayerRunners,
   type Orchestrator,
 } from "@montr/orchestrator";
-import { createCostMeter, type CostMeter } from "@montr/cost-meter";
+import { createCostMeter, type BudgetRegistry, type CostMeter } from "@montr/cost-meter";
 import { createNullLogger, type Logger } from "@montr/telemetry";
 import type { MontrConfig } from "@montr/config";
 import type { StateStore } from "@montr/state-store";
@@ -32,6 +32,13 @@ export interface InProcessPipelineDeps {
   logger?: Logger;
   /** Per-scan cost meter factory. Default: `@montr/cost-meter`'s live meter. */
   createCostMeter?: (scanId: string) => CostMeter;
+  /**
+   * ⛔ PRE-call budget guard (A2, DECIDE-4) — same seam as the durable worker
+   * (see `WorkerRuntimeDeps.budgetRegistry` in ./index.ts). Pass the same
+   * instance given to `createLlmGateway({ budgetRegistry })` when constructing
+   * `gateway`. Omit to leave between-layers-only enforcement unchanged.
+   */
+  budgetRegistry?: BudgetRegistry;
   /** Layer-runner seams (opener, source reader, semgrep/gitleaks, workspaceRoot…). */
   runnerOptions?: Partial<Omit<LayerRunnerOptions, "gateway">>;
   /** Fully override the layer runners (tests inject stubs for individual layers). */
@@ -66,6 +73,7 @@ export function createInProcessOrchestrator(deps: InProcessPipelineDeps): Orches
     // In-process, no Redis: the inline scheduler drives the whole pipeline.
     scheduler: new InlineJobScheduler(),
     ...(deps.eventBus ? { eventBus: deps.eventBus } : {}),
+    ...(deps.budgetRegistry ? { budgetRegistry: deps.budgetRegistry } : {}),
     ...(deps.clock ? { clock: deps.clock } : {}),
     ...(deps.ids ? { ids: deps.ids } : {}),
     ...(deps.sleep ? { sleep: deps.sleep } : {}),

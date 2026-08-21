@@ -4,11 +4,14 @@
  * injectable runners, and file access uses the in-memory provider or the real
  * fs walker over the @montr/fixtures sample repos. No network, no DB.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { fileURLToPath } from "node:url";
+import nodePath from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { getHardenedDefaults } from "@montr/config";
 import { createNullLogger } from "@montr/telemetry";
-import type { ScanScope } from "@montr/contracts";
+import { RequiredDetectorUnavailableError, type ScanScope } from "@montr/contracts";
 import { mockAppMap } from "@montr/fixtures";
 import {
   // detectors
@@ -207,28 +210,126 @@ describe("discovery/sast", () => {
     expect(candidates.map((c) => c.category).sort()).toEqual(["sql_injection", "xss"]);
   });
 
-  it("degrades gracefully when the runner reports the binary is missing", async () => {
+  // A4 (P0): SAST is a REQUIRED detector — an unavailable/erroring Semgrep must
+  // THROW (RequiredDetectorUnavailableError), never silently degrade to `[]`.
+  // A scan can never complete successfully and look clean while its SAST pass
+  // silently didn't run.
+  it("THROWS when the runner reports the binary is missing (required detector)", async () => {
     const runner: SemgrepRunner = async () => null;
     const ctx = makeCtx({ repoRoot: VULN_REPO });
-    const candidates = await detectSast(ctx, { runner });
-    expect(candidates).toEqual([]);
-    expect(ctx.warnings.join(" ")).toMatch(/unavailable/i);
+    await expect(detectSast(ctx, { runner })).rejects.toThrow(RequiredDetectorUnavailableError);
+    await expect(detectSast(ctx, { runner })).rejects.toThrow(/unavailable/i);
   });
 
-  it("degrades (never throws) when the real semgrep binary is absent", async () => {
+  it("THROWS (never silently degrades) when the real semgrep binary is absent", async () => {
     // No injected runner + a real repoRoot -> defaultSemgrepRunner shells out;
-    // semgrep is not installed in CI, so this must degrade to [] + a warning.
+    // semgrep is not installed in CI, so this must throw, not degrade to [].
     const ctx = makeCtx({ repoRoot: VULN_REPO });
-    const candidates = await detectSast(ctx);
-    expect(candidates).toEqual([]);
-    expect(ctx.warnings.length).toBeGreaterThan(0);
+    await expect(detectSast(ctx)).rejects.toThrow(RequiredDetectorUnavailableError);
   });
 
-  it("warns when there is neither a runner nor a repoRoot", async () => {
+  it("THROWS when the runner itself throws (execution error)", async () => {
+    const runner: SemgrepRunner = async () => {
+      throw new Error("semgrep crashed");
+    };
+    const ctx = makeCtx({ repoRoot: VULN_REPO });
+    await expect(detectSast(ctx, { runner })).rejects.toThrow(RequiredDetectorUnavailableError);
+    await expect(detectSast(ctx, { runner })).rejects.toThrow(/semgrep crashed/);
+  });
+
+  it("warns (still a graceful skip) when there is neither a runner nor a repoRoot", async () => {
+    // Unchanged from before A4: the in-memory-files-only scan shape has no
+    // repo checkout for Semgrep to run against at all — never hit by the
+    // production Layer 1 runner, which always resolves a repoRoot.
     const ctx = makeCtx();
     const candidates = await detectSast(ctx);
     expect(candidates).toEqual([]);
     expect(ctx.warnings.join(" ")).toMatch(/skipped/i);
+  });
+
+  // --- A4: air-gap local rulesetsDir ----------------------------------------
+  describe("air-gap rulesetsDir (A4)", () => {
+    let LOCAL_RULES_DIR: string;
+
+    beforeAll(async () => {
+      // Mirrors import-bundle.sh's install layout: a flat directory of rule
+      // YAML files (see deploy/airgap/build-bundle.sh --semgrep-rules-dir).
+      LOCAL_RULES_DIR = await mkdtemp(nodePath.join(tmpdir(), "montr-airgap-rules-"));
+      await writeFile(
+        nodePath.join(LOCAL_RULES_DIR, "sql-injection.yaml"),
+        "rules:\n  - id: local.sql-injection\n    languages: [typescript]\n    message: test\n    severity: ERROR\n    pattern: foo(...)\n",
+      );
+    });
+
+    afterAll(async () => {
+      await rm(LOCAL_RULES_DIR, { recursive: true, force: true });
+    });
+
+    it("invokes Semgrep against the local rulesetsDir instead of hosted p/... packs", async () => {
+      let seenRulesets: string[] = [];
+      const runner: SemgrepRunner = async ({ rulesets: r }) => {
+        seenRulesets = r;
+        return CANNED_SEMGREP;
+      };
+      const ctx = makeCtx({
+        repoRoot: VULN_REPO,
+        config: {
+          ...getHardenedDefaults(),
+          discovery: { rulesetsDir: LOCAL_RULES_DIR },
+        },
+      });
+      const candidates = await detectSast(ctx, { runner, rulesets: ["p/owasp-top-ten"] });
+      expect(seenRulesets).toContain(LOCAL_RULES_DIR);
+      expect(seenRulesets.some((r) => r.startsWith("p/"))).toBe(false);
+      expect(candidates.length).toBeGreaterThan(0);
+    });
+
+    it("keeps non-registry (custom rule) paths alongside the local rulesetsDir", async () => {
+      let seenRulesets: string[] = [];
+      const runner: SemgrepRunner = async ({ rulesets: r }) => {
+        seenRulesets = r;
+        return { results: [] };
+      };
+      const ctx = makeCtx({
+        repoRoot: VULN_REPO,
+        config: {
+          ...getHardenedDefaults(),
+          discovery: { rulesetsDir: LOCAL_RULES_DIR },
+        },
+      });
+      await detectSast(ctx, {
+        runner,
+        rulesets: ["p/owasp-top-ten", "/tmp/montr-custom-rules-xyz/rule-1.yaml"],
+      });
+      expect(seenRulesets).toEqual([LOCAL_RULES_DIR, "/tmp/montr-custom-rules-xyz/rule-1.yaml"]);
+    });
+
+    it("THROWS when rulesetsDir is configured but does not exist", async () => {
+      const runner: SemgrepRunner = async () => CANNED_SEMGREP;
+      const ctx = makeCtx({
+        repoRoot: VULN_REPO,
+        config: {
+          ...getHardenedDefaults(),
+          discovery: { rulesetsDir: "/nonexistent/montr-airgap-rules" },
+        },
+      });
+      await expect(detectSast(ctx, { runner })).rejects.toThrow(RequiredDetectorUnavailableError);
+      await expect(detectSast(ctx, { runner })).rejects.toThrow(/does not exist|no rule files/);
+    });
+
+    it("THROWS when rulesetsDir exists but is empty (no rule files)", async () => {
+      const runner: SemgrepRunner = async () => CANNED_SEMGREP;
+      const emptyDir = await mkdtemp(nodePath.join(tmpdir(), "montr-empty-rules-"));
+      try {
+        const ctx = makeCtx({
+          repoRoot: VULN_REPO,
+          config: { ...getHardenedDefaults(), discovery: { rulesetsDir: emptyDir } },
+        });
+        await expect(detectSast(ctx, { runner })).rejects.toThrow(RequiredDetectorUnavailableError);
+      } finally {
+        await rm(emptyDir, { recursive: true, force: true });
+      }
+    });
   });
 });
 

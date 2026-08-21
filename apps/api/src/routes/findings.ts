@@ -49,6 +49,29 @@ export function registerFindingRoutes(app: FastifyInstance, deps: ResolvedDeps):
     },
   );
 
+  // A5.3 — cross-scan PR aggregate (NOT scan-scoped, unlike everything else in
+  // this file). Returns the bare `PullRequest[]` (no wrapper) to match the
+  // existing client contract (`listPullRequests`). The scan-scoped variant
+  // apps/web derives client-side from the Report (`report.fixStatus.pullRequests`
+  // — see client.ts `getScanPullRequests`); this is the client-wide view across
+  // every scan's opened PRs, sourced from the same underlying PullRequest rows.
+  app.get(
+    "/pull-requests",
+    {
+      preHandler: app.authenticate,
+      schema: {
+        tags: ["findings"],
+        summary: "All pull requests opened for the client, across every scan",
+        security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+      },
+    },
+    async (req) => {
+      const user = req.authUser;
+      if (!user) throw unauthorized();
+      return store.pullRequests.list(user.clientId);
+    },
+  );
+
   app.get(
     "/scans/:id/report",
     {

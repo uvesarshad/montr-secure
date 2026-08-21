@@ -1,8 +1,18 @@
-import { MODEL_COST_RATES, type ModelCostRate, type TokenUsage } from "@montr/contracts";
+import {
+  MODEL_COST_RATES,
+  UNKNOWN_MODEL_FALLBACK_RATE,
+  type ModelCostRate,
+  type TokenUsage,
+} from "@montr/contracts";
+import { getMetrics, type Logger } from "@montr/telemetry";
 
 /**
- * Deterministic pricing from the reference rate card (§8.4). Pure functions —
- * no network, no clock, no randomness.
+ * Deterministic pricing from the reference rate card (§8.4). No network, no
+ * clock, no randomness. The one intentional side effect: `priceUsageUsd` fails
+ * closed on an unrecognized model id (A1) — it bills at
+ * {@link UNKNOWN_MODEL_FALLBACK_RATE} instead of $0, and always increments the
+ * `cost_meter.unknown_model_rate` error metric (plus an optional structured
+ * warning) so the gap is never silent.
  */
 
 /** Round to micro-dollars to keep floating-point noise out of comparisons. */
@@ -63,17 +73,32 @@ export function findModelRate(modelId: string): ModelCostRate | undefined {
 /**
  * Deterministic USD price for a token usage against a model's reference rate.
  * Cache reads bill at ~0.1× and cache writes at ~1.25× the input rate (matching
- * the platform's prompt-cache economics). Returns 0 for an unknown model id.
+ * the platform's prompt-cache economics).
+ *
+ * Fails closed (A1): an unrecognized model id is billed at
+ * {@link UNKNOWN_MODEL_FALLBACK_RATE} — never $0 — so the budget hard-halt
+ * (DECIDE-4) can never be defeated by pointing the gateway at an unlisted
+ * model. Every fallback hit increments the `cost_meter.unknown_model_rate`
+ * error metric; pass `logger` (e.g. from `CostMeterOptions`) to also emit a
+ * structured warning with the model id.
  */
-export function priceUsageUsd(usage: TokenUsage, modelId: string): number {
+export function priceUsageUsd(usage: TokenUsage, modelId: string, logger?: Logger): number {
   const rate = findModelRate(modelId);
-  if (!rate) return 0;
+  const effectiveRate = rate ?? UNKNOWN_MODEL_FALLBACK_RATE;
+  if (!rate) {
+    getMetrics().recordError("cost_meter.unknown_model_rate");
+    logger?.warn("cost_meter.unknown_model_rate", {
+      modelId,
+      fallbackInputPerMillionUsd: UNKNOWN_MODEL_FALLBACK_RATE.inputPerMillionUsd,
+      fallbackOutputPerMillionUsd: UNKNOWN_MODEL_FALLBACK_RATE.outputPerMillionUsd,
+    });
+  }
   const cacheRead = usage.cacheReadTokens ?? 0;
   const cacheWrite = usage.cacheWriteTokens ?? 0;
   const usd =
-    (usage.inputTokens / 1_000_000) * rate.inputPerMillionUsd +
-    (cacheRead / 1_000_000) * rate.inputPerMillionUsd * 0.1 +
-    (cacheWrite / 1_000_000) * rate.inputPerMillionUsd * 1.25 +
-    (usage.outputTokens / 1_000_000) * rate.outputPerMillionUsd;
+    (usage.inputTokens / 1_000_000) * effectiveRate.inputPerMillionUsd +
+    (cacheRead / 1_000_000) * effectiveRate.inputPerMillionUsd * 0.1 +
+    (cacheWrite / 1_000_000) * effectiveRate.inputPerMillionUsd * 1.25 +
+    (usage.outputTokens / 1_000_000) * effectiveRate.outputPerMillionUsd;
   return roundUsd(usd);
 }

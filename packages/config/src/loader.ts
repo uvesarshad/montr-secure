@@ -96,6 +96,9 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
   set("MONTR_FIELD_ENCRYPTION_KEY_REF", ["security", "fieldEncryptionKeyRef"]);
   set("MONTR_ALLOWED_EGRESS_HOSTS", ["security", "allowedEgressHosts"], parseList);
   set("MONTR_KEY_SOURCE", ["security", "keySource"]);
+  // Air-gap SAST (A4): local Semgrep ruleset dir, in place of hosted `p/...`
+  // registry packs. See packages/discovery/src/detectors/sast.ts.
+  set("MONTR_DISCOVERY_RULESETS_DIR", ["discovery", "rulesetsDir"]);
   // HashiCorp Vault connection (only consulted when MONTR_KEY_SOURCE=vault).
   set("VAULT_ADDR", ["security", "vault", "addr"]);
   set("VAULT_TOKEN", ["security", "vault", "token"]);

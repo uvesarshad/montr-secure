@@ -196,7 +196,31 @@ export async function createRealBullMqTransport(
           const data = LayerJobDataSchema.parse(job.data);
           await processor(data);
         },
-        { connection: workerConnection },
+        {
+          connection: workerConnection,
+          // A3 (§8.1): BullMQ's defaults (lockDuration 30s, stalledInterval 30s,
+          // maxStalledCount 1) are tuned for short jobs. A layer job can run for
+          // minutes — Layer 1 shells out to Semgrep/gitleaks across a whole repo,
+          // Layer 0/1's AST/tree-sitter parsing is synchronous CPU work that can
+          // block the event loop for tens of seconds on a large repo, and every
+          // layer makes a network LLM call with its own retry/backoff. BullMQ
+          // auto-renews the lock at lockDuration/2 as long as the event loop gets
+          // a turn, so the real risk with the 30s default is a legitimately-busy
+          // layer missing a renewal window and being marked stalled + redelivered
+          // mid-flight (duplicate work; only saved from data loss by
+          // idempotencyKey dedup + FindingRepo.bulkCreate's skipDuplicates).
+          // lockDuration=10m gives a long CPU-bound layer plenty of headroom;
+          // stalledInterval stays at the BullMQ default (check every 30s) so a
+          // TRULY crashed worker (lock never renewed at all) is still detected
+          // reasonably quickly; maxStalledCount=1 (also the default, set
+          // explicitly for intent) allows exactly one stall-triggered redelivery
+          // before BullMQ gives up and marks the job failed — at which point
+          // apps/worker's boot-time reconciliation (main.ts) is the backstop that
+          // resumes the scan from its last persisted checkpoint.
+          lockDuration: 10 * 60 * 1000,
+          stalledInterval: 30 * 1000,
+          maxStalledCount: 1,
+        },
       );
       return { close: () => worker.close() };
     },

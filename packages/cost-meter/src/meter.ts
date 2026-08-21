@@ -6,6 +6,7 @@ import type {
   LayerId,
   TokenUsage,
 } from "@montr/contracts";
+import { createNullLogger, type Logger } from "@montr/telemetry";
 import { addUsage, priceUsageUsd, roundUsd, zeroUsage } from "./pricing.js";
 import { estimateScanCost, type EstimateInput, type EstimateOptions } from "./estimate.js";
 
@@ -45,6 +46,13 @@ export interface CostMeterOptions {
   now?: () => Date;
   /** Pricing models passed through to the pre-scan estimator. */
   estimate?: Pick<EstimateOptions, "defaultModelId" | "confirmationModelId">;
+  /**
+   * Structured logger for pricing warnings (e.g. the unknown-model fallback
+   * pricing path, A1). Defaults to a no-op logger — passing a real logger
+   * (e.g. the orchestrator's) surfaces `cost_meter.unknown_model_rate`
+   * warnings; the metric itself always fires regardless.
+   */
+  logger?: Logger;
 }
 
 interface Bucket {
@@ -59,6 +67,7 @@ function toLineItems(map: Map<string, Bucket>): CostLineItem[] {
 class LiveCostMeter implements CostMeter {
   private readonly now: () => Date;
   private readonly startedAt: number;
+  private readonly logger: Logger;
   private readonly byLayer = new Map<string, Bucket>();
   private readonly byModel = new Map<string, Bucket>();
   private total: TokenUsage = zeroUsage();
@@ -70,14 +79,19 @@ class LiveCostMeter implements CostMeter {
   ) {
     this.now = options.now ?? (() => new Date());
     this.startedAt = this.now().getTime();
+    this.logger = options.logger ?? createNullLogger();
   }
 
   estimate(input: EstimateInput): CostEstimate {
-    return estimateScanCost(input, { now: this.now, ...this.options.estimate });
+    return estimateScanCost(input, {
+      now: this.now,
+      logger: this.logger,
+      ...this.options.estimate,
+    });
   }
 
   record(entry: MeterEntry): void {
-    const usd = priceUsageUsd(entry.usage, entry.modelId);
+    const usd = priceUsageUsd(entry.usage, entry.modelId, this.logger);
     this.total = addUsage(this.total, entry.usage);
     this.totalUsd = roundUsd(this.totalUsd + usd);
     this.merge(this.byLayer, entry.layer ?? "unattributed", entry.usage, usd);

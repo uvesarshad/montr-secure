@@ -6,6 +6,7 @@ import {
   type ScanMode,
   type TokenUsage,
 } from "@montr/contracts";
+import type { Logger } from "@montr/telemetry";
 import { addUsage, priceUsageUsd, roundUsd, zeroUsage } from "./pricing.js";
 
 /**
@@ -34,6 +35,8 @@ export interface EstimateOptions {
   outputRatio?: number;
   /** Estimated tokens processed per wall-clock second (throughput heuristic). */
   tokensPerSecond?: number;
+  /** Structured logger for pricing warnings (unknown-model fallback, A1). */
+  logger?: Logger;
 }
 
 /** Full scan = 1×; diff scan touches ~changed files + reachable graph only. */
@@ -44,6 +47,7 @@ function lineItem(
   inputTokens: number,
   outputRatio: number,
   modelId: string,
+  logger?: Logger,
 ): CostLineItem {
   const outputTokens = Math.round(inputTokens * outputRatio);
   const usage: TokenUsage = {
@@ -51,7 +55,7 @@ function lineItem(
     outputTokens,
     totalTokens: inputTokens + outputTokens,
   };
-  return { key, usage, usd: priceUsageUsd(usage, modelId) };
+  return { key, usage, usd: priceUsageUsd(usage, modelId, logger) };
 }
 
 /**
@@ -76,10 +80,10 @@ export function estimateScanCost(input: EstimateInput, opts: EstimateOptions = {
   const layer5In = Math.round((routes * 120 + 2000) * mult);
 
   const byLayer: CostLineItem[] = [
-    lineItem("layer0", layer0In, outputRatio, defaultModel),
-    lineItem("layer2", layer2In, outputRatio, defaultModel),
-    lineItem("layer3", layer3In, outputRatio, confModel),
-    lineItem("layer5", layer5In, outputRatio, defaultModel),
+    lineItem("layer0", layer0In, outputRatio, defaultModel, opts.logger),
+    lineItem("layer2", layer2In, outputRatio, defaultModel, opts.logger),
+    lineItem("layer3", layer3In, outputRatio, confModel, opts.logger),
+    lineItem("layer5", layer5In, outputRatio, defaultModel, opts.logger),
   ];
 
   const usage = byLayer.reduce<TokenUsage>((acc, l) => addUsage(acc, l.usage), zeroUsage());

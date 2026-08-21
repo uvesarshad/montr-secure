@@ -12,6 +12,7 @@ Database and Infrastructure Variables
 DATABASE_URL: PostgreSQL connection URI with schema parameter. Consumed by packages/state-store and Prisma client. Required.
 REDIS_URL: Redis connection URI for BullMQ job queues and cross-process event broadcasting. Consumed by packages/orchestrator, apps/worker, and apps/api. Required.
 MONTR_CLIENT_ID: Tenant identifier for row-scoped multitenant isolation. Defaults to default. Consumed by packages/config and packages/state-store.
+MONTR_STUCK_SCAN_THRESHOLD_MS: Milliseconds a running scan's resume checkpoint may go unchanged before apps/worker's boot-time reconciliation presumes it was abandoned by a crashed worker process and calls the orchestrator's resume() on it. Defaults to 600000 (10 minutes). Consumed by apps/worker/src/main.ts via apps/worker/src/reconcile.ts.
 
 API and Authentication Variables
 JWT_SECRET: High-entropy secret string minimum thirty-two characters used to sign user session tokens. Consumed exclusively by apps/api/src/production-deps.ts. Server-side only. Required for API startup.
@@ -41,6 +42,9 @@ MONTR_AUTOFIX_ENABLED: Global toggle for automated pull request generation. Defa
 MONTR_DAST_ENABLED: Global toggle for live dynamic exploit testing. Defaults to false. Consumed by packages/confirm.
 MONTR_DAST_ALLOWLIST: Comma-separated list of pre-approved staging URLs permitted for live verification. Defaults to empty. Consumed by packages/confirm.
 MONTR_TELEMETRY_ENABLED: Toggle for anonymized operational metrics. Defaults to false. Consumed by packages/telemetry.
+
+Discovery and Scanner Variables
+MONTR_DISCOVERY_RULESETS_DIR: Local filesystem path to a directory of Semgrep rule YAML files, used in place of the hosted p/... Semgrep Registry packs. Required for air-gapped deployments (the default-deny egress policy blocks the Semgrep Registry); set to the semgrep subdirectory produced by deploy/airgap/import-bundle.sh (default /opt/montr/airgap/semgrep). Unset by default, which preserves the hosted-registry behavior unchanged. Consumed by packages/discovery/src/detectors/sast.ts via packages/config schema key discovery.rulesetsDir. SAST is a required detector: once set, a missing or empty directory at scan time fails the scan rather than degrading silently.
 
 Security and Secret Management Variables
 MONTR_FIELD_ENCRYPTION_KEY_REF: Base64-encoded 256-bit AES key used for encrypting credentials and sensitive fields in Postgres. Consumed by packages/state-store.

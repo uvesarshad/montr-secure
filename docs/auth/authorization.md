@@ -27,7 +27,7 @@ Action view_reports_and_audit: Permitted for Viewer, Operator, and Approver.
 
 Gate Enforcement and Security Guards
 Fix Gate Protection: Automated remediation pull request generation is guarded by the requireRole approver check on POST /api/v1/scans/:id/gate/fix. Even when auto-fix is globally enabled, pull requests are never opened without explicit Approver authorization.
-Live DAST Protection: Probing staging environments with active exploit payloads is guarded by the requireRole approver check on POST /api/v1/scans/:id/dast/authorize. The backend verifies that the target URL exists on the approved DastTarget allowlist and matches strict hostname patterns before executing tests.
+Live DAST Protection: Probing staging environments with active exploit payloads is guarded by the requireApprover hard check on POST /api/v1/scans/:id/dast/authorize, a scan-scoped convenience wrapper apps/api/src/routes/dast.ts implements around the target-based POST /dast/targets/:id/authorize flow. It runs the identical production-blocked and allowlist checks, find-or-registers a DastTarget for the given staging URL, authorizes it, and additionally writes the staging URL and the acting approver onto the scan itself, since the orchestrator's live-DAST gate (packages/orchestrator/src/fsm.ts computeAllowLive) reads Scan.scope.stagingUrl and Scan.approver directly and has no knowledge of DastTarget rows.
 Emergency Kill Switch Access: The kill switch endpoint POST /api/v1/scans/:id/kill is intentionally permitted for both Operator and Approver roles to allow immediate scan halting without administrative bottleneck.
 
 Update Triggers

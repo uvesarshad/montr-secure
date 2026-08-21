@@ -42,7 +42,7 @@ import {
 import type { MontrConfig } from "@montr/config";
 import type { StateStore } from "@montr/state-store";
 import { getMetrics, type Logger } from "@montr/telemetry";
-import type { CostMeter } from "@montr/cost-meter";
+import type { BudgetRegistry, CostMeter } from "@montr/cost-meter";
 import { EventBus, events } from "./events.js";
 import { KillRegistry } from "./kill-switch.js";
 import { realSleep, runWithRetry, type SleepFn } from "./retry.js";
@@ -80,6 +80,15 @@ export interface OrchestratorDeps {
   ids?: () => string;
   /** Injectable retry-backoff sleep (tests pass a no-op). Default: real timers. */
   sleep?: SleepFn;
+  /**
+   * ⛔ PRE-call budget guard (A2, DECIDE-4). When supplied, each running
+   * scan's live `CostMeter` + effective `BudgetPolicy` are REGISTERED here the
+   * moment a layer starts (and unregistered on cleanup) so `@montr/llm-gateway`
+   * can refuse a single over-budget call BEFORE dispatching it — additive to
+   * this controller's own `enforceBudget`, which only runs BETWEEN layers.
+   * The same `budgetRegistry` instance must be passed to `createLlmGateway`.
+   */
+  budgetRegistry?: BudgetRegistry;
 }
 
 export interface CreateScanInput {
@@ -149,6 +158,7 @@ class OrchestratorController implements Orchestrator {
   private readonly store: StateStore;
   private readonly logger: Logger;
   private readonly createCostMeter: (scanId: string) => CostMeter;
+  private readonly budgetRegistry?: BudgetRegistry;
   private readonly runners: LayerRunners;
   private readonly scheduler: JobScheduler;
   private readonly bus: EventBus;
@@ -168,6 +178,7 @@ class OrchestratorController implements Orchestrator {
     this.store = deps.store;
     this.logger = deps.logger.child({ component: "orchestrator" });
     this.createCostMeter = deps.createCostMeter;
+    this.budgetRegistry = deps.budgetRegistry;
     this.runners = deps.layerRunners;
     this.scheduler = deps.scheduler ?? new InlineJobScheduler();
     this.bus = deps.eventBus ?? new EventBus();
@@ -439,6 +450,10 @@ class OrchestratorController implements Orchestrator {
 
     const signal = this.kills.signalFor(scanId);
     const meter = this.getMeter(scanId);
+    // ⛔ PRE-call budget guard (A2): (re-)register BEFORE executing the layer so
+    // the gateway can see the ceiling in effect for THIS layer's calls. Cheap
+    // and idempotent — a plain Map upsert — so re-registering every job is fine.
+    this.budgetRegistry?.register(scanId, meter, effectiveBudgetPolicy(scan, this.config));
     this.emit(events.layerStarted(scanId, layer, this.nowIso()));
 
     let output: LayerJobResultMap[LayerId];
@@ -912,6 +927,7 @@ class OrchestratorController implements Orchestrator {
     this.meters.delete(scanId);
     this.caches.delete(scanId);
     this.budgetWarned.delete(scanId);
+    this.budgetRegistry?.unregister(scanId);
     this.kills.clear(scanId);
     this.bus.end(scanId);
   }

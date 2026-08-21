@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import type { TokenUsage } from "@montr/contracts";
+import { describe, it, expect, vi } from "vitest";
+import { UNKNOWN_MODEL_FALLBACK_RATE, type TokenUsage } from "@montr/contracts";
+import { createNullLogger, type Logger, type LogFields } from "@montr/telemetry";
 import {
   addUsage,
   findModelRate,
@@ -140,6 +141,22 @@ describe("findModelRate", () => {
     expect(findModelRate("gpt-4o")).toBeUndefined();
     expect(findModelRate("")).toBeUndefined();
   });
+
+  it("resolves the current-generation Opus 5 and Fable 5 rate-card entries (A1/A11)", () => {
+    expect(findModelRate("claude-opus-5")).toEqual(
+      expect.objectContaining({ inputPerMillionUsd: 5, outputPerMillionUsd: 25 }),
+    );
+    expect(findModelRate("claude-fable-5")).toEqual(
+      expect.objectContaining({ inputPerMillionUsd: 10, outputPerMillionUsd: 50 }),
+    );
+  });
+
+  it("resolves Bedrock/Vertex-shaped ids for the new entries via normalization alone", () => {
+    // Bedrock prefix.
+    expect(findModelRate("anthropic.claude-opus-5")?.modelId).toBe("claude-opus-5");
+    // Vertex dated-snapshot suffix.
+    expect(findModelRate("claude-fable-5@20260101")?.modelId).toBe("claude-fable-5");
+  });
 });
 
 describe("priceUsageUsd", () => {
@@ -179,5 +196,71 @@ describe("priceUsageUsd", () => {
     // Sonnet-5: in $3/M, out $15/M.
     // fresh input: 3, output: 0.5*15=7.5, cache read: 3*0.1=0.3, cache write: 3*1.25=3.75
     expect(priceUsageUsd(usage, "claude-sonnet-5")).toBeCloseTo(3 + 7.5 + 0.3 + 3.75, 6);
+  });
+
+  describe("fail-closed on unknown models (A1)", () => {
+    it("bills the UNKNOWN_MODEL_FALLBACK_RATE ceiling instead of $0", () => {
+      const usage: TokenUsage = {
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        totalTokens: 2_000_000,
+      };
+      const priced = priceUsageUsd(usage, "gpt-4o");
+      expect(priced).not.toBe(0);
+      expect(priced).toBe(
+        UNKNOWN_MODEL_FALLBACK_RATE.inputPerMillionUsd +
+          UNKNOWN_MODEL_FALLBACK_RATE.outputPerMillionUsd,
+      );
+    });
+
+    it("the fallback rate is never cheaper than any known rate-card entry", () => {
+      const usage: TokenUsage = {
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        totalTokens: 2_000_000,
+      };
+      const fallback = priceUsageUsd(usage, "some-unrecognized-model-id");
+      for (const modelId of [
+        "claude-opus-5",
+        "claude-fable-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+      ]) {
+        expect(fallback).toBeGreaterThanOrEqual(priceUsageUsd(usage, modelId));
+      }
+    });
+
+    it("prices zero usage at exactly $0 even for an unknown model (no usage → no cost)", () => {
+      expect(priceUsageUsd(zeroUsage(), "gpt-4o")).toBe(0);
+    });
+
+    it("does not warn or price via the fallback for a known model", () => {
+      const warn = vi.fn<Logger["warn"]>();
+      const logger: Logger = { ...createNullLogger(), warn };
+      priceUsageUsd(
+        { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
+        "claude-sonnet-5",
+        logger,
+      );
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("emits a structured warning with the model id when a logger is supplied", () => {
+      const calls: Array<{ message: string; fields?: LogFields }> = [];
+      const warn: Logger["warn"] = (message, fields) => {
+        calls.push({ message, fields });
+      };
+      const logger: Logger = { ...createNullLogger(), warn };
+      priceUsageUsd({ inputTokens: 100, outputTokens: 10, totalTokens: 110 }, "gpt-4o", logger);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.message).toBe("cost_meter.unknown_model_rate");
+      expect(calls[0]!.fields).toMatchObject({ modelId: "gpt-4o" });
+    });
+
+    it("does not throw or require a logger — logging is optional", () => {
+      expect(() =>
+        priceUsageUsd({ inputTokens: 100, outputTokens: 10, totalTokens: 110 }, "gpt-4o"),
+      ).not.toThrow();
+    });
   });
 });

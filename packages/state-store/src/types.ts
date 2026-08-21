@@ -46,6 +46,12 @@ export interface Repository<T> {
 
 export interface ScanRepository extends Repository<Scan> {
   update(clientId: string, scan: Scan): Promise<Scan>;
+  /**
+   * Scans currently in `status` (most recently started first). Backs apps/worker's
+   * boot-time reconciliation (A3, §8.1): a worker crash mid-layer parks a scan as
+   * `running` forever unless something finds it and calls `resume()`.
+   */
+  listByStatus(clientId: string, status: ScanStatus): Promise<Scan[]>;
 }
 
 export interface AppMapRepository extends Repository<AppMap> {

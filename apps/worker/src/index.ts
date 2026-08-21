@@ -28,12 +28,21 @@ import {
   type Orchestrator,
   type RedisConnection,
 } from "@montr/orchestrator";
-import { createCostMeter, type CostMeter } from "@montr/cost-meter";
+import { createCostMeter, type BudgetRegistry, type CostMeter } from "@montr/cost-meter";
 import type { StateStore } from "@montr/state-store";
 
 import { createLayerRunners, type LayerRunnerOptions } from "./runners.js";
 
 export { createLayerRunners, type LayerRunnerOptions } from "./runners.js";
+// A3 (§8.1) — boot-time reconciliation for scans a crashed worker parked as
+// `running` forever. Exported so apps/worker/src/main.ts can wire it in and so
+// it's independently unit-testable without a real Postgres/Redis boot.
+export {
+  reconcileStuckScans,
+  DEFAULT_STUCK_SCAN_THRESHOLD_MS,
+  type ReconcileDeps,
+  type ReconcileResult,
+} from "./reconcile.js";
 export {
   createInProcessOrchestrator,
   runScanInProcess,
@@ -67,6 +76,14 @@ export interface WorkerRuntimeDeps {
   logger?: Logger;
   /** Per-scan cost meter factory. Default: `@montr/cost-meter`'s live meter. */
   createCostMeter?: (scanId: string) => CostMeter;
+  /**
+   * ⛔ PRE-call budget guard (A2, DECIDE-4). Pass the SAME instance given to
+   * `createLlmGateway({ budgetRegistry })` when constructing `gateway` — the
+   * orchestrator registers each running scan's meter + policy here, and the
+   * gateway reads it back to refuse a single over-budget call before dispatch.
+   * Omit to leave today's between-layers-only enforcement unchanged.
+   */
+  budgetRegistry?: BudgetRegistry;
   /** Layer-runner seams (opener, source reader, semgrep/gitleaks, workspaceRoot…). */
   runnerOptions?: Partial<Omit<LayerRunnerOptions, "gateway">>;
   /** Fully override the layer runners (tests). */
@@ -137,6 +154,7 @@ export function startWorker(config: MontrConfig, deps: WorkerRuntimeDeps): Worke
         layerRunners,
         scheduler,
         ...(deps.eventBus ? { eventBus: deps.eventBus } : {}),
+        ...(deps.budgetRegistry ? { budgetRegistry: deps.budgetRegistry } : {}),
       });
       // Bring the per-layer BullMQ workers online — the processing loop begins here.
       await scheduler.start();

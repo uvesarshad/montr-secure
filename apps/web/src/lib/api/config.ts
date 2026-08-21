@@ -4,13 +4,11 @@
  * unprefixed route, kept that way for k8s/docker-compose/Dockerfile probes).
  *
  * Paths below are aligned to the ACTUAL routes apps/api registers today
- * (apps/api/src/routes/*.ts). A few web-side concepts (`progress`, `appMap`,
- * cross-scan `pullRequests`, scan-scoped `dast/authorize`, scan-scoped
- * `export`) have NO backend route yet — they're kept here as forward-looking
- * REST paths (matching the API's existing naming conventions) so the client
- * compiles and degrades gracefully (404 → the UI's existing empty/error
- * states), same treatment as `killSwitch` below. See the A3 handoff notes for
- * the full gap list; they're follow-up work, not silently masked.
+ * (apps/api/src/routes/*.ts). `progress`, `appMap`, cross-scan `pullRequests`,
+ * and scan-scoped `dast/authorize` (A5) now have real backend routes — see
+ * their inline notes below. Scan-scoped `export` is still forward-looking
+ * (kept here so the client compiles and degrades gracefully — 404 → the UI's
+ * existing empty/error states).
  *
  * MSW (src/mocks) mirrors `routePatterns` as an opt-in mock server — see
  * components/providers.tsx (`NEXT_PUBLIC_USE_MSW=true` to enable).
@@ -35,11 +33,12 @@ export const endpoints = {
   scanStatus: (scanId: string) => `${v1}/scans/${scanId}/status`,
   cancelScan: (scanId: string) => `${v1}/scans/${scanId}/cancel`,
 
-  // NOT YET IMPLEMENTED server-side — apps/api has no progress-event-stream
-  // route. Kept as the forward-looking path; 404s until added.
+  // Implemented (A5.1) — GET /scans/:id/progress drains the orchestrator's
+  // event stream non-blockingly and returns a plain `ProgressEvent[]` (see
+  // apps/api/src/routes/scans.ts `drainProgress`/`toProgressEvent`).
   progress: (scanId: string) => `${v1}/scans/${scanId}/progress`,
-  // NOT YET IMPLEMENTED server-side — apps/api has no app-map retrieval route
-  // (Scan only carries an `appMapId` reference today). 404s until added.
+  // Implemented (A5.2) — GET /scans/:id/appmap resolves the scan's `appMapId`
+  // and returns the bare `AppMap` (apps/api/src/routes/scans.ts).
   appMap: (scanId: string) => `${v1}/scans/${scanId}/appmap`,
   // No standalone GET-estimate route exists; the client derives the estimate
   // from `scan.costEstimate` (GET /scans/:id) instead — see client.ts.
@@ -57,15 +56,20 @@ export const endpoints = {
   // — see client.ts. Kept here only so MSW's mirrored mock handlers still work.
   fixes: (scanId: string) => `${v1}/scans/${scanId}/fixes`,
   scanPullRequests: (scanId: string) => `${v1}/scans/${scanId}/pull-requests`,
-  // NOT YET IMPLEMENTED — no cross-scan aggregate route exists server-side.
+  // Implemented (A5.3) — GET /pull-requests is a real cross-scan aggregate,
+  // client-scoped (apps/api/src/routes/findings.ts), sourced from the same
+  // PullRequest rows the scan-scoped derivation above reads via the Report.
   pullRequests: () => `${v1}/pull-requests`,
 
   // ---- dast (apps/api/src/routes/dast.ts) ----
-  // NOT YET IMPLEMENTED as scan-scoped — the real API models DAST
-  // authorization per TARGET (`POST /dast/targets` to register, then
-  // `POST /dast/targets/:id/authorize`), not per scan. Kept as a
-  // forward-looking path pending a follow-up to rework DastPanel around
-  // target ids; 404s until then.
+  // Implemented (A5.4) as a scan-scoped convenience wrapper — the real API
+  // still models DAST authorization per TARGET (`POST /dast/targets` to
+  // register, then `POST /dast/targets/:id/authorize`); this route
+  // find-or-registers a DastTarget for `stagingUrl`, runs the identical
+  // allowlist/production-blocked checks, authorizes it, AND writes
+  // `scan.scope.stagingUrl` + `scan.approver` onto this scan — the two Scan
+  // fields `computeAllowLive` (packages/orchestrator/src/fsm.ts) actually
+  // reads to gate Layer 3 live DAST. See the route's doc comment in dast.ts.
   authorizeDast: (scanId: string) => `${v1}/scans/${scanId}/dast/authorize`,
   dastTargets: () => `${v1}/dast/targets`,
   authorizeDastTarget: (targetId: string) => `${v1}/dast/targets/${targetId}/authorize`,

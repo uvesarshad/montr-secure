@@ -157,6 +157,25 @@ export const VaultKeySourceConfigSchema = z.object({
 });
 export type VaultKeySourceConfig = z.infer<typeof VaultKeySourceConfigSchema>;
 
+/**
+ * Layer 1 discovery / SAST engine configuration.
+ *
+ * `rulesetsDir` is the air-gap escape hatch for A4: hosted Semgrep Registry
+ * pack IDs (`p/owasp-top-ten`, `p/typescript`, …) require network egress to
+ * Semgrep's registry, which the hardened air-gap NetworkPolicy forbids. When
+ * set, `detectSast` (packages/discovery/src/detectors/sast.ts) invokes
+ * Semgrep against this LOCAL directory of rule YAML instead — the shape
+ * `deploy/airgap/import-bundle.sh` installs artifacts into (flat files under
+ * `<dest-dir>/semgrep/`, built by `build-bundle.sh --semgrep-rules-dir`).
+ * Unset (default): non-air-gapped installs are unchanged and keep using the
+ * hosted registry packs.
+ */
+export const DiscoveryConfigSchema = z.object({
+  /** Local filesystem path to a directory of Semgrep rule YAML files. */
+  rulesetsDir: z.string().optional(),
+});
+export type DiscoveryConfig = z.infer<typeof DiscoveryConfigSchema>;
+
 export const SecurityConfigSchema = z.object({
   /** Reference to the AES-256-GCM field-encryption key (KMS/Vault/k8s secret). */
   fieldEncryptionKeyRef: z.string().optional(),
@@ -181,6 +200,7 @@ export const MontrConfigSchema = z.object({
   rbac: RbacConfigSchema.default({}),
   telemetry: TelemetryConfigSchema.default({}),
   security: SecurityConfigSchema.default({}),
+  discovery: DiscoveryConfigSchema.default({}),
 });
 export type MontrConfig = z.infer<typeof MontrConfigSchema>;
 

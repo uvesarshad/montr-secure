@@ -10,11 +10,13 @@
  */
 import {
   AuditEventSchema,
+  type AppMap,
   type AuditEvent,
   type AuditEventInput,
   type ConfirmedFinding,
   type CustomRule,
   type PostureSnapshot,
+  type PullRequest,
   type RedTeamScenario,
   type Report,
   type Scan,
@@ -42,9 +44,32 @@ export interface FindingRepository<T> {
   listByScan(clientId: string, scanId: string): Promise<T[]>;
 }
 
+/**
+ * Mirrors @montr/state-store's `AppMapRepository` — only the read path the API
+ * needs (A5): a scan's `appMapId` points at a row here, and `GET /scans/:id/appmap`
+ * fetches it by id. The real repository also has `create`/`list`/`latestForRepo`/
+ * etc; those extra methods don't break structural assignment.
+ */
+export interface AppMapRepository {
+  create(clientId: string, entity: AppMap): Promise<AppMap>;
+  get(clientId: string, id: string): Promise<AppMap | null>;
+}
+
+/**
+ * Mirrors @montr/state-store's `PullRequestRepository` — the read path A5's
+ * cross-scan `GET /pull-requests` aggregate needs. The real repository also has
+ * `create`/`get`/`update`/`listByScan`; not needed here.
+ */
+export interface PullRequestRepository {
+  create(clientId: string, entity: PullRequest): Promise<PullRequest>;
+  list(clientId: string, filter?: Record<string, unknown>): Promise<PullRequest[]>;
+}
+
 /** The subset of @montr/state-store's `StateStore` the API composes from. */
 export interface StateStoreLike {
   scans: ScanRepository;
+  appMaps: AppMapRepository;
+  pullRequests: PullRequestRepository;
   confirmed: FindingRepository<ConfirmedFinding>;
   unconfirmed: FindingRepository<UnconfirmedFinding>;
   audit: AuditLogClient;
@@ -127,6 +152,8 @@ export interface PostureStore {
 export interface ApiStore {
   users: UserStore;
   scans: ScanRepository;
+  appMaps: AppMapRepository;
+  pullRequests: PullRequestRepository;
   confirmed: FindingRepository<ConfirmedFinding>;
   unconfirmed: FindingRepository<UnconfirmedFinding>;
   reports: ReportStore;
@@ -213,6 +240,37 @@ class InMemoryReportStore implements ReportStore {
   async save(report: Report): Promise<Report> {
     this.rows.set(this.key(report.clientId, report.scanId), { ...report });
     return { ...report };
+  }
+}
+
+class InMemoryAppMapRepo implements AppMapRepository {
+  private readonly rows = new Map<string, AppMap>();
+  private key(clientId: string, id: string) {
+    return `${clientId}:${id}`;
+  }
+  async create(clientId: string, entity: AppMap): Promise<AppMap> {
+    this.rows.set(this.key(clientId, entity.id), { ...entity });
+    return { ...entity };
+  }
+  async get(clientId: string, id: string): Promise<AppMap | null> {
+    const r = this.rows.get(this.key(clientId, id));
+    return r ? { ...r } : null;
+  }
+}
+
+class InMemoryPullRequestRepo implements PullRequestRepository {
+  private readonly rows = new Map<string, PullRequest>();
+  private key(clientId: string, id: string) {
+    return `${clientId}:${id}`;
+  }
+  async create(clientId: string, entity: PullRequest): Promise<PullRequest> {
+    this.rows.set(this.key(clientId, entity.id), { ...entity });
+    return { ...entity };
+  }
+  async list(clientId: string): Promise<PullRequest[]> {
+    const out: PullRequest[] = [];
+    for (const r of this.rows.values()) if (r.clientId === clientId) out.push({ ...r });
+    return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 }
 
@@ -369,6 +427,8 @@ export function createInMemoryApiStore(opts: InMemoryApiStoreOptions = {}): ApiS
   return {
     users: new InMemoryUserStore(),
     scans: new InMemoryScanRepo(),
+    appMaps: new InMemoryAppMapRepo(),
+    pullRequests: new InMemoryPullRequestRepo(),
     confirmed: new InMemoryFindingRepo<ConfirmedFinding>(),
     unconfirmed: new InMemoryFindingRepo<UnconfirmedFinding>(),
     reports: new InMemoryReportStore(),
@@ -393,6 +453,8 @@ export function apiStoreFromStateStore(
   return {
     users: extras.users,
     scans: state.scans,
+    appMaps: state.appMaps,
+    pullRequests: state.pullRequests,
     confirmed: state.confirmed,
     unconfirmed: state.unconfirmed,
     reports: extras.reports,

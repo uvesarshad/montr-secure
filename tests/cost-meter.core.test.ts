@@ -17,6 +17,7 @@ import {
   isWithinVarianceTarget,
   normalizeModelId,
   priceUsageUsd,
+  UNKNOWN_MODEL_FALLBACK_RATE,
 } from "@montr/cost-meter";
 
 const oneMillionEach: TokenUsage = {
@@ -33,14 +34,31 @@ describe("@montr/cost-meter pricing", () => {
     expect(priceUsageUsd(oneMillionEach, "claude-haiku-4-5-20251001")).toBe(6);
   });
 
+  it("prices the current-generation Opus 5 and Fable 5 entries (A1/A11)", () => {
+    // Opus 5: $5 in / $25 out per 1M — same tier pricing as Opus 4.8.
+    expect(priceUsageUsd(oneMillionEach, "claude-opus-5")).toBe(30);
+    // Fable 5: $10 in / $50 out per 1M — the priciest model on the card.
+    expect(priceUsageUsd(oneMillionEach, "claude-fable-5")).toBe(60);
+  });
+
   it("normalizes provider-prefixed and snapshot model ids", () => {
     expect(normalizeModelId("anthropic.claude-opus-4-8")).toBe("claude-opus-4-8");
     expect(normalizeModelId("claude-sonnet-5@20260101")).toBe("claude-sonnet-5");
     expect(priceUsageUsd(oneMillionEach, "anthropic.claude-opus-4-8")).toBe(30);
   });
 
-  it("returns 0 for an unknown (BYO) model rather than guessing", () => {
-    expect(priceUsageUsd(oneMillionEach, "gpt-4o")).toBe(0);
+  it("fails closed for an unknown (BYO) model — bills the conservative ceiling rate, never $0 (A1)", () => {
+    // Fallback rate: input $10/M, output $50/M → 1M each = $10 + $50 = $60.
+    const priced = priceUsageUsd(oneMillionEach, "gpt-4o");
+    expect(priced).toBeGreaterThan(0);
+    expect(priced).toBe(
+      1 * UNKNOWN_MODEL_FALLBACK_RATE.inputPerMillionUsd +
+        1 * UNKNOWN_MODEL_FALLBACK_RATE.outputPerMillionUsd,
+    );
+    // The fallback must never be cheaper than the priciest known model on the card.
+    expect(priceUsageUsd(oneMillionEach, "gpt-4o")).toBeGreaterThanOrEqual(
+      priceUsageUsd(oneMillionEach, "claude-fable-5"),
+    );
   });
 
   it("bills cache reads cheaper than fresh input", () => {

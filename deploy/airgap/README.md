@@ -42,10 +42,17 @@ types have no real source data in this repo yet and `build-bundle.sh` will
   is tracked separately (audit finding A8), not by this tool. `--osv-mirror-dir`
   / `--ghsa-mirror-dir` / `--cve-db-file` let you bundle real mirror data once
   you have it.
-- **No runtime code in this repo reads the files `import-bundle.sh` installs
-  yet** (no "load ruleset from disk" path exists in `packages/discovery`).
-  Wiring the worker to consume `--dest-dir` is future work; today
-  `import-bundle.sh` verifies and stages artifacts for that work to build on.
+- **`semgrep-rules` is now wired up (audit finding A4).**
+  `packages/discovery/src/detectors/sast.ts` reads a local ruleset directory
+  at scan time via the `discovery.rulesetsDir` config key (env:
+  `MONTR_DISCOVERY_RULESETS_DIR`) — point it at `<dest-dir>/semgrep` (the
+  path `import-bundle.sh` installs `semgrep-rules` artifacts into) to run
+  Semgrep against your bundled rules instead of the hosted `p/...` registry
+  packs. SAST is a required detector: once `rulesetsDir` is set, a
+  missing/empty directory at scan time now hard-fails the scan rather than
+  silently completing with zero SAST findings. The other artifact types
+  (`osv-mirror`/`ghsa-mirror`/`cve-db`) have no runtime consumer yet —
+  `import-bundle.sh` only stages them for that future work.
 
 Internal model-proxy support (so the only outbound call at runtime is the
 LLM endpoint, golden rule #1 / §14) is configured separately per `DEPLOY.md`

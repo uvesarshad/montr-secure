@@ -76,6 +76,12 @@ export type CreateDastTargetBody = z.infer<typeof CreateDastTargetBodySchema>;
 
 export const DastTargetIdParamsSchema = z.object({ id: z.string().min(1) });
 
+/** POST /scans/:id/dast/authorize (A5.4) — scan-scoped convenience wrapper
+ * around the real target-based flow above (register/authorize by DastTarget
+ * id). Body shape matches what apps/web's DastPanel has always sent. */
+export const AuthorizeScanDastBodySchema = z.object({ stagingUrl: z.string().url() });
+export type AuthorizeScanDastBody = z.infer<typeof AuthorizeScanDastBodySchema>;
+
 /* ------------------------------ findings ---------------------------- */
 
 export const FindingIdParamsSchema = z.object({ id: z.string().min(1) });

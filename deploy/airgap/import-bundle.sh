@@ -3,12 +3,16 @@
 # deploy/airgap/import-bundle.sh — verify + install an offline update bundle
 # produced by build-bundle.sh, on the air-gapped host.
 #
-# ⚠️  HONEST SCOPE: this repo does not yet have runtime code that reads
-#     rulesets/advisory data from disk (packages/discovery still ships a
-#     hardcoded advisory seed and live Semgrep Registry pack references —
-#     see audit finding A8). This script stages verified artifacts at a
-#     documented install path so that future wiring has something real to
-#     read; it does NOT restart or reconfigure any running service.
+# ⚠️  HONEST SCOPE: this script stages verified artifacts at a documented
+#     install path (--dest-dir, default /opt/montr/airgap); it does NOT
+#     restart or reconfigure any running service, and does NOT set config for
+#     you. For `semgrep-rules` artifacts (installed under
+#     <dest-dir>/semgrep/), packages/discovery/src/detectors/sast.ts DOES
+#     read this path back at scan time — but only once you point Montr
+#     Secure's `discovery.rulesetsDir` config (env:
+#     MONTR_DISCOVERY_RULESETS_DIR) at <dest-dir>/semgrep yourself (audit
+#     finding A4). Other artifact types (osv-mirror/ghsa-mirror/cve-db) have
+#     no runtime consumer yet.
 #
 set -euo pipefail
 
@@ -238,13 +242,19 @@ cat >&2 <<EOF
 
 [import-bundle] Next steps:
 [import-bundle]   1. Review $DEST_DIR for the installed rulesets/mirror data.
-[import-bundle]   2. NOTE: no service in this deployment currently reads from
-[import-bundle]      $DEST_DIR automatically — packages/discovery still uses
-[import-bundle]      live Semgrep Registry packs and a hardcoded advisory seed
-[import-bundle]      (see audit finding A8). Wiring the worker to consume this
-[import-bundle]      path is tracked separately; this import step only stages
-[import-bundle]      verified artifacts for that future work.
-[import-bundle]   3. Point the LLM gateway at your internal model proxy per
+[import-bundle]   2. If a semgrep-rules artifact was installed (under
+[import-bundle]      $DEST_DIR/semgrep/), set discovery.rulesetsDir to that
+[import-bundle]      path (env: MONTR_DISCOVERY_RULESETS_DIR=$DEST_DIR/semgrep)
+[import-bundle]      so packages/discovery/src/detectors/sast.ts runs Semgrep
+[import-bundle]      against it instead of the hosted p/... registry packs
+[import-bundle]      (audit finding A4). SAST is a required detector: once
+[import-bundle]      rulesetsDir is set, an empty/missing directory at scan
+[import-bundle]      time now hard-fails the scan rather than silently
+[import-bundle]      finding nothing.
+[import-bundle]   3. Other artifact types (osv-mirror/ghsa-mirror/cve-db) have
+[import-bundle]      no runtime consumer wired up yet; this import step only
+[import-bundle]      stages them for that future work.
+[import-bundle]   4. Point the LLM gateway at your internal model proxy per
 [import-bundle]      DEPLOY.md §4 — that remains the only permitted outbound
 [import-bundle]      call on a true air-gapped host.
 EOF

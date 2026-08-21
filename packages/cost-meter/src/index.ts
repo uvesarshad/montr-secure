@@ -13,6 +13,7 @@ export {
   zeroUsage,
   roundUsd,
 } from "./pricing.js";
+export { UNKNOWN_MODEL_FALLBACK_RATE } from "@montr/contracts";
 
 export { estimateScanCost, type EstimateInput, type EstimateOptions } from "./estimate.js";
 
@@ -32,3 +33,5 @@ export {
   isWithinVarianceTarget,
   VARIANCE_TARGET_PCT,
 } from "./variance.js";
+
+export { createBudgetRegistry, type BudgetContext, type BudgetRegistry } from "./registry.js";

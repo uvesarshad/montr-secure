@@ -114,6 +114,12 @@ export function makeInMemoryStore(): InMemoryStore {
         scans.set(`${c}:${s.id}`, clone(s));
         return Promise.resolve(clone(s));
       },
+      listByStatus: (c: string, status: Scan["status"]) =>
+        Promise.resolve(
+          [...scans.entries()]
+            .filter(([k, v]) => k.startsWith(`${c}:`) && v.status === status)
+            .map(([, v]) => clone(v)),
+        ),
     },
     appMaps: {
       create: (c: string, m: { id: string }) => {

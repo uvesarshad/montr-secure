@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  BudgetExceededError,
+  BudgetPolicySchema,
   KeyTierRejectedError,
   ModelBelowFloorError,
   type LLMRequest,
@@ -7,6 +9,7 @@ import {
 } from "@montr/contracts";
 import { parseConfig, type MontrConfig } from "@montr/config";
 import type { Logger } from "@montr/telemetry";
+import { createBudgetRegistry, createCostMeter } from "@montr/cost-meter";
 import { MontrLlmGateway, createLlmGateway, type CreateGatewayOptions } from "./gateway.js";
 import { makeUsage, type ProviderAdapter, type AdapterCompletion } from "./adapters/index.js";
 
@@ -306,5 +309,170 @@ describe("createLlmGateway factory", () => {
     });
     const response = await gateway.complete(req());
     expect(response.content).toBe("hi");
+  });
+});
+
+describe("gateway PRE-call budget guard (A2, DECIDE-4)", () => {
+  const SCAN_ID = "scan_budget_1";
+
+  function hardHaltPolicy(overrides: Record<string, unknown> = {}) {
+    return BudgetPolicySchema.parse({ enforcement: "hard_halt", ...overrides });
+  }
+
+  it("⛔ refuses a call whose estimated cost alone would clear the ceiling — BEFORE the provider is ever dispatched", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    // Effectively zero budget: even a tiny estimated call clears it.
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 0.0001 }));
+
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+    // Large maxTokens ⇒ a large worst-case output estimate, well past the ceiling.
+    const request = req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 100_000 });
+
+    let caught: unknown;
+    try {
+      await gateway.complete(request);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(BudgetExceededError);
+    expect((caught as BudgetExceededError).code).toBe("BUDGET_EXCEEDED");
+    expect((caught as BudgetExceededError).details).toMatchObject({ phase: "pre_call" });
+    // ⛔ The whole point: the provider adapter was NEVER called.
+    expect(adapter.calls).toBe(0);
+  });
+
+  it("still refuses mid-LAYER: a scan already under the ceiling on RECORDED spend is refused by a single call whose ESTIMATE alone would exceed it (this is what the between-layers-only enforceBudget check in the orchestrator cannot catch)", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    const policy = hardHaltPolicy({ maxUsd: 1 });
+    registry.register(SCAN_ID, meter, policy);
+
+    // Between-layers check would currently pass: nothing recorded yet.
+    expect(meter.checkBudget(policy).exceeded).toBe(false);
+
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+    // At claude-sonnet-5 rates ($15/M output), 100_000 maxTokens alone prices
+    // well above the $1 ceiling — refused before ever reaching the adapter.
+    const request = req({
+      metadata: { purpose: "confirmation", scanId: SCAN_ID },
+      maxTokens: 100_000,
+    });
+    await expect(gateway.complete(request)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(adapter.calls).toBe(0);
+  });
+
+  it("adds already-recorded spend to the new estimate before deciding", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    const policy = hardHaltPolicy({ maxUsd: 0.001 });
+    registry.register(SCAN_ID, meter, policy);
+    // Simulate a prior call in this scan having already spent right up near the ceiling.
+    meter.record({
+      modelId: "claude-sonnet-5",
+      usage: { inputTokens: 60, outputTokens: 10, totalTokens: 70 },
+    });
+    expect(meter.checkBudget(policy).exceeded).toBe(false); // not yet over on its own
+
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+    // A small-but-nonzero additional call tips spent+estimate over the ceiling.
+    const request = req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 5_000 });
+    await expect(gateway.complete(request)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(adapter.calls).toBe(0);
+  });
+
+  it("does NOT refuse when no budgetRegistry is configured (today's behavior, unchanged)", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const gateway = makeGateway(adapter, {});
+    const request = req({
+      metadata: { purpose: "triage", scanId: SCAN_ID },
+      maxTokens: 100_000,
+    });
+    const response = await gateway.complete(request);
+    expect(response.content).toBe("hi");
+    expect(adapter.calls).toBe(1);
+  });
+
+  it("does NOT refuse when the request carries no scanId (nothing to look up)", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 0.0001 }));
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    const request = req({ metadata: { purpose: "triage" }, maxTokens: 100_000 });
+    const response = await gateway.complete(request);
+    expect(response.content).toBe("hi");
+    expect(adapter.calls).toBe(1);
+  });
+
+  it("does NOT refuse when no context is registered for that scanId", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry(); // nothing registered
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    const request = req({
+      metadata: { purpose: "triage", scanId: "unregistered_scan" },
+      maxTokens: 100_000,
+    });
+    const response = await gateway.complete(request);
+    expect(response.content).toBe("hi");
+    expect(adapter.calls).toBe(1);
+  });
+
+  it("does NOT refuse under a 'warn' enforcement policy — only hard_halt refuses pre-call", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(
+      SCAN_ID,
+      meter,
+      BudgetPolicySchema.parse({ enforcement: "warn", maxUsd: 0.0001 }),
+    );
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    const request = req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 100_000 });
+    const response = await gateway.complete(request);
+    expect(response.content).toBe("hi");
+    expect(adapter.calls).toBe(1);
+  });
+
+  it("allows a call comfortably within the ceiling", async () => {
+    const adapter = new FakeAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 100 }));
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    const response = await gateway.complete(
+      req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 64 }),
+    );
+    expect(response.content).toBe("hi");
+    expect(adapter.calls).toBe(1);
+  });
+
+  it("also guards stream() the same way, before any adapter dispatch", async () => {
+    class StreamingAdapter extends FakeAdapter {
+      streamCalls = 0;
+      // eslint-disable-next-line require-yield -- refused before the generator is driven
+      async *stream(): AsyncGenerator<never, void, unknown> {
+        this.streamCalls++;
+        throw new Error("should never be reached — refused pre-call");
+      }
+    }
+    const adapter = new StreamingAdapter(() => ok());
+    const registry = createBudgetRegistry();
+    const meter = createCostMeter(SCAN_ID);
+    registry.register(SCAN_ID, meter, hardHaltPolicy({ maxUsd: 0.0001 }));
+    const gateway = makeGateway(adapter, { budgetRegistry: registry });
+
+    const iterator = gateway.stream(
+      req({ metadata: { purpose: "triage", scanId: SCAN_ID }, maxTokens: 100_000 }),
+    );
+    await expect(iterator.next()).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(adapter.streamCalls).toBe(0);
   });
 });

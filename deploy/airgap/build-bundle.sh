@@ -17,21 +17,25 @@
 #     registry mirror) — out of scope for this tool, and not yet built.
 #
 #   - As of this writing, the ONLY real local ruleset file in this repo is
-#     .github/gitleaks.toml. Semgrep runs against live Semgrep Registry packs
-#     (p/owasp-top-ten, p/typescript, p/nextjs, p/react, p/secrets — see
-#     packages/discovery/src/detectors/sast.ts), and the OSV/GHSA advisory
-#     "database" is a 3-entry hardcoded seed array
-#     (packages/discovery/src/advisories.ts) — tracked as its own gap
-#     (audit finding A8), NOT a real offline mirror yet. This script will NOT
-#     fabricate mirror content to fill those artifact types. If you have real
-#     pre-fetched semgrep rule YAML / an OSV or GHSA mirror dump / a CVE DB
-#     export, point this script at them with the flags below and they will be
-#     bundled for real, with real hashes.
+#     .github/gitleaks.toml. By DEFAULT (no --semgrep-rules-dir) Semgrep runs
+#     against live Semgrep Registry packs (p/owasp-top-ten, p/typescript,
+#     p/nextjs, p/react, p/secrets — see
+#     packages/discovery/src/detectors/sast.ts). This script will NOT
+#     fabricate mirror content to fill artifact types it has no real source
+#     data for. If you have real pre-fetched semgrep rule YAML / an OSV or
+#     GHSA mirror dump / a CVE DB export, point this script at them with the
+#     flags below and they will be bundled for real, with real hashes.
 #
-#   - Nothing in this repo today reads the files import-bundle.sh installs
-#     (no runtime "load rulesets from disk" path exists in packages/discovery
-#     yet). That wiring is future work; this tool stages the artifacts at a
-#     documented location so that work has something to consume.
+#   - `--semgrep-rules-dir` is REQUIRED for a genuinely air-gapped deployment
+#     (audit finding A4): the hosted `p/...` registry packs need network
+#     egress to Semgrep's registry, which the hardened air-gap NetworkPolicy
+#     forbids. packages/discovery/src/detectors/sast.ts reads the installed
+#     artifacts back at runtime via the `discovery.rulesetsDir` config key
+#     (env: MONTR_DISCOVERY_RULESETS_DIR) — set it to
+#     `<import-bundle.sh --dest-dir>/semgrep` (default
+#     `/opt/montr/airgap/semgrep`) after import. SAST is a REQUIRED detector:
+#     if `rulesetsDir` is set but empty/missing at scan time, the scan now
+#     hard-fails rather than silently completing with zero SAST findings.
 #
 set -euo pipefail
 
@@ -200,10 +204,16 @@ if [ -n "$SEMGREP_RULES_DIR" ]; then
   done < <(find "$SEMGREP_RULES_DIR" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0)
   [ "$count" -gt 0 ] || warn "--semgrep-rules-dir '$SEMGREP_RULES_DIR' had no *.yml/*.yaml files."
 else
-  warn "No --semgrep-rules-dir given. Semgrep currently runs against LIVE Semgrep" \
+  warn "No --semgrep-rules-dir given. Without it, Semgrep runs against LIVE Semgrep" \
        "Registry packs (p/owasp-top-ten, p/typescript, p/nextjs, p/react, p/secrets —" \
-       "see packages/discovery/src/detectors/sast.ts); no offline copy ships in this" \
-       "repo. Skipping the semgrep-rules artifact rather than fabricating one."
+       "see packages/discovery/src/detectors/sast.ts), which needs network egress" \
+       "the air-gap NetworkPolicy forbids. For a genuinely air-gapped install, re-run" \
+       "with --semgrep-rules-dir pointing at pre-fetched rule YAML, then set the" \
+       "installed 'discovery.rulesetsDir' config (env: MONTR_DISCOVERY_RULESETS_DIR)" \
+       "to '<import-bundle.sh --dest-dir>/semgrep' — SAST is a required detector and" \
+       "will now hard-fail the scan rather than silently finding nothing if that" \
+       "path is unset/missing/empty on an air-gapped host. Skipping the" \
+       "semgrep-rules artifact rather than fabricating one."
 fi
 
 # --- osv-mirror / ghsa-mirror (aspirational — see audit finding A8) --------
