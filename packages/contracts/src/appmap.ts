@@ -204,6 +204,90 @@ export const TaintFlowEdgeSchema = z.object({
 export type TaintFlowEdge = z.infer<typeof TaintFlowEdgeSchema>;
 
 /**
+ * Telemetry / observability surfaces (B6) — the target application's
+ * PRE-EXISTING logging/monitoring posture, ingested during Layer 0 (see
+ * `packages/appmap/src/telemetry-surfaces.ts`). Distinct from B5's
+ * purple-team loop, which runs an actual scenario and checks whether a
+ * GENERATED rule fires against LIVE telemetry; this is a static assessment
+ * of whether the target even HAS telemetry a rule could ever match against,
+ * derived the same way A12's SCA reachability and E6's threat model are —
+ * real dependency-manifest presence and real per-route AST call detection,
+ * never a guess.
+ */
+export const StructuredLoggingLibrarySchema = z.enum([
+  // Node.js
+  "winston",
+  "pino",
+  "bunyan",
+  "log4js",
+  "loglevel",
+  "tslog",
+  // Python
+  "structlog",
+  "logging",
+  // JVM
+  "slf4j",
+  "logback",
+]);
+export type StructuredLoggingLibrary = z.infer<typeof StructuredLoggingLibrarySchema>;
+
+export const ObservabilityToolKindSchema = z.enum([
+  "datadog",
+  "new_relic",
+  "opentelemetry",
+  "sentry",
+  "cloudwatch",
+]);
+export type ObservabilityToolKind = z.infer<typeof ObservabilityToolKindSchema>;
+
+/** One detected APM/observability integration, with the real matched dependency. */
+export const ObservabilityToolSchema = z.object({
+  kind: ObservabilityToolKindSchema,
+  /** The actual package/dependency name that matched (e.g. "@sentry/node"), not a guess. */
+  packageName: z.string().min(1),
+});
+export type ObservabilityTool = z.infer<typeof ObservabilityToolSchema>;
+
+/**
+ * `"structured"` — the call resolves to a real structured-logging library
+ * binding (a known package import, or a factory call like
+ * `winston.createLogger(...)`). `"console"` — the only logging signal found
+ * is a bare `console.*` call: real evidence of SOME logging, but with no
+ * structured fields a detection rule could reliably match on.
+ */
+export const RouteLoggerKindSchema = z.enum(["structured", "console"]);
+export type RouteLoggerKind = z.infer<typeof RouteLoggerKindSchema>;
+
+/**
+ * Per-route logging presence. One entry per route that was actually
+ * ANALYZED (TypeScript/JavaScript route handlers only today — see
+ * `telemetry-surfaces.ts`'s module doc); a route absent from
+ * `TelemetrySurfaces.routes` was never analyzed, which is NOT the same
+ * claim as "proven silent" (mirrors `Route.referencedModels`'s
+ * absent-vs-empty discipline, A18).
+ */
+export const RouteTelemetrySchema = z.object({
+  path: z.string().min(1),
+  method: HttpMethodSchema,
+  /** True when a real logging call (structured or console) was found in the handler. */
+  hasLoggingCall: z.boolean(),
+  loggerKind: RouteLoggerKindSchema.optional(),
+  /** A truncated real source snippet of the matched call — evidence, not a claim. */
+  sample: z.string().optional(),
+});
+export type RouteTelemetry = z.infer<typeof RouteTelemetrySchema>;
+
+/** The target application's structural telemetry/observability posture (B6). */
+export const TelemetrySurfacesSchema = z.object({
+  /** True when at least one known structured-logging library is a real dependency. */
+  hasStructuredLogging: z.boolean(),
+  loggingLibraries: z.array(StructuredLoggingLibrarySchema).default([]),
+  observabilityTools: z.array(ObservabilityToolSchema).default([]),
+  routes: z.array(RouteTelemetrySchema).default([]),
+});
+export type TelemetrySurfaces = z.infer<typeof TelemetrySurfacesSchema>;
+
+/**
  * DECIDE-2: AppMap is persisted per client, encrypted, and rebuilt on a stale
  * commit by default.
  */
@@ -249,6 +333,16 @@ export const AppMapSchema = z.object({
    * follow-up migration, out of scope here.
    */
   threatModel: ThreatModelSchema.optional(),
+  /**
+   * The target's pre-existing telemetry/observability posture (B6 — see
+   * `packages/appmap/src/telemetry-surfaces.ts`): structured-logging library
+   * presence, detected APM/observability tool integrations, and per-route
+   * logging-call presence. Populated deterministically as an additional
+   * Layer 0 step, no LLM required. Same in-memory-only persistence
+   * limitation as `threatModel`/`Route.referencedModels` above — not yet a
+   * Prisma column, so a map reloaded from Postgres will not carry it.
+   */
+  telemetrySurfaces: TelemetrySurfacesSchema.optional(),
   /** True when the persisted map is older than the current commit (DECIDE-2). */
   stale: z.boolean().default(false),
   rebuildPolicy: AppMapRebuildPolicySchema.default("rebuild_on_stale_commit"),

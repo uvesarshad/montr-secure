@@ -390,6 +390,15 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  packages/hardening:
+    dependencies:
+      '@montr/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@montr/discovery':
+        specifier: workspace:*
+        version: link:../discovery
+
   packages/llm-gateway:
     dependencies:
       '@anthropic-ai/sdk':
@@ -470,6 +479,9 @@ importers:
       '@gitbeaker/rest':
         specifier: ^43.8.0
         version: 43.8.0
+      '@montr/confirm':
+        specifier: workspace:*
+        version: link:../confirm
       '@montr/contracts':
         specifier: workspace:*
         version: link:../contracts

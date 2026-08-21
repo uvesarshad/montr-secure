@@ -63,6 +63,31 @@ describe("@montr/report SARIF export (§13, DECIDE-5)", () => {
     expect(sqli?.level).toBe("error");
   });
 
+  it("(B2) tags rules AND results with MITRE ATT&CK technique ids, alongside CWE/OWASP", () => {
+    const sarif = toSarif(report);
+    const sqliRule = sarif.runs[0]!.tool.driver.rules.find((r) => r.id === "sql_injection");
+    // sql_injection -> ["T1190", "T1213"] (@montr/contracts's CATEGORY_MITRE_TECHNIQUES).
+    expect(sqliRule?.properties.mitre).toEqual(["T1190", "T1213"]);
+    expect(sqliRule?.properties.tags).toContain("external/attack/t1190");
+    expect(sqliRule?.properties.tags).toContain("external/attack/t1213");
+    // The existing CWE/OWASP tag conventions are untouched by the addition.
+    expect(sqliRule?.properties.tags).toContain("OWASP-A03:2021");
+    expect(sqliRule?.properties.tags).toContain("external/cwe/cwe-89");
+
+    const sqliResult = sarif.runs[0]!.results.find((r) => r.ruleId === "sql_injection");
+    expect(sqliResult?.properties.mitre).toEqual(["T1190", "T1213"]);
+  });
+
+  it("(B2) maps every rule's category to a non-empty MITRE technique list", () => {
+    const sarif = toSarif(report);
+    for (const rule of sarif.runs[0]!.tool.driver.rules) {
+      expect(rule.properties.mitre.length).toBeGreaterThan(0);
+      for (const id of rule.properties.mitre) {
+        expect(rule.properties.tags).toContain(`external/attack/${id.toLowerCase()}`);
+      }
+    }
+  });
+
   it("exportReport returns a schema-valid ExportArtifact descriptor", async () => {
     const artifact = await exportReport(report, "sarif");
     expect(ExportArtifactSchema.safeParse(artifact).success).toBe(true);

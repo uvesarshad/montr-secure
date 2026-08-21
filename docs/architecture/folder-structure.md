@@ -40,6 +40,7 @@ packages/correlation: Layer 2 candidate scoring across reachability, exposure, a
 packages/confirm: Layer 3 interprocedural static taint flow solver and approver-gated live DAST runner with blast-radius limits.
 packages/fix: Layer 4 unified diff patch generator, proof-of-fix regression test synthesizer, and safety risk classifier.
 packages/report: Layer 5 report generation, executive summaries, compliance exporters (SARIF, SOC2, ISO27001, OWASP), and GitHub/GitLab pull request integration.
+packages/hardening: Advisory-only blue-team config/infra hardening recommendation generator (security headers, CSP, cookie policy, rate limits, WAF rules, network policy, framework configuration) — architecturally separate from packages/fix, imports it never, and is not wired into Layer 4 or Layer 5 yet.
 
 Support Packages in packages
 packages/qa: Precision, recall, and false-positive rate evaluation harness for golden corpus benchmarks.

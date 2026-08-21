@@ -54,3 +54,8 @@ export {
   type FindingClass,
 } from "./taxonomy.js";
 export { fnv1a, makeRootCauseId, makeProbableId } from "./hash.js";
+
+// B8 — attack-path graph across confirmed findings (kill-chain discovery).
+// Operates on Layer 3's ConfirmedFinding[] output, not Layer 2's candidates —
+// see ./attack-paths/index.ts for the full design rationale.
+export * from "./attack-paths/index.js";

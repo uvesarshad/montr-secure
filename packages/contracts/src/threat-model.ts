@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CategorySchema } from "./compliance.js";
+import { CategorySchema, type Category } from "./compliance.js";
 
 /**
  * Threat model (E6 / B7) — derived from the App Map at the end of Layer 0, as a
@@ -18,18 +18,117 @@ import { CategorySchema } from "./compliance.js";
  * without re-deriving the analysis.
  */
 
+/**
+ * STRIDE (B7): the six Microsoft threat-modeling categories — Spoofing,
+ * Tampering, Repudiation, Information disclosure, Denial of service,
+ * Elevation of privilege. Applied per trust boundary and per attack-surface
+ * category below, always grounded in real App Map evidence (never a
+ * boilerplate six-for-six dump — see {@link CATEGORY_TO_STRIDE}'s doc comment
+ * and `packages/appmap/src/threat-model.ts`'s per-boundary derivation).
+ */
+export const StrideCategorySchema = z.enum([
+  "spoofing",
+  "tampering",
+  "repudiation",
+  "information_disclosure",
+  "denial_of_service",
+  "elevation_of_privilege",
+]);
+export type StrideCategory = z.infer<typeof StrideCategorySchema>;
+
+export const STRIDE_LABELS: Record<StrideCategory, string> = {
+  spoofing: "Spoofing",
+  tampering: "Tampering",
+  repudiation: "Repudiation",
+  information_disclosure: "Information Disclosure",
+  denial_of_service: "Denial of Service",
+  elevation_of_privilege: "Elevation of Privilege",
+};
+
+/**
+ * One STRIDE category that genuinely applies to a trust boundary, with a
+ * rationale grounded in concrete App Map evidence (which routes, which ORM
+ * model, which auth state) — the same "never generic" discipline as
+ * {@link AttackSurfaceEntrySchema.shape.rationale}.
+ */
+export const StrideFindingSchema = z.object({
+  category: StrideCategorySchema,
+  rationale: z.string().min(1),
+});
+export type StrideFinding = z.infer<typeof StrideFindingSchema>;
+
 /** A grouping of routes that share a trust level (PRD-shaped, App-Map-grounded). */
 export const TrustBoundarySchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
   /** Route paths (from `AppMap.routes[].path`) inside this boundary. */
   routePaths: z.array(z.string()).default([]),
+  /**
+   * STRIDE categories that genuinely apply to THIS boundary (B7), e.g. a
+   * public/unresolved-auth boundary whose routes write an ORM model gets
+   * Tampering + Elevation of Privilege + Repudiation; a boundary behind
+   * resolved authentication with no write fan-out gets `[]` — precision over
+   * a mechanical six-for-six dump. See
+   * `packages/appmap/src/threat-model.ts`'s `buildTrustBoundaries`.
+   */
+  stride: z.array(StrideFindingSchema).default([]),
 });
 export type TrustBoundary = z.infer<typeof TrustBoundarySchema>;
 
 /** How plausible a category of vulnerability is, given this app's actual shape. */
 export const SurfacePlausibilitySchema = z.enum(["none", "low", "medium", "high"]);
 export type SurfacePlausibility = z.infer<typeof SurfacePlausibilitySchema>;
+
+/**
+ * Category -> STRIDE categories that genuinely apply when a finding of this
+ * category is plausible on this app (B7). Exhaustive over `Category` (a
+ * `Record`, not a partial map) so a newly added `Category` cannot silently
+ * ship with no STRIDE classification — the compiler enforces coverage.
+ * `other` intentionally maps to `[]`: it is a catch-all bucket with no
+ * consistent STRIDE shape, so mapping it to anything would be a guess, not a
+ * grounded classification.
+ */
+export const CATEGORY_TO_STRIDE: Record<Category, readonly StrideCategory[]> = {
+  sql_injection: ["tampering", "information_disclosure"],
+  nosql_injection: ["tampering", "information_disclosure"],
+  command_injection: ["tampering", "elevation_of_privilege"],
+  xss: ["spoofing", "tampering", "information_disclosure"],
+  ssrf: ["information_disclosure", "elevation_of_privilege"],
+  path_traversal: ["information_disclosure", "tampering"],
+  insecure_deserialization: ["tampering", "elevation_of_privilege"],
+  hardcoded_secret: ["information_disclosure", "elevation_of_privilege"],
+  vulnerable_dependency: ["tampering", "elevation_of_privilege"],
+  permissive_cors: ["information_disclosure", "tampering"],
+  missing_security_headers: ["information_disclosure", "tampering"],
+  insecure_cookie: ["spoofing", "information_disclosure"],
+  weak_crypto: ["information_disclosure", "tampering"],
+  broken_access_control: ["elevation_of_privilege", "information_disclosure"],
+  broken_authentication: ["spoofing", "elevation_of_privilege"],
+  open_redirect: ["spoofing"],
+  xxe: ["information_disclosure", "denial_of_service"],
+  csrf: ["spoofing", "tampering"],
+  sensitive_data_exposure: ["information_disclosure"],
+  insufficient_logging: ["repudiation"],
+  idor: ["elevation_of_privilege", "information_disclosure"],
+  mass_assignment: ["tampering", "elevation_of_privilege"],
+  rate_limit_missing: ["denial_of_service"],
+  prompt_injection: ["tampering", "elevation_of_privilege"],
+  insecure_configuration: ["tampering", "elevation_of_privilege", "information_disclosure"],
+  other: [],
+};
+
+/**
+ * STRIDE categories for a finding category, suppressed to `[]` when
+ * `plausibility` is `"none"` — the same precision discipline `ScopeHints`
+ * already applies: a category the App Map's own structural shape rules out
+ * (e.g. no deserialize sink anywhere) must never surface a STRIDE tag either.
+ */
+export function strideForCategory(
+  category: Category,
+  plausibility: SurfacePlausibility,
+): StrideCategory[] {
+  return plausibility === "none" ? [] : [...CATEGORY_TO_STRIDE[category]];
+}
 
 /**
  * One category's plausibility on THIS app, with a rationale grounded in
@@ -41,6 +140,8 @@ export const AttackSurfaceEntrySchema = z.object({
   category: CategorySchema,
   plausibility: SurfacePlausibilitySchema,
   rationale: z.string().min(1),
+  /** STRIDE categories this entry maps to (B7) — see {@link strideForCategory}. */
+  stride: z.array(StrideCategorySchema).default([]),
 });
 export type AttackSurfaceEntry = z.infer<typeof AttackSurfaceEntrySchema>;
 

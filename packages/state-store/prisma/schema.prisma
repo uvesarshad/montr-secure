@@ -791,6 +791,7 @@ model DetectionRule {
   content         String // rule text: Sigma YAML / OTel query / SIEM query — see encryption note above
   mitreTechniques Json      @default("[]") // string[] of ATT&CK technique ids (B2 populates the mapping)
   provenance      ProofType // static (data-flow path) | live (DAST transcript) — mirrors ConfirmedFinding.proofType
+  logSignature    Json? // B4: DetectionLogSignature ({fields, pattern, falseAlarmSources}) | absent for pre-B4 rows
   createdAt       DateTime  @default(now())
 
   @@index([clientId])

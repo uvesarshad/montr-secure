@@ -21,6 +21,7 @@ export default defineConfig({
       "@montr/correlation": src("./packages/correlation/src/index.ts"),
       "@montr/confirm": src("./packages/confirm/src/index.ts"),
       "@montr/fix": src("./packages/fix/src/index.ts"),
+      "@montr/hardening": src("./packages/hardening/src/index.ts"),
       "@montr/report": src("./packages/report/src/index.ts"),
       "@montr/qa": src("./packages/qa/src/index.ts"),
       "@montr/security": src("./packages/security/src/index.ts"),

@@ -360,3 +360,17 @@ export type {
 // Surface the raw @montr/state-store audit export through the report layer too.
 export { exportAuditLog } from "@montr/state-store";
 export type { AuditExportFormat } from "@montr/state-store";
+
+// MITRE ATT&CK report surfacing (B2) — standalone, not yet wired into the
+// EXPORTERS registry above (no format enum slot exists for it yet; a later
+// wave wires this in alongside the other blue-team capabilities).
+export {
+  buildMitreFindingMappings,
+  buildMitreAttackSection,
+  renderMitreAttackJson,
+} from "./mitre-attack.js";
+export type {
+  MitreFindingMapping,
+  MitreTechniqueCoverage,
+  MitreAttackSection,
+} from "./mitre-attack.js";

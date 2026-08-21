@@ -41,6 +41,9 @@
       "path": "packages/fix"
     },
     {
+      "path": "packages/hardening"
+    },
+    {
       "path": "packages/report"
     },
     {

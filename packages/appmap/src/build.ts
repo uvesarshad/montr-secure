@@ -18,6 +18,7 @@ import { buildDeterministicPieces } from "./languages/registry.js";
 import { computeDiffScope } from "./diff.js";
 import { labelAuthBoundaries } from "./llm.js";
 import { deriveThreatModel } from "./threat-model.js";
+import { buildTelemetrySurfaces } from "./telemetry-surfaces.js";
 import { estimateCost } from "./cost.js";
 import { findReusableAppMap, persistAppMap } from "./persist.js";
 
@@ -132,6 +133,18 @@ export async function buildAppMap(
       logger,
     });
     appMap = { ...appMap, threatModel: threatModelResult.threatModel };
+
+    // B6 — telemetry-surfaces detection, another additional Layer 0 step
+    // (same convention as the threat model above): deterministic, no LLM,
+    // never fails the scan. Runs after routes are final so per-route logging
+    // detection sees the complete, merged route set.
+    progress("telemetry-surfaces", 90, "telemetry-surfaces detection");
+    const telemetrySurfaces = await buildTelemetrySurfaces(appMap, {
+      dir: workspace.dir,
+      inventory: inv,
+      logger,
+    });
+    appMap = { ...appMap, telemetrySurfaces };
 
     // Persist (per-client, encrypted) with DECIDE-2 stale invalidation + audit.
     if (deps.appMaps) {

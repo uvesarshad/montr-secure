@@ -5,11 +5,12 @@
  *
  * Rich metadata for downstream tools:
  *   - `driver.rules[]` — one reporting descriptor per finding category, with a
- *     name, short/full description, `helpUri`, CWE + OWASP `tags`, and a
+ *     name, short/full description, `helpUri`, CWE + OWASP + MITRE ATT&CK
+ *     (B2, via @montr/contracts's `mitreTechniqueIdsForCategory`) `tags`, and a
  *     `security-severity` (GitHub reads this to set the alert severity).
  *   - `results[]` — `ruleId` + `ruleIndex`, level, message, location, and
  *     `partialFingerprints` (a stable, line-drift-resistant identity so the same
- *     finding is not re-alerted after unrelated edits), plus CWE/OWASP properties.
+ *     finding is not re-alerted after unrelated edits), plus CWE/OWASP/MITRE properties.
  *
  * The rich object is a SUPERSET of the frozen {@link SarifLogSchema}. We
  * `SarifLogSchema.parse(...)` it purely to ASSERT the core 2.1.0 shape is valid
@@ -22,6 +23,7 @@ import {
   OWASP_TITLES,
   SarifLogSchema,
   complianceForCategory,
+  mitreTechniqueIdsForCategory,
   type Category,
   type ConfirmedFinding,
   type Report,
@@ -73,6 +75,8 @@ interface RichSarifRule {
     "security-severity": string;
     cwe: string[];
     owasp: string;
+    /** MITRE ATT&CK/ATLAS technique ids this category maps to (B2). Also carried in `tags`. */
+    mitre: string[];
   };
 }
 
@@ -96,6 +100,8 @@ interface RichSarifResult {
     severity: string;
     exposure: string;
     proofType: string;
+    /** MITRE ATT&CK/ATLAS technique ids for this finding's category (B2). */
+    mitre: string[];
   };
 }
 
@@ -132,10 +138,16 @@ function helpUri(category: Category): string {
   return "https://owasp.org/www-project-top-ten/";
 }
 
+/** `external/attack/<lowercased-id>` — mirrors the existing `external/cwe/<lowercased-id>` tag shape. */
+function mitreTag(id: string): string {
+  return `external/attack/${id.toLowerCase()}`;
+}
+
 function ruleTags(category: Category): string[] {
   const entry = CATEGORY_TAXONOMY[category];
   const cweTags = entry.cwe.map((c) => `external/cwe/${c.toLowerCase()}`);
-  return ["security", category, `OWASP-${entry.owasp}`, ...cweTags];
+  const mitreTags = mitreTechniqueIdsForCategory(category).map(mitreTag);
+  return ["security", category, `OWASP-${entry.owasp}`, ...cweTags, ...mitreTags];
 }
 
 function buildRule(category: Category, maxSeverity: Severity): RichSarifRule {
@@ -153,6 +165,7 @@ function buildRule(category: Category, maxSeverity: Severity): RichSarifRule {
       "security-severity": SECURITY_SEVERITY[maxSeverity],
       cwe: [...entry.cwe],
       owasp: entry.owasp,
+      mitre: mitreTechniqueIdsForCategory(category),
     },
   };
 }
@@ -184,6 +197,7 @@ function buildResult(finding: ConfirmedFinding, ruleIndex: number): RichSarifRes
       severity: finding.severity,
       exposure: finding.exposure,
       proofType: finding.proofType,
+      mitre: mitreTechniqueIdsForCategory(finding.category),
     },
   };
 }

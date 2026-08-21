@@ -22,6 +22,7 @@
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {
+    "@montr/confirm": "workspace:*",
     "@montr/contracts": "workspace:*",
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*",

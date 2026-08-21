@@ -37,9 +37,32 @@
  * documented but not wired here, `packages/confirm`) — never a hard filter.
  * See `ScopeHintsSchema`'s doc comment in `@montr/contracts` for the one
  * narrow, advisory-only exception (`zeroSurfaceCategories`).
+ *
+ * STRIDE (B7): `buildDeterministicThreatModel` additionally classifies which
+ * of the six STRIDE categories genuinely apply, at two granularities, both
+ * grounded in real App Map evidence (never a mechanical six-for-six dump):
+ *   - Per attack-surface category, via `strideForCategory` (@montr/contracts)
+ *     — a static `Category -> StrideCategory[]` table, suppressed to `[]`
+ *     whenever `plausibility` is `"none"` (same precision discipline as
+ *     `zeroSurfaceCategories`).
+ *   - Per trust boundary, via {@link buildTrustBoundaries}'s own
+ *     `strideForTrustBoundary` — a public/unresolved-auth boundary is always
+ *     Spoofing (no verified caller identity); it additionally gets Tampering
+ *     + Elevation of Privilege + Repudiation only when its OWN routes
+ *     actually write/delete an ORM model (the same A18 route->model evidence
+ *     `weakAuthModelFanOut` uses), and Information Disclosure only when its
+ *     own routes actually read one. A resolved-authentication boundary with
+ *     no such fan-out gets `stride: []` — this is the precision case the B7
+ *     task calls out explicitly (no spurious flags on a properly-authenticated
+ *     boundary). Denial of Service is deliberately NEVER derived here: the
+ *     App Map has no rate-limit/throughput signal at Layer 0 (that data does
+ *     not exist until a live target is probed), so synthesizing a DoS verdict
+ *     from route/auth shape alone would be a guess, not a grounded finding —
+ *     documented follow-up, not a gap silently papered over.
  */
 import {
   CategorySchema,
+  strideForCategory,
   ThreatModelSchema,
   type AbuseCase,
   type AppMap,
@@ -49,7 +72,9 @@ import {
   type LLMGateway,
   type ModelTier,
   type PriorityCategoryHint,
+  type RouteModelRef,
   type ScopeHints,
+  type StrideFinding,
   type SurfacePlausibility,
   type TaintSink,
   type TaintSinkKind,
@@ -91,6 +116,108 @@ const AUTH_BOUNDARY_LABELS: Record<AuthState, string> = {
   unknown: "Routes with unresolved auth boundary",
 };
 
+function modelRefsWithOp(
+  refs: RouteModelRef[] | undefined,
+  op: "read" | "write" | "delete",
+): RouteModelRef[] {
+  return (refs ?? []).filter((m) => m.operations.includes(op));
+}
+
+/**
+ * STRIDE for one auth-state trust boundary, grounded in this boundary's OWN
+ * routes (not the whole app) — see this file's module doc for the full
+ * per-category reasoning. `weak` boundaries (`public`/`unknown` auth) are
+ * always Spoofing; Tampering/Elevation of Privilege/Repudiation and
+ * Information Disclosure are additionally derived only when this boundary's
+ * routes actually write/delete or read an ORM model (A18 route->model
+ * links) — a resolved-authentication boundary with no such fan-out gets `[]`.
+ */
+function strideForTrustBoundary(
+  state: AuthState,
+  routePaths: string[],
+  appMap: AppMap,
+): StrideFinding[] {
+  const findings: StrideFinding[] = [];
+  const weak = state === "public" || state === "unknown";
+  if (!weak) return findings;
+
+  const pathSet = new Set(routePaths);
+  const boundaryRoutes = appMap.routes.filter((r) => r.authState === state && pathSet.has(r.path));
+
+  findings.push({
+    category: "spoofing",
+    rationale:
+      `${routePaths.length} route(s) in this boundary accept requests with no verified caller ` +
+      `identity (authState "${state}": ${routePaths.join(", ")}), so a request cannot be ` +
+      "reliably attributed to a real principal.",
+  });
+
+  const writeDeleteRoutes = boundaryRoutes.filter(
+    (r) =>
+      modelRefsWithOp(r.referencedModels, "write").length > 0 ||
+      modelRefsWithOp(r.referencedModels, "delete").length > 0,
+  );
+  if (writeDeleteRoutes.length > 0) {
+    const models = [
+      ...new Set(
+        writeDeleteRoutes
+          .flatMap((r) => [
+            ...modelRefsWithOp(r.referencedModels, "write"),
+            ...modelRefsWithOp(r.referencedModels, "delete"),
+          ])
+          .map((m) => m.modelName),
+      ),
+    ];
+    const routeList = writeDeleteRoutes.map((r) => r.path).join(", ");
+    findings.push({
+      category: "tampering",
+      rationale:
+        `Route(s) ${routeList} write/delete ORM model(s) ${models.join(", ")} behind ` +
+        `${state} auth (A18 route->model links), so an unverified caller can modify persisted ` +
+        "data directly.",
+    });
+    findings.push({
+      category: "elevation_of_privilege",
+      rationale:
+        `The same write/delete access on ${models.join(", ")} from route(s) ${routeList} is ` +
+        "reachable without proving any role, so a caller with no privileges at all can perform " +
+        "a state-changing action normally reserved for an authenticated/authorized user.",
+    });
+    findings.push({
+      category: "repudiation",
+      rationale:
+        `Because ${
+          state === "public"
+            ? "no identity is required"
+            : "the caller's identity " + "could not be resolved"
+        } on route(s) ${routeList}, a write/delete performed through ` +
+        "them cannot be attributed to an actor after the fact.",
+    });
+  }
+
+  const readRoutes = boundaryRoutes.filter(
+    (r) => modelRefsWithOp(r.referencedModels, "read").length > 0,
+  );
+  if (readRoutes.length > 0) {
+    const models = [
+      ...new Set(
+        readRoutes
+          .flatMap((r) => modelRefsWithOp(r.referencedModels, "read"))
+          .map((m) => m.modelName),
+      ),
+    ];
+    const routeList = readRoutes.map((r) => r.path).join(", ");
+    findings.push({
+      category: "information_disclosure",
+      rationale:
+        `Route(s) ${routeList} read ORM model(s) ${models.join(", ")} behind ${state} auth; ` +
+        "without a per-caller ownership check, one caller could read another's records.",
+    });
+  }
+
+  return findings;
+}
+
 /** Trust boundaries: group routes by auth state, plus an external-calls boundary. */
 export function buildTrustBoundaries(appMap: AppMap): TrustBoundary[] {
   const boundaries: TrustBoundary[] = [];
@@ -108,6 +235,7 @@ export function buildTrustBoundaries(appMap: AppMap): TrustBoundary[] {
       name: AUTH_BOUNDARY_LABELS[state],
       description: `${unique.length} route(s) classified "${state}": ${unique.join(", ")}.`,
       routePaths: unique,
+      stride: strideForTrustBoundary(state, unique, appMap),
     });
   }
   if (appMap.thirdPartyCalls.length > 0) {
@@ -116,6 +244,15 @@ export function buildTrustBoundaries(appMap: AppMap): TrustBoundary[] {
       name: "External API integrations",
       description: `${appMap.thirdPartyCalls.length} outbound third-party call(s): ${names.slice(0, 5).join(", ")}.`,
       routePaths: [],
+      stride: [
+        {
+          category: "information_disclosure",
+          rationale:
+            `${appMap.thirdPartyCalls.length} outbound call(s) to ${names.slice(0, 5).join(", ")} ` +
+            "leave this app's trust boundary; any tainted or sensitive value passed to one of " +
+            "them is disclosed to a third party outside this app's control.",
+        },
+      ],
     });
   }
   return boundaries;
@@ -182,7 +319,12 @@ function weakAuthModelFanOut(appMap: AppMap): WeakAuthFanOut {
 export function buildAttackSurfaceBaseline(appMap: AppMap): AttackSurfaceEntry[] {
   const entries: AttackSurfaceEntry[] = [];
   const push = (category: Category, plausibility: SurfacePlausibility, rationale: string): void => {
-    entries.push({ category, plausibility, rationale });
+    entries.push({
+      category,
+      plausibility,
+      rationale,
+      stride: strideForCategory(category, plausibility),
+    });
   };
 
   const sqlSinks = sinksOfKind(appMap, ["sql_query", "orm_raw_query"]);

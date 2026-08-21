@@ -108,6 +108,27 @@ export {
   buildTrustBoundaries,
 } from "./threat-model.js";
 export type { ThreatModelOptions, ThreatModelResult } from "./threat-model.js";
+// B6 — telemetry-surfaces detection (Layer 0 sub-step, see the module doc):
+// repo-level structured-logging/APM detection + per-route (TS/JS) logging-
+// call detection, combined by `buildTelemetrySurfaces` (the entry point
+// `build.ts` calls) into `AppMap.telemetrySurfaces`.
+export {
+  buildTelemetrySurfaces,
+  detectRepoTelemetry,
+  detectRouteTelemetry,
+} from "./telemetry-surfaces.js";
+export type { BuildTelemetrySurfacesOptions } from "./telemetry-surfaces.js";
+// B6 — detection-coverage gap analysis: given a confirmed finding + the App
+// Map's telemetry surfaces + any existing `DetectionRule`s, derive a
+// tri-state `DetectionCoverage` verdict. See the module doc for exactly what
+// each verdict requires.
+export {
+  evaluateCoverageForFinding,
+  routeForFinding,
+  buildDetectionCoverage,
+  persistDetectionCoverageForScan,
+} from "./coverage-analysis.js";
+export type { CoverageVerdict, PersistDetectionCoverageDeps } from "./coverage-analysis.js";
 export { estimateCost } from "./cost.js";
 export type { EstimateCostInput } from "./cost.js";
 export { persistAppMap, findReusableAppMap } from "./persist.js";

@@ -33,6 +33,26 @@ export const DetectionRuleFormatSchema = z.enum(["sigma", "otel", "siem_query"])
 export type DetectionRuleFormat = z.infer<typeof DetectionRuleFormatSchema>;
 
 /**
+ * B4 — human-readable "what this looks like in your logs" narrative attached
+ * to a generated {@link DetectionRuleSchema} rule (packages/report/src/detection-rules
+ * builds these, alongside the rule `content` itself — see that module's header
+ * for the generation logic). `fields`/`pattern` are the concrete, finding-
+ * specific signature an operator would alert on; `falseAlarmSources` is the
+ * differentiated part — known, finding-specific sources of expected false
+ * alarms (e.g. "a legitimate admin bulk-export tool hitting this same route"),
+ * never a generic "may have false positives" placeholder.
+ */
+export const DetectionLogSignatureSchema = z.object({
+  /** Concrete log field names to alert on (e.g. "http.request.path", "cs-uri-query"). */
+  fields: z.array(z.string().min(1)).min(1),
+  /** The exact, finding-specific log pattern an operator would grep/query for. */
+  pattern: z.string().min(1),
+  /** Finding-specific expected false-alarm sources (never generic boilerplate). */
+  falseAlarmSources: z.array(z.string().min(1)).default([]),
+});
+export type DetectionLogSignature = z.infer<typeof DetectionLogSignatureSchema>;
+
+/**
  * A generated detection rule for one confirmed finding. `provenance` reuses
  * {@link ProofTypeSchema} ("static" | "live") — the same discriminant
  * `ConfirmedFinding.proofType`/`proofArtifact.kind` already use — to record
@@ -40,6 +60,8 @@ export type DetectionRuleFormat = z.infer<typeof DetectionRuleFormatSchema>;
  * data-flow path, without duplicating `ProofArtifactSchema`'s shape.
  * `mitreTechniques` holds raw ATT&CK technique ids (e.g. "T1190"); the
  * mapping table that populates this field is B2's job, not this schema's.
+ * `logSignature` (B4) is optional/additive — absent for rows written before
+ * B4 landed, or for a caller that only wants the raw rule `content`.
  */
 export const DetectionRuleSchema = z.object({
   id: IdSchema,
@@ -54,6 +76,8 @@ export const DetectionRuleSchema = z.object({
   mitreTechniques: z.array(z.string().min(1)).default([]),
   /** Derived from a live-DAST transcript ("live") or a static data-flow path ("static"). */
   provenance: ProofTypeSchema,
+  /** B4 — "what this looks like in your logs" narrative (see doc comment above). */
+  logSignature: DetectionLogSignatureSchema.optional(),
   createdAt: IsoDateTimeSchema,
 });
 export type DetectionRule = z.infer<typeof DetectionRuleSchema>;

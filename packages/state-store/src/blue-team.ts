@@ -18,6 +18,7 @@
 import type {
   AttackPath,
   DetectionCoverage,
+  DetectionLogSignature,
   DetectionRule,
   DetectionStatus,
   DetectionVerificationResult,
@@ -53,6 +54,7 @@ export function detectionRuleToCreate(
     content: r.content,
     mitreTechniques: toJson(r.mitreTechniques),
     provenance: r.provenance,
+    logSignature: toJsonOrNull(r.logSignature),
     createdAt: toDate(r.createdAt),
   };
 }
@@ -67,6 +69,7 @@ export function detectionRuleFromRow(row: DetectionRuleRow): DetectionRule {
     content: row.content,
     mitreTechniques: fromJson<string[]>(row.mitreTechniques),
     provenance: row.provenance,
+    logSignature: row.logSignature ? fromJson<DetectionLogSignature>(row.logSignature) : undefined,
     createdAt: toIso(row.createdAt),
   };
 }
