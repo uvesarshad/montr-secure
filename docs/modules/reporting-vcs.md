@@ -31,6 +31,9 @@ Constraints and Edge Cases
 AGENT NOTE: Auto-fix is strictly PR-only. Direct commits to base branches are permanently blocked by design.
 AGENT AVOID: Never include unconfirmed candidate counts in executive summary headlines.
 
+Forward Reference: Blue-Team Report Sections (B1 data model, later-wave report logic)
+`DetectionRule`, `AttackPath`, and `DetectionCoverage` (packages/contracts/src/blue-team.ts; persisted via @montr/state-store, see docs/api/database.md's "Blue-Team / Purple-Team Entities (B1)") are the data model a later wave's report-builder work will read to add a detection-engineering section to the Layer 5 report — generated Sigma/OTel/SIEM rules per confirmed finding, chained attack-path narratives, and telemetry-coverage verdicts (with B5's purple-team-verified results once populated). AGENT SEE: docs/api/database.md for the full field-by-field shape. This module's report-builder does not read these tables yet — that wiring is out of scope for B1.
+
 Update Triggers
 Update this file when report schemas change in packages/contracts/src/report.ts, when compliance mapping rules evolve in packages/report/src/exports, or when VCS provider adapters are updated in packages/report/src/vcs.ts.
 

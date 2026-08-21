@@ -181,6 +181,7 @@ export function appMapScalarsToCreate(
     thirdPartyCalls: toJson(m.thirdPartyCalls),
     envSecretSurfaces: toJson(m.envSecretSurfaces),
     taintFlows: toJson(m.taintFlows),
+    threatModel: toJsonOrNull(m.threatModel),
     stale: m.stale,
     rebuildPolicy: m.rebuildPolicy,
     createdAt: toDate(m.createdAt),
@@ -282,6 +283,7 @@ export function appMapFromRows(
     taintSources: sources.map(taintSourceFromRow),
     taintSinks: sinks.map(taintSinkFromRow),
     taintFlows: fromJson<AppMap["taintFlows"]>(row.taintFlows),
+    threatModel: row.threatModel ? fromJson<AppMap["threatModel"]>(row.threatModel) : undefined,
     stale: row.stale,
     rebuildPolicy: row.rebuildPolicy,
   };

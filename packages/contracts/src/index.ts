@@ -12,6 +12,7 @@ export * from "./compliance.js";
 export * from "./llm.js";
 export * from "./cost.js";
 export * from "./threat-model.js";
+export * from "./blue-team.js";
 export * from "./appmap.js";
 export * from "./findings.js";
 export * from "./fix.js";

@@ -33,6 +33,11 @@ import {
 } from "./phase4.js";
 import { PromptVersionRepositoryImpl } from "./prompt-version.js";
 import { LearnedFactRepositoryImpl } from "./learned-facts.js";
+import {
+  AttackPathRepositoryImpl,
+  DetectionCoverageRepositoryImpl,
+  DetectionRuleRepositoryImpl,
+} from "./blue-team.js";
 import { RetentionEnforcer } from "./retention.js";
 import type { StateStore } from "./types.js";
 
@@ -87,6 +92,11 @@ function buildStateStore(
     falsePositiveMarks: new FalsePositiveMarkRepositoryImpl(prisma),
     // Durable per-repo learned facts for §15 cross-scan memory (E8).
     learnedFacts: new LearnedFactRepositoryImpl(prisma),
+    // Blue-team / purple-team entities (B1) — data model + CRUD only; B2-B5
+    // build the generation/mapping/graph/verification logic on top.
+    detectionRules: new DetectionRuleRepositoryImpl(prisma),
+    attackPaths: new AttackPathRepositoryImpl(prisma),
+    detectionCoverage: new DetectionCoverageRepositoryImpl(prisma),
     disconnect: async () => {
       if (ownsClient) await prisma.$disconnect();
     },

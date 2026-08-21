@@ -78,6 +78,21 @@ export { PromptVersionRepositoryImpl } from "./prompt-version.js";
 // Cross-scan memory — durable per-repo learned facts (§15 loop, E8).
 export { LearnedFactRepositoryImpl } from "./learned-facts.js";
 
+// Blue-team / purple-team entities (B1) — DetectionRule, AttackPath,
+// DetectionCoverage repository implementations. Data model + CRUD only; B2-B5
+// build the generation/mapping/graph/verification logic on top.
+export {
+  DetectionRuleRepositoryImpl,
+  AttackPathRepositoryImpl,
+  DetectionCoverageRepositoryImpl,
+  detectionRuleToCreate,
+  detectionRuleFromRow,
+  attackPathToCreate,
+  attackPathFromRow,
+  detectionCoverageToCreate,
+  detectionCoverageFromRow,
+} from "./blue-team.js";
+
 // Semantic codebase index (E5) — pgvector-backed CodeChunk storage + query.
 // Deliberately NOT part of the aggregate StateStore (see code-chunk.ts's doc
 // comment); construct it directly with a Prisma client.

@@ -5,10 +5,14 @@
  */
 import type {
   AppMap,
+  AttackPath,
   CandidateFinding,
   Category,
   ConfirmedFinding,
   CustomRule,
+  DetectionCoverage,
+  DetectionRule,
+  DetectionVerificationResult,
   Fix,
   KeyTier,
   LayerId,
@@ -329,6 +333,45 @@ export interface LearnedFactRepository {
   listByRepo(clientId: string, repo: string, limit?: number): Promise<LearnedFact[]>;
 }
 
+/* ============================== Blue-team / purple-team (B1) ============================== */
+
+/**
+ * Row-scoped CRUD for generated detection rules. A single finding can have
+ * multiple rows (one per {@link DetectionRule.format} — B3 generates several
+ * formats per finding), so `listByFinding` is the primary read path alongside
+ * the generic {@link Repository.list}.
+ */
+export interface DetectionRuleRepository extends Repository<DetectionRule> {
+  /** All rules generated for one `ConfirmedFinding`, newest first. */
+  listByFinding(clientId: string, findingId: string): Promise<DetectionRule[]>;
+}
+
+/**
+ * Row-scoped CRUD for chained attack paths. Read-mostly — a later wave (B4)
+ * builds the graph algorithm that populates rows here; this repo only
+ * persists/retrieves the finished `AttackPath` objects it produces.
+ */
+export type AttackPathRepository = Repository<AttackPath>;
+
+/**
+ * Row-scoped CRUD for detection-coverage verdicts. `updateVerification` is the
+ * one mutation beyond plain create/get/list: B5's purple-team loop runs a
+ * scenario against a target, observes whether the expected detection fired,
+ * and attaches that {@link DetectionVerificationResult} to an existing row —
+ * the initial `detected`/`reasoning` verdict is recorded separately (at
+ * `create` time, before any scenario has run).
+ */
+export interface DetectionCoverageRepository extends Repository<DetectionCoverage> {
+  /** All coverage verdicts recorded for one `ConfirmedFinding`, newest first. */
+  listByFinding(clientId: string, findingId: string): Promise<DetectionCoverage[]>;
+  /** Attach a purple-team verification result to an existing coverage row. */
+  updateVerification(
+    clientId: string,
+    id: string,
+    verification: DetectionVerificationResult,
+  ): Promise<DetectionCoverage>;
+}
+
 /** The aggregate persistence surface handed to the orchestrator and layers. */
 export interface StateStore {
   scans: ScanRepository;
@@ -355,5 +398,12 @@ export interface StateStore {
   falsePositiveMarks: FalsePositiveMarkRepository;
   /** Durable per-repo learned facts for §15 cross-scan memory (E8). */
   learnedFacts: LearnedFactRepository;
+  // Blue-team / purple-team entities (B1).
+  /** Generated detection rules (Sigma/OTel/SIEM) for confirmed findings (B3 authors content). */
+  detectionRules: DetectionRuleRepository;
+  /** Chained kill-chains across confirmed findings (a later wave builds the graph algorithm). */
+  attackPaths: AttackPathRepository;
+  /** Telemetry-coverage verdicts for confirmed findings (B5's purple-team loop verifies them). */
+  detectionCoverage: DetectionCoverageRepository;
   disconnect(): Promise<void>;
 }

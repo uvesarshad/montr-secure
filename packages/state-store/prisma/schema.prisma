@@ -205,6 +205,11 @@ model Client {
 
   // §15 cross-scan memory (E8, appended; per-client isolated).
   learnedFacts LearnedFact[]
+
+  // Blue-team / purple-team entities (B1, appended; per-client isolated).
+  detectionRules    DetectionRule[]
+  attackPaths       AttackPath[]
+  detectionCoverage DetectionCoverage[]
 }
 
 model User {
@@ -260,6 +265,14 @@ model AppMap {
   thirdPartyCalls   Json // ThirdPartyCall[]
   envSecretSurfaces Json // EnvSecretSurface[]
   taintFlows        Json                @default("[]") // TaintFlowEdge[] (resolved interprocedural flows)
+  /// ThreatModel (E6/B1) — the Layer-0 threat-model sub-step's output for this
+  /// AppMap. Optional/nullable: older rows and any AppMap built before E6
+  /// shipped have none. Promotes `AppMapSchema.threatModel` (E6, in-memory-only
+  /// on the Zod type) to a genuinely persisted field — see docs/api/database.md
+  /// "Threat Model Persistence (B1)" for why this lives directly on `AppMap`
+  /// rather than a separate table (1:1 with the AppMap it was derived from, no
+  /// independent lifecycle or query pattern of its own).
+  threatModel       Json?
   stale             Boolean             @default(false)
   rebuildPolicy     AppMapRebuildPolicy @default(rebuild_on_stale_commit)
   createdAt         DateTime            @default(now())
@@ -330,10 +343,10 @@ model TaintSink {
 /// dimension, so supporting a different-width model needs either a migration
 /// widening this column or a dedicated table — see the migration file.
 model CodeChunk {
-  id             String    @id @default(cuid())
+  id             String                       @id @default(cuid())
   clientId       String
   appMapId       String
-  appMap         AppMap    @relation(fields: [appMapId], references: [id], onDelete: Cascade)
+  appMap         AppMap                       @relation(fields: [appMapId], references: [id], onDelete: Cascade)
   repo           String
   commitSha      String
   file           String
@@ -346,7 +359,7 @@ model CodeChunk {
   content        String // chunk source text (not @encrypted — mirrors CandidateFinding.evidenceSnippet's precedent for source-code text)
   embeddingModel String // provider-qualified embedding model id that produced `embedding`
   embedding      Unsupported("vector(1536)")?
-  createdAt      DateTime  @default(now())
+  createdAt      DateTime                     @default(now())
 
   @@index([clientId])
   @@index([appMapId])
@@ -388,6 +401,11 @@ model Scan {
   pullRequests PullRequest[]
   states       ScanState[]
   report       Report?
+
+  // Blue-team / purple-team entities (B1).
+  detectionRules    DetectionRule[]
+  attackPaths       AttackPath[]
+  detectionCoverage DetectionCoverage[]
 
   @@index([clientId])
   @@index([clientId, status])
@@ -723,4 +741,103 @@ model PostureSnapshot {
   @@index([clientId])
   @@index([clientId, repo])
   @@index([clientId, scanId])
+}
+
+// --------------------------------------------------------------------------- //
+// Blue-team / purple-team entities (B1). STRICTLY ADDITIVE. Every table is
+// per-client isolated (clientId + index, plus a real Client FK — mirrors
+// LearnedFact/CustomRule's precedent). `findingId`/`detectionRuleId` fields are
+// deliberately PLAIN string references, not Prisma relations — mirrors
+// `ConfirmedFinding.probableId`'s existing loose-reference precedent across
+// finding tiers, and sidesteps enforcing an FK into a Json-embedded id
+// (`AttackPath.steps`) where a real relation isn't possible anyway.
+//
+// ENCRYPTION: none of `DetectionRule.content`, `AttackPath.narrative`, or
+// `DetectionCoverage.reasoning` are field-encrypted, despite describing
+// exploit-adjacent detail. Two precedents justify this: (1) `CustomRule.body`
+// — itself a detection-rule body — is explicitly documented as not encrypted;
+// (2) `ConfirmedFinding.proofArtifact`, the MOST sensitive exploit-detail field
+// in this schema (live HTTP transcripts against a real target), is already
+// stored as plain Json. Encrypting a detection rule DERIVED FROM an unencrypted
+// proof artifact would add no real confidentiality (DB access already exposes
+// the proof it was built from) while breaking this table's query/index
+// patterns (B7 report assembly, B10 compliance export). See
+// docs/api/database.md for the full writeup.
+// --------------------------------------------------------------------------- //
+
+/// Tri-state detection verdict (mirrors `DetectionStatusSchema`, @montr/contracts).
+/// A real Prisma enum, not a nullable Boolean — "unknown" is a genuine third
+/// value (not enough telemetry-surface info to say), not the absence of a row.
+enum DetectionStatus {
+  detected
+  not_detected
+  unknown
+}
+
+/// Generated detection rule for a confirmed finding (B1 data model; B3
+/// authors the actual rule content — Sigma authoring, ATT&CK mapping tables).
+/// `format` is a String, not a Prisma enum — the Zod `DetectionRuleFormatSchema`
+/// is source of truth and B3 is expected to grow this set (e.g. additional SIEM
+/// query dialects) without a schema migration, mirroring
+/// `RedTeamScenario.category`/`CustomRule.language`'s precedent.
+model DetectionRule {
+  id              String    @id @default(cuid())
+  clientId        String
+  client          Client    @relation(fields: [clientId], references: [id])
+  scanId          String
+  scan            Scan      @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  findingId       String // ConfirmedFinding.id this rule was generated to detect
+  format          String // DetectionRuleFormat (Zod enum is source of truth): sigma | otel | siem_query | ...
+  content         String // rule text: Sigma YAML / OTel query / SIEM query — see encryption note above
+  mitreTechniques Json      @default("[]") // string[] of ATT&CK technique ids (B2 populates the mapping)
+  provenance      ProofType // static (data-flow path) | live (DAST transcript) — mirrors ConfirmedFinding.proofType
+  createdAt       DateTime  @default(now())
+
+  @@index([clientId])
+  @@index([clientId, scanId])
+  @@index([clientId, findingId])
+}
+
+/// Chained kill-chain across >= 2 confirmed findings (B1 data model; a later
+/// wave builds the graph algorithm that populates this). `steps` is Json
+/// (an ordered `AttackPathStep[]`) rather than a join table — a small,
+/// read-mostly, always-whole-object structure queried by id, never by hop —
+/// mirrors `taintFlows`/`ScanState.completedLayers`'s existing precedent for
+/// ordered-array-as-Json.
+model AttackPath {
+  id               String   @id @default(cuid())
+  clientId         String
+  client           Client   @relation(fields: [clientId], references: [id])
+  scanId           String
+  scan             Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  steps            Json // AttackPathStep[] (@montr/contracts) — ordered finding-id chain, >= 2 hops
+  feasibilityScore Float // 0..1, end-to-end path feasibility
+  severity         Severity // end-to-end path severity
+  narrative        String // human-readable kill-chain summary
+  createdAt        DateTime @default(now())
+
+  @@index([clientId])
+  @@index([clientId, scanId])
+}
+
+/// Whether a target's existing telemetry would catch a confirmed finding if
+/// exploited (B1 data model; B5's purple-team loop populates `verification`
+/// by actually running a scenario and checking whether the expected
+/// detection fired).
+model DetectionCoverage {
+  id              String          @id @default(cuid())
+  clientId        String
+  client          Client          @relation(fields: [clientId], references: [id])
+  scanId          String
+  scan            Scan            @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  findingId       String // ConfirmedFinding.id this coverage verdict is about
+  detected        DetectionStatus
+  reasoning       String // reasoning/evidence behind the verdict
+  detectionRuleId String? // DetectionRule.id covering this finding, if any (plain reference, see header note)
+  verification    Json? // DetectionVerificationResult | null (@montr/contracts) — populated by B5
+  createdAt       DateTime        @default(now())
+
+  @@index([clientId])
+  @@index([clientId, scanId])
+  @@index([clientId, findingId])
 }

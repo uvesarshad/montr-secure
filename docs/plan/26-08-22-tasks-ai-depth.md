@@ -1,5 +1,5 @@
 > Source audit: [26-08-22-audit-ai-depth](./26-08-22-audit-ai-depth.md)
-> Updated: 26-08-22 · 47/61 done
+> Updated: 26-08-22 · 48/61 done
 
 # Tasks — Montr Secure: AI depth, autonomy & purple-team gaps
 
@@ -68,7 +68,7 @@
 
 New scope. The blue-team half was never specified: the PRD names "blue-team hardening" exactly once, in the thesis sentence at line 26, and never again — it appears in no layer of §7 Agent Topology, no entity in the §9 data model, no section of the §12 report spec, and no item in the §19 Definition of Done. The build followed §7 faithfully, and §7 is entirely red and static. These tasks add the missing half. `packages/state-store/src/redteam-catalogue.ts` (`REDTEAM_SCENARIO_CATALOGUE`, `instantiateScenario`, OWASP coverage mapping) and the gated execution engine in `packages/confirm/src/scenarios.ts` are real, working assets to build the purple loop on.
 
-- [ ] **(B1)** Extend the contracts spine with the blue-team entities: `DetectionRule`, `ThreatModel`, `AttackPath`, and `DetectionCoverage`. Follow the existing frozen-spine discipline in `packages/contracts` and add the matching Prisma models plus migrations (`docs/api/database.md` must be updated per the project hard rules).
+- [x] **(B1)** Extend the contracts spine with the blue-team entities: `DetectionRule`, `ThreatModel`, `AttackPath`, and `DetectionCoverage`. Follow the existing frozen-spine discipline in `packages/contracts` and add the matching Prisma models plus migrations (`docs/api/database.md` must be updated per the project hard rules).
 - [ ] **(B2)** Add MITRE ATT&CK mapping (tactic + technique IDs) per finding category, alongside the existing OWASP/CWE mapping. Reuse the exhaustive `Record<Category, readonly string[]>` pattern from `packages/report/src/exports/controls.ts` so the compiler enforces completeness, and surface the IDs in the report and in SARIF `properties.tags`.
 - [ ] **(B3)** Generate detection rules per confirmed finding — Sigma as the primary format, plus OTel/SIEM query variants. Derive them from the confirmed proof: the live DAST transcript where one exists, otherwise the static data-flow path and the route's request shape.
 - [ ] **(B4)** Add a "what this looks like in your logs" section per confirmed finding: the concrete log signature, the fields to alert on, and the expected false-alarm sources. This is the single most useful blue-team output for an AppSec buyer and is cheap once B3 exists.
