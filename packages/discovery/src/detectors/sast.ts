@@ -21,13 +21,32 @@
  * `import-bundle.sh` (which installs artifacts flat under
  * `<dest-dir>/semgrep/`). Unset (default): behavior is byte-for-byte
  * unchanged — hosted registry packs, exactly as before.
+ *
+ * ⛔ Per-pack degradation (A33): real Semgrep aborts its ENTIRE `--json`
+ * invocation when even ONE `--config` target fails to resolve — not just the
+ * failing pack (verified: `packages/discovery/src/rulesets/java/index.ts`
+ * used to ship `["p/java", "p/spring"]`; the `p/spring` Registry pack 404s,
+ * which silently zeroed EVERY JVM SAST finding, `p/java`'s included). So in
+ * the NON-air-gapped (hosted registry pack ID) path, `detectSast` resolves
+ * every `--config` entry — a `p/...` pack ID OR a materialized custom-rule
+ * file path — in its OWN Semgrep subprocess (`runRegistryRulesets`) rather
+ * than one shared invocation. A pack that fails to resolve is skipped with a
+ * warning + a `sast.ruleset_pack_unresolved` metric; every OTHER pack's real
+ * findings still ship. Only when EVERY pack fails does the existing A4
+ * hard-failure path fire — that guarantee now specifically means "we got
+ * literally zero rulesets to work with," not "one of several had a stale
+ * reference." The air-gapped `rulesetsDir` path is untouched: it is a single
+ * local directory (plus any local custom-rule paths), not a list of
+ * independently-resolved registry pack IDs, so this per-pack splitting does
+ * not apply there.
  */
 import nodePath from "node:path";
 import { readdir } from "node:fs/promises";
 import type { CandidateFinding } from "@montr/contracts";
 import { RequiredDetectorUnavailableError } from "@montr/contracts";
+import { getMetrics } from "@montr/telemetry";
 import type { DetectorContext, SemgrepJson, SemgrepResult, SemgrepRunner } from "../types.js";
-import { buildCandidate } from "../util/candidate.js";
+import { buildCandidate, dedupeById } from "../util/candidate.js";
 import {
   categoryForCwe,
   categoryFromRuleId,
@@ -158,11 +177,120 @@ export function parseSemgrepJson(json: SemgrepJson, ctx: DetectorContext): Candi
   return out;
 }
 
+/** Outcome of resolving ONE `--config` entry (registry pack ID or a local
+ * rule file path) in its own Semgrep invocation (A33). */
+interface RulesetOutcome {
+  ruleset: string;
+  candidates: CandidateFinding[];
+  /** True when this specific entry failed to produce a usable result — a
+   * dead registry pack, a runner throw, or the runner reporting the
+   * binary/config unavailable. DISTINCT from a genuinely clean 0-finding
+   * run of a pack that resolved fine. */
+  failed: boolean;
+  errorMessage?: string;
+}
+
+/**
+ * Best-effort signal that a JSON result represents "this pack's `--config`
+ * failed to resolve" rather than "this pack genuinely found nothing". The
+ * real runner already surfaces total resolution failure by returning `null`
+ * (see `defaultSemgrepRunner`'s `res.failed && !stdout.trim()` branch); this
+ * covers an injected/future runner that instead returns a well-formed but
+ * empty JSON body with a populated `errors` array for that one pack.
+ */
+function looksLikeResolutionFailure(json: SemgrepJson): boolean {
+  return (json.results?.length ?? 0) === 0 && Array.isArray(json.errors) && json.errors.length > 0;
+}
+
+/** Resolve ONE `--config` entry in its own Semgrep subprocess (A33). */
+async function resolveOneRuleset(
+  ctx: DetectorContext,
+  runner: SemgrepRunner,
+  repoRoot: string,
+  ruleset: string,
+): Promise<RulesetOutcome> {
+  try {
+    const json = await runner({ repoRoot, rulesets: [ruleset], signal: ctx.signal });
+    if (!json) {
+      return {
+        ruleset,
+        candidates: [],
+        failed: true,
+        errorMessage: "Semgrep binary/config unavailable",
+      };
+    }
+    const candidates = parseSemgrepJson(json, ctx);
+    if (looksLikeResolutionFailure(json)) {
+      return {
+        ruleset,
+        candidates,
+        failed: true,
+        errorMessage: "ruleset produced no results and reported errors",
+      };
+    }
+    return { ruleset, candidates, failed: false };
+  } catch (err) {
+    return { ruleset, candidates: [], failed: true, errorMessage: errMessage(err) };
+  }
+}
+
+/**
+ * Resolve every `--config` entry (hosted Registry pack ID or a materialized
+ * local rule file path) in its OWN Semgrep invocation, concurrently, then
+ * merge (A33). This is the fix for real Semgrep aborting its ENTIRE `--json`
+ * run when even ONE `--config` target fails to resolve (see this file's
+ * module doc) — splitting one process per entry means a dead pack can only
+ * take out ITS OWN findings, never any other pack's.
+ *
+ * - Every entry failing -> the existing A4 hard-failure path fires (we got
+ *   literally zero rulesets to work with) — `RequiredDetectorUnavailableError`.
+ * - Some (not all) entries failing -> each failure is a `ctx.warn` +
+ *   `getMetrics().recordError("sast.ruleset_pack_unresolved")`, distinct from
+ *   the A4 hard-failure case; every succeeding pack's real findings still ship.
+ * - Duplicate candidates across packs (e.g. two packs matching the same
+ *   rule/file/line) are deduped by the deterministic candidate id.
+ */
+async function runRegistryRulesets(
+  ctx: DetectorContext,
+  runner: SemgrepRunner,
+  repoRoot: string,
+  rulesets: readonly string[],
+): Promise<CandidateFinding[]> {
+  const outcomes = await Promise.all(
+    rulesets.map((ruleset) => resolveOneRuleset(ctx, runner, repoRoot, ruleset)),
+  );
+  const succeeded = outcomes.filter((o) => !o.failed);
+  const failed = outcomes.filter((o) => o.failed);
+
+  if (succeeded.length === 0) {
+    const detail = failed
+      .map((o) => `${o.ruleset}${o.errorMessage ? ` (${o.errorMessage})` : ""}`)
+      .join(", ");
+    throw new RequiredDetectorUnavailableError(
+      `SAST is a required detector but every configured Semgrep ruleset failed to resolve: ${detail}`,
+      { detector: "sast", failedRulesets: failed.map((o) => o.ruleset) },
+    );
+  }
+
+  for (const o of failed) {
+    getMetrics().recordError("sast.ruleset_pack_unresolved");
+    ctx.warn(
+      "sast",
+      `Semgrep ruleset '${o.ruleset}' failed to resolve and was skipped; ${succeeded.length} other ruleset(s) still ran.${o.errorMessage ? ` (${o.errorMessage})` : ""}`,
+    );
+  }
+
+  return dedupeById(succeeded.flatMap((o) => o.candidates));
+}
+
 /**
  * Run the SAST agent. SAST is a REQUIRED detector (A4): once we know a real
  * Semgrep invocation was attempted, an unavailable/erroring/misconfigured
  * scanner THROWS {@link RequiredDetectorUnavailableError} instead of degrading
- * to `[]` + a warning — an empty scan must never complete and look clean.
+ * to `[]` + a warning — an empty scan must never complete and look clean. A33
+ * refines what "unavailable" means in the registry-pack path: it now takes
+ * EVERY configured pack failing to trigger the hard failure, not just one
+ * (see {@link runRegistryRulesets}).
  *
  * The one case left as a graceful skip (unchanged from before A4) is having
  * neither an injected runner nor a `repoRoot`: that is the in-memory-only
@@ -184,14 +312,19 @@ export async function detectSast(
     return [];
   }
 
+  const repoRoot = ctx.repoRoot ?? ".";
+  const resolvedRunner = runner ?? defaultSemgrepRunner;
+
   // Air-gap (A4): a configured local ruleset dir REPLACES the hosted
   // `p/...` Semgrep Registry pack IDs, which need network egress the air-gap
   // NetworkPolicy forbids. Non-registry entries the caller already resolved
   // (materialized client custom-rule temp files — local paths, never
-  // `p/...` ids) still run alongside it. Missing/empty dir -> the required
-  // detector is unavailable; throw before even attempting to run Semgrep.
+  // `p/...` ids) still run alongside it, in the SAME invocation — a local
+  // directory + local file paths are not independently-resolved registry
+  // pack IDs, so A33's per-pack splitting below does not apply here. Missing/
+  // empty dir -> the required detector is unavailable; throw before even
+  // attempting to run Semgrep.
   const rulesetsDir = ctx.config.discovery?.rulesetsDir;
-  let rulesets: string[];
   if (rulesetsDir) {
     if (!(await localRulesetDirHasRules(rulesetsDir))) {
       throw new RequiredDetectorUnavailableError(
@@ -200,29 +333,29 @@ export async function detectSast(
       );
     }
     const extra = (opts.rulesets ?? []).filter((r) => !r.startsWith("p/"));
-    rulesets = [rulesetsDir, ...extra];
-  } else {
-    rulesets = opts.rulesets ?? [...DEFAULT_SEMGREP_RULESETS];
+    const rulesets = [rulesetsDir, ...extra];
+
+    let json: SemgrepJson | null;
+    try {
+      json = await resolvedRunner({ repoRoot, rulesets, signal: ctx.signal });
+    } catch (err) {
+      throw new RequiredDetectorUnavailableError(
+        `SAST is a required detector but the Semgrep run failed: ${errMessage(err)}`,
+        { detector: "sast" },
+      );
+    }
+    if (!json) {
+      throw new RequiredDetectorUnavailableError(
+        "SAST is a required detector but the Semgrep binary is unavailable.",
+        { detector: "sast" },
+      );
+    }
+    return parseSemgrepJson(json, ctx);
   }
 
-  let json: SemgrepJson | null;
-  try {
-    json = await (runner ?? defaultSemgrepRunner)({
-      repoRoot: ctx.repoRoot ?? ".",
-      rulesets,
-      signal: ctx.signal,
-    });
-  } catch (err) {
-    throw new RequiredDetectorUnavailableError(
-      `SAST is a required detector but the Semgrep run failed: ${errMessage(err)}`,
-      { detector: "sast" },
-    );
-  }
-  if (!json) {
-    throw new RequiredDetectorUnavailableError(
-      "SAST is a required detector but the Semgrep binary is unavailable.",
-      { detector: "sast" },
-    );
-  }
-  return parseSemgrepJson(json, ctx);
+  // Registry-pack path (A33): resolve each `p/...` pack ID / materialized
+  // custom-rule file path in its own Semgrep invocation so one dead pack
+  // can never zero out every other pack's real findings.
+  const rulesets = opts.rulesets ?? [...DEFAULT_SEMGREP_RULESETS];
+  return runRegistryRulesets(ctx, resolvedRunner, repoRoot, rulesets);
 }

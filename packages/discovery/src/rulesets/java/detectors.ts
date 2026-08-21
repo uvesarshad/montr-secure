@@ -16,8 +16,10 @@
  * allow-list (`util/files.ts` `TEXT_EXT`: `.yml`/`.yaml`/`.conf`/… but NOT
  * `.properties` or `.java`). So the config detectors fire on the YAML path today
  * and the `.java` detectors run once `.java` is added there (or when a caller
- * supplies the file directly). Semgrep `p/java`/`p/spring` already cover the same
- * rules in the online path; these are the air-gapped/offline fallback. This
+ * supplies the file directly). Semgrep `p/java` already covers some of the
+ * same ground in the online path (A33: `p/spring` was dropped — dead
+ * Registry pack, see `../index.ts`); these detectors are the air-gapped/
+ * offline fallback. This
  * mirrors the Python ruleset's `.py` seam note exactly.
  */
 import type { FileDetector, RawFinding } from "../../detectors/secrets.js";

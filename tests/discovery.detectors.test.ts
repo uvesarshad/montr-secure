@@ -10,7 +10,7 @@ import nodePath from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { getHardenedDefaults } from "@montr/config";
-import { createNullLogger } from "@montr/telemetry";
+import { createNullLogger, getMetrics } from "@montr/telemetry";
 import { RequiredDetectorUnavailableError, type ScanScope } from "@montr/contracts";
 import { mockAppMap } from "@montr/fixtures";
 import {
@@ -28,6 +28,7 @@ import {
   parsePnpmLock,
   parsePackageLock,
   parsePackageJson,
+  selectSemgrepRulesets,
   // advisories + semver
   ADVISORY_DB,
   matchAdvisories,
@@ -330,6 +331,71 @@ describe("discovery/sast", () => {
       } finally {
         await rm(emptyDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  // --- A33: per-pack ruleset degradation (registry-pack path) --------------
+  describe("A33: per-pack ruleset degradation", () => {
+    it("a dead pack among several no longer zeroes the whole result — other packs' findings still land, with a warning + metric for the failed pack specifically", async () => {
+      const seenRulesets: string[][] = [];
+      const runner: SemgrepRunner = async ({ rulesets: r }) => {
+        seenRulesets.push(r);
+        // Mirrors the real production bug: p/spring's `--config` fails to
+        // resolve (the real runner signals this by returning null), while
+        // p/java resolves and produces real findings.
+        if (r[0] === "p/spring") return null;
+        return CANNED_SEMGREP;
+      };
+      const ctx = makeCtx({ repoRoot: VULN_REPO });
+      const before = getMetrics().snapshot().errors;
+      const candidates = await detectSast(ctx, { runner, rulesets: ["p/java", "p/spring"] });
+      const after = getMetrics().snapshot().errors;
+
+      // Each ruleset entry got its OWN Semgrep invocation — never a single
+      // merged `--config p/java --config p/spring` call (the shape that lets
+      // one dead pack take the whole run down in real Semgrep).
+      expect(seenRulesets).toEqual([["p/java"], ["p/spring"]]);
+      // p/java's real findings still land even though p/spring failed.
+      expect(candidates.map((c) => c.category).sort()).toEqual(["sql_injection", "xss"]);
+      // The failure was recorded, not swallowed silently.
+      expect(ctx.warnings.join(" ")).toMatch(/p\/spring.*failed to resolve/);
+      expect(after - before).toBe(1);
+    });
+
+    it("dedupes identical findings surfaced by more than one successful pack", async () => {
+      const runner: SemgrepRunner = async () => CANNED_SEMGREP;
+      const ctx = makeCtx({ repoRoot: VULN_REPO });
+      const candidates = await detectSast(ctx, {
+        runner,
+        rulesets: ["p/owasp-top-ten", "p/typescript"],
+      });
+      // Both packs return the SAME two findings; the deterministic candidate
+      // id must dedupe them rather than doubling the count.
+      expect(candidates).toHaveLength(2);
+    });
+
+    // Regression guard: A33's per-pack degradation must NOT weaken A4's
+    // existing safety property. It now specifically means "every configured
+    // ruleset failed to resolve", not "one of several had a stale reference".
+    it("every pack failing still triggers A4's hard-failure path (regression: safety property preserved)", async () => {
+      const runner: SemgrepRunner = async () => null;
+      const ctx = makeCtx({ repoRoot: VULN_REPO });
+      await expect(
+        detectSast(ctx, { runner, rulesets: ["p/java", "p/spring", "p/owasp-top-ten"] }),
+      ).rejects.toThrow(RequiredDetectorUnavailableError);
+      await expect(
+        detectSast(ctx, { runner, rulesets: ["p/java", "p/spring", "p/owasp-top-ten"] }),
+      ).rejects.toThrow(/every configured Semgrep ruleset failed/);
+    });
+
+    it("the corrected Java ruleset (p/java alone, A33) reproduces the audit's own evidence: findings land even when a hypothetical dead pack alongside it doesn't", async () => {
+      const javaApp = { languages: ["java"] as const };
+      const rulesets = selectSemgrepRulesets(javaApp);
+      expect(rulesets).toEqual(["p/java"]); // A33: p/spring dropped (dead Registry pack)
+      const runner: SemgrepRunner = async () => CANNED_SEMGREP;
+      const ctx = makeCtx({ repoRoot: VULN_REPO });
+      const candidates = await detectSast(ctx, { runner, rulesets });
+      expect(candidates.length).toBeGreaterThan(0);
     });
   });
 });

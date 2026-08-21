@@ -30,7 +30,9 @@ const VULN_SEC = "corpus/jvm-vuln/src/main/java/com/example/vuln/config/Security
 
 describe("java discovery — ruleset selection", () => {
   it("selects the curated JVM Semgrep rulesets + Maven SCA + java custom detectors", () => {
-    expect(selectSemgrepRulesets(javaApp)).toEqual(["p/java", "p/spring"]);
+    // A33: p/spring was dropped (dead Registry pack, verified 404) — see
+    // ../index.ts's module doc for the full evidence and the structural fix.
+    expect(selectSemgrepRulesets(javaApp)).toEqual(["p/java"]);
     expect(selectScaEcosystems(javaApp)).toEqual(["Maven"]);
     expect(selectCustomDetectors(javaApp).length).toBeGreaterThan(0);
     expect(javaRuleset.appliesTo(["java"])).toBe(true);
