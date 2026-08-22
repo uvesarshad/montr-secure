@@ -5,12 +5,15 @@
  * VCS-opener seam so the flow is testable OFFLINE (inject a fake opener).
  */
 import type {
+  AppMap,
   ConfirmedFinding,
   CandidateFinding,
   CostRollup,
   Fix,
   GateState,
+  HardeningRecommendation,
   PullRequest,
+  PurpleTeamScenarioSummaryEntryShape,
   Scan,
   UnconfirmedFinding,
   VcsProvider,
@@ -69,6 +72,40 @@ export interface BuildReportInput {
   audit?: AuditLogClient;
   /** Structured logger (scrubbing). Metadata only, never code bodies. */
   logger?: Logger;
+
+  /**
+   * B10 — blue-team report sections. Optional and additive: every section
+   * degrades to an honest empty/absent state (never a guess) when its input
+   * is omitted, so this stays backward compatible with existing callers
+   * (e.g. `apps/worker/src/runners.ts`'s Layer 5 runner, which does not yet
+   * pass these — see docs/modules/reporting-vcs.md).
+   */
+
+  /**
+   * The scan's App Map. Drives THREE sections when present: B3/B4 detection-
+   * rule route resolution for static-proof findings, B6 detection-coverage
+   * gap analysis, B8 attack-path discovery, and B7's threat-model section
+   * (via `appMap.threatModel`). All four degrade to an empty/absent section
+   * (never fabricated) when omitted.
+   */
+  appMap?: AppMap;
+  /**
+   * B9's advisory hardening recommendations, precomputed by the caller
+   * (`generateHardeningRecommendations` needs a `FileProvider` over the real
+   * repo checkout — genuine I/O `buildReport` deliberately stays free of;
+   * mirrors how `fixes`/`costRollup` above are already precomputed by
+   * earlier layers rather than regenerated here).
+   */
+  hardeningRecommendations?: HardeningRecommendation[];
+  /**
+   * B5's purple-team "detected vs. undetected" scenario entries, precomputed
+   * by the caller (e.g. via `@montr/confirm`'s `summarizePurpleTeamRun(...)
+   * .entries` after running the purple-team loop). The clearly-named,
+   * currently-empty-array-safe integration slot: omit (or pass `[]`) until a
+   * purple-team run exists for this scan, and the report's `purpleTeam`
+   * section reports zero scenarios rather than fabricating a verdict.
+   */
+  purpleTeamEntries?: PurpleTeamScenarioSummaryEntryShape[];
 }
 
 /**

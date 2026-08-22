@@ -627,6 +627,18 @@ const reportCompleted = {
       variancePct: -0.09,
     },
   },
+  // B10 — blue-team sections. This mock predates that wave's `generateAt`
+  // build call, so it honestly reports the empty state (mirrors what
+  // `buildReport` itself emits when no App Map / hardening / purple-team
+  // inputs are supplied) rather than fabricating section content.
+  blueTeam: {
+    mitreAttack: { findings: [], coverage: [] },
+    detectionEngineering: { rules: [], coverage: [] },
+    attackPaths: [],
+    threatModel: { present: false },
+    hardening: { advisoryOnly: true, recommendations: [] },
+    purpleTeam: { entries: [], totalScenarios: 0, detectedCount: 0, undetectedCount: 0 },
+  },
 } satisfies Report;
 
 const reportsByScan: Record<string, Report> = {

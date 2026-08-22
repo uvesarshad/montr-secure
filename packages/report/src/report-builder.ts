@@ -15,6 +15,7 @@ import {
   Layer5OutputSchema,
   PostureDeltaSchema,
   ReportSchema,
+  type BlueTeamReport,
   type ComplianceMapping,
   type ConfirmedFinding,
   type ExecutiveSummary,
@@ -22,10 +23,16 @@ import {
   type Layer5Output,
   type PostureDelta,
   type PullRequest,
+  type Report,
   type ReportFinding,
   type Severity,
 } from "@montr/contracts";
+import { buildDetectionCoverage } from "@montr/appmap";
+import { buildAttackPaths } from "@montr/correlation";
 import { openAutoFixPullRequests, prIdByFixId } from "./auto-fix.js";
+import { generateDetectionRules } from "./detection-rules/generate.js";
+import { buildMitreAttackSection } from "./exports/mitre-attack.js";
+import { buildThreatModelReport, renderThreatModelReportMarkdown } from "./exports/threat-model.js";
 import type { BuildReportInput, PreviousScanContext } from "./types.js";
 
 /** Priority ordering for the headline (most severe first). */
@@ -197,7 +204,7 @@ export async function buildReport(input: BuildReportInput): Promise<Layer5Output
     .filter((f) => f.riskClass === "human-required")
     .map((f) => f.id);
 
-  const report = ReportSchema.parse({
+  const reportCore = ReportSchema.parse({
     id: reportId,
     scanId: input.scan.id,
     clientId: input.scan.clientId,
@@ -210,5 +217,107 @@ export async function buildReport(input: BuildReportInput): Promise<Layer5Output
     costAndScope: { scope: input.scan.scope, cost: input.costRollup },
   });
 
+  // 5. Blue-team sections (B10) — computed against the just-built core report
+  // (already carries prioritized confirmedFindings/scanId/clientId/generatedAt,
+  // exactly what buildMitreAttackSection etc. need), then folded back in with
+  // a second parse.
+  const blueTeam = buildBlueTeamReport(
+    reportCore,
+    reportCore.confirmedFindings.map((rf) => rf.finding),
+    input,
+  );
+  const report = ReportSchema.parse({ ...reportCore, blueTeam });
+
   return Layer5OutputSchema.parse({ report, pullRequests });
+}
+
+/**
+ * Assemble the six blue-team sections (B10, see this file's header) on top
+ * of an already-built, schema-valid core `Report`. Every section is computed
+ * independently and degrades to an honest empty/absent state when its
+ * optional input (`appMap`, `hardeningRecommendations`, `purpleTeamEntries`)
+ * is not supplied — never a guess (mirrors `DetectionCoverage`'s own
+ * tri-state discipline).
+ */
+export function buildBlueTeamReport(
+  report: Report,
+  confirmed: readonly ConfirmedFinding[],
+  input: BuildReportInput,
+): BlueTeamReport {
+  const generatedAt = report.generatedAt;
+  const appMap = input.appMap;
+
+  // B2 — MITRE ATT&CK per-finding mapping + technique coverage index.
+  const mitre = buildMitreAttackSection(report, generatedAt);
+
+  // B3/B4 — generated Sigma/OTel/SIEM rules + log-signature narrative, one
+  // triple per confirmed finding. Pure; `appMap` only resolves a route for
+  // static-proof findings (optional — degrades to a file-scoped rule).
+  const rules = confirmed.flatMap((finding) =>
+    generateDetectionRules(finding, { ...(appMap ? { appMap } : {}), now: () => generatedAt }),
+  );
+
+  // B6 — tri-state coverage verdict per finding, grounded in the SAME
+  // generated rules above (so a rule a coverage verdict cites is always one
+  // this same report's detectionEngineering.rules also lists).
+  const coverage = appMap
+    ? buildDetectionCoverage(appMap, confirmed, rules, { now: () => new Date(generatedAt) })
+    : [];
+
+  // B8 — chained kill-chains across >= 2 confirmed findings, ranked by
+  // feasibility then severity (buildAttackPaths's own ranking).
+  const attackPaths = appMap
+    ? buildAttackPaths({
+        clientId: report.clientId,
+        scanId: report.scanId,
+        appMap,
+        findings: confirmed,
+        now: generatedAt,
+      })
+    : [];
+
+  // B7 — the reviewable threat-model artifact, when the App Map carried one.
+  const threatModel = appMap?.threatModel;
+  const threatModelSection = threatModel
+    ? {
+        present: true as const,
+        summary: buildThreatModelReport(threatModel, { scanId: report.scanId, now: generatedAt })
+          .summary,
+        markdown: renderThreatModelReportMarkdown(threatModel, {
+          scanId: report.scanId,
+          now: generatedAt,
+        }),
+        raw: threatModel,
+      }
+    : { present: false as const };
+
+  // B9 — advisory-only hardening recommendations, precomputed by the caller
+  // (see BuildReportInput.hardeningRecommendations's doc comment: generation
+  // needs a FileProvider over the real repo checkout, genuine I/O buildReport
+  // stays free of, mirroring how `fixes`/`costRollup` are precomputed too).
+  const hardening = {
+    advisoryOnly: true as const,
+    recommendations: input.hardeningRecommendations ?? [],
+  };
+
+  // B5 — purple-team detected-vs-undetected summary, precomputed by the
+  // caller (see BuildReportInput.purpleTeamEntries's doc comment). Empty
+  // entries -> zero counts, never a fabricated verdict.
+  const purpleEntries = input.purpleTeamEntries ?? [];
+  const detectedCount = purpleEntries.filter((e) => e.detected).length;
+  const purpleTeam = {
+    entries: purpleEntries,
+    totalScenarios: purpleEntries.length,
+    detectedCount,
+    undetectedCount: purpleEntries.length - detectedCount,
+  };
+
+  return {
+    mitreAttack: { findings: mitre.findings, coverage: mitre.coverage },
+    detectionEngineering: { rules, coverage },
+    attackPaths,
+    threatModel: threatModelSection,
+    hardening,
+    purpleTeam,
+  };
 }

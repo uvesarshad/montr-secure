@@ -137,3 +137,32 @@ export {
   attemptInvestigationConfirmation,
   type InvestigationPathResult,
 } from "./investigation-pipeline.js";
+
+// B5 — purple-team verification loop. Runs a red-team scenario through the
+// EXISTING gated engine above (runScenario — no new execution path) and
+// structurally evaluates a B3-generated Sigma DetectionRule against the
+// resulting transcript. Standalone: not wired into any pipeline layer or
+// report-assembly path (B10's job in a later wave). See purple-loop.ts's
+// header for the full safety-preservation and evaluator-scope rationale.
+export {
+  parseSigmaRule,
+  evaluateSigmaRule,
+  evaluateDetectionRuleAgainstScenario,
+  runPurpleTeamScenario,
+  findOrCreateDetectionCoverage,
+  verifyScenarioDetection,
+  summarizePurpleTeamRun,
+  REDTEAM_CATEGORY_TO_FINDING_CATEGORIES,
+  type ParsedSigmaRule,
+  type EvaluableRequest,
+  type SigmaEvalOutcome,
+  type SigmaRuleEvaluation,
+  type RunPurpleTeamScenarioInput,
+  type RunPurpleTeamScenarioDeps,
+  type PurpleTeamScenarioResult,
+  type FindOrCreateCoverageOptions,
+  type VerifyScenarioDetectionResult,
+  type PurpleTeamScenarioSummaryEntry,
+  type PurpleTeamRunSummary,
+  type PurpleTeamRunEntry,
+} from "./purple-loop.js";

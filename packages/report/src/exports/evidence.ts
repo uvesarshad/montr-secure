@@ -17,6 +17,7 @@ import type { ComplianceMapping, Fix, Report, ReportFinding, ScanScope } from "@
 import { complianceForCategory } from "@montr/contracts";
 import {
   controlsForCategory,
+  detectionMonitoringControls,
   FRAMEWORK_LABEL,
   type ComplianceFramework,
   type ControlDescriptor,
@@ -69,6 +70,19 @@ export interface EvidenceRecord {
   location: { file: string; line: number };
   /** When the finding was detected (finding.createdAt). */
   detectedAt: string;
+  /** `DetectionRule.id`s (B3/B4) generated for this finding, if any. */
+  detectionRuleIds?: string[];
+  /**
+   * B10: whether this finding also has VERIFIED blue-team detection coverage
+   * (B6's `DetectionCoverage.detected === true` — real, telemetry-grounded
+   * evidence, never merely "a rule exists" or the tri-state "unknown"). Only
+   * when `true` do the detection/monitoring controls
+   * (`detectionMonitoringControls`, `./controls.ts`) get added to `controls`
+   * above as genuine evidence, rather than only the red-side category
+   * mapping — an honest bar, matching `DetectionCoverage`'s own tri-state
+   * discipline (never overstating "unknown" as satisfied).
+   */
+  detectionCoverageVerified?: boolean;
 }
 
 /** Per-control coverage summary (how many findings touch each control). */
@@ -115,11 +129,42 @@ const REMEDIATION_STATES: readonly RemediationState[] = [
   "open",
 ];
 
-function evidenceRecord(framework: ComplianceFramework, rf: ReportFinding): EvidenceRecord {
+/** Dedupe by control id, preserving first-seen order (a category's own mapping wins). */
+function dedupeControls(controls: readonly ControlDescriptor[]): ControlDescriptor[] {
+  const seen = new Set<string>();
+  const out: ControlDescriptor[] = [];
+  for (const c of controls) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  return out;
+}
+
+function evidenceRecord(
+  framework: ComplianceFramework,
+  rf: ReportFinding,
+  detectionEngineering: Report["blueTeam"]["detectionEngineering"],
+): EvidenceRecord {
   const f = rf.finding;
   const compliance: ComplianceMapping = rf.compliance ?? complianceForCategory(f.category);
   const cwe = f.cwe.length > 0 ? f.cwe : compliance.cwe;
   const remediationState = remediationStateFor(rf.fix);
+
+  // B10: fold in real blue-team detection evidence — a generated DetectionRule
+  // (B3/B4) and, when VERIFIED (detected === true), the detection/monitoring
+  // controls this finding's coverage actually earns (see DETECTION_MONITORING_
+  // CONTROL_IDS's doc comment in ./controls.ts).
+  const findingRules = detectionEngineering.rules.filter((r) => r.findingId === f.id);
+  const findingCoverage = detectionEngineering.coverage.find((c) => c.findingId === f.id);
+  const detectionCoverageVerified = findingCoverage?.detected === true;
+  const controls = detectionCoverageVerified
+    ? dedupeControls([
+        ...controlsForCategory(framework, f.category),
+        ...detectionMonitoringControls(framework),
+      ])
+    : controlsForCategory(framework, f.category);
+
   return {
     findingId: f.id,
     title: f.title,
@@ -131,12 +176,14 @@ function evidenceRecord(framework: ComplianceFramework, rf: ReportFinding): Evid
     owasp: compliance.owasp,
     owaspTitle: compliance.owaspTitle,
     cwe: [...cwe],
-    controls: controlsForCategory(framework, f.category),
+    controls,
     remediationState,
     ...(rf.fix ? { fixId: rf.fix.id, fixRiskClass: rf.fix.riskClass } : {}),
     ...(rf.fix?.pullRequestId ? { pullRequestId: rf.fix.pullRequestId } : {}),
     location: { file: f.location.file, line: f.location.line },
     detectedAt: f.createdAt,
+    ...(findingRules.length > 0 ? { detectionRuleIds: findingRules.map((r) => r.id) } : {}),
+    ...(findingCoverage ? { detectionCoverageVerified } : {}),
   };
 }
 
@@ -165,7 +212,9 @@ export async function buildEvidencePackage(
   framework: ComplianceFramework,
   opts: EvidenceOptions = {},
 ): Promise<EvidencePackage> {
-  const evidence = report.confirmedFindings.map((rf) => evidenceRecord(framework, rf));
+  const evidence = report.confirmedFindings.map((rf) =>
+    evidenceRecord(framework, rf, report.blueTeam.detectionEngineering),
+  );
 
   const byRemediationState = Object.fromEntries(REMEDIATION_STATES.map((s) => [s, 0])) as Record<
     RemediationState,
@@ -242,6 +291,8 @@ export async function renderEvidenceCsv(
     "file",
     "line",
     "detectedAt",
+    "detectionRuleIds",
+    "detectionCoverageVerified",
     "scanId",
     "generatedAt",
     "auditTrailFile",
@@ -266,6 +317,8 @@ export async function renderEvidenceCsv(
       r.location.file,
       r.location.line,
       r.detectedAt,
+      (r.detectionRuleIds ?? []).join(";"),
+      r.detectionCoverageVerified ?? "",
       pkg.scanId,
       pkg.generatedAt,
       pkg.auditTrail.filename,

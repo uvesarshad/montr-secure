@@ -342,6 +342,10 @@ export {
   controlCatalog,
   referencedControlIds,
   FRAMEWORK_LABEL,
+  // B10 — detection/monitoring controls satisfiable by real B6 DetectionCoverage
+  // evidence, not only the red-side per-category mapping (see ./controls.ts).
+  detectionMonitoringControls,
+  DETECTION_MONITORING_CONTROL_IDS,
 } from "./controls.js";
 export type { ControlDescriptor, ComplianceFramework } from "./controls.js";
 

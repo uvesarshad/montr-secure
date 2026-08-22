@@ -22,8 +22,10 @@
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {
+    "@montr/appmap": "workspace:*",
     "@montr/confirm": "workspace:*",
     "@montr/contracts": "workspace:*",
+    "@montr/correlation": "workspace:*",
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*",
     "@gitbeaker/rest": "^43.8.0",

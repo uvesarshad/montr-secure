@@ -479,12 +479,18 @@ importers:
       '@gitbeaker/rest':
         specifier: ^43.8.0
         version: 43.8.0
+      '@montr/appmap':
+        specifier: workspace:*
+        version: link:../appmap
       '@montr/confirm':
         specifier: workspace:*
         version: link:../confirm
       '@montr/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@montr/correlation':
+        specifier: workspace:*
+        version: link:../correlation
       '@montr/state-store':
         specifier: workspace:*
         version: link:../state-store

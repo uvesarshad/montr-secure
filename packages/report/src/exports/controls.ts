@@ -302,3 +302,29 @@ export function referencedControlIds(framework: ComplianceFramework): string[] {
   const map = framework === "soc2" ? SOC2_CATEGORY_CONTROLS : ISO27001_CATEGORY_CONTROLS;
   return [...new Set(Object.values(map).flat())].sort();
 }
+
+/* ------------------------------------------------------------------ *
+ * Detection & monitoring evidence (B10) — the real SOC 2 / ISO 27001
+ * control ids this catalog already carries for "detection and monitoring
+ * capability": SOC 2's CC7.2 (security event monitoring) / CC7.3 (security
+ * event evaluation), and ISO/IEC 27001:2022's A.8.15 (logging) / A.8.16
+ * (monitoring activities) — the current Annex A 2022 numbering for what was
+ * A.12.4/A.16 under the 2013 edition. These are the SAME control ids
+ * `insufficient_logging` already maps to above; B10 makes them ALSO
+ * satisfiable by real blue-team detection evidence (a verified
+ * `DetectionCoverage` — B6 — backed by a generated `DetectionRule` — B3),
+ * for ANY finding category, not only `insufficient_logging`. See
+ * `./evidence.ts`'s `evidenceRecord` for where this is applied.
+ * ------------------------------------------------------------------ */
+export const DETECTION_MONITORING_CONTROL_IDS: Record<ComplianceFramework, readonly string[]> = {
+  soc2: ["CC7.2", "CC7.3"],
+  iso27001: ["A.8.15", "A.8.16"],
+};
+
+/** Resolved detection/monitoring control descriptors for a framework (B10). */
+export function detectionMonitoringControls(framework: ComplianceFramework): ControlDescriptor[] {
+  if (framework === "soc2") {
+    return resolve("soc2", SOC2_CATALOG, DETECTION_MONITORING_CONTROL_IDS.soc2);
+  }
+  return resolve("iso27001", ISO27001_CATALOG, DETECTION_MONITORING_CONTROL_IDS.iso27001);
+}

@@ -8,10 +8,16 @@
   "include": ["src/**/*"],
   "references": [
     {
+      "path": "../appmap"
+    },
+    {
       "path": "../confirm"
     },
     {
       "path": "../contracts"
+    },
+    {
+      "path": "../correlation"
     },
     {
       "path": "../state-store"
