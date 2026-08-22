@@ -35,6 +35,12 @@ ComplianceTable: In apps/web/src/components/compliance-table.tsx. Displays compl
 AppMapSummary: In apps/web/src/components/app-map-summary.tsx. Renders detected application routes, data models, entry points, and taint surfaces extracted during Layer 0.
 Chips: In apps/web/src/components/chips.tsx. Helper chip components including SeverityChip, StatusChip, RiskClassChip, GateStateChip, and ExposureChip.
 States: In apps/web/src/components/states.tsx. Standardized loading and error state screens including LoadingCards, ErrorState, and EmptyCardState.
+DetectionRulesPanel: In apps/web/src/components/detection-rules-panel.tsx (B11). Lists generated Sigma/OTel/SIEM detection rules (`Report.blueTeam.detectionEngineering.rules`) per confirmed finding, with MITRE technique badges, log-signature narrative, and per-rule/export-all downloads via lib/exports.ts's `downloadDetectionRule`/`downloadDetectionRuleBundle`.
+AttackHeatMap: In apps/web/src/components/attack-heatmap.tsx (B11). Renders `Report.blueTeam.mitreAttack.coverage` as a MITRE ATT&CK-style matrix — tactics as columns, techniques as cells shaded by finding-count intensity using the sev-critical/high/medium/low color tokens (docs/ui/theming.md).
+AttackPathsPanel: In apps/web/src/components/attack-path-chain.tsx (B11). Renders `Report.blueTeam.attackPaths` as ordered, numbered kill-chain step cards with connecting lines and a prominent feasibility score.
+PurpleTeamPanel: In apps/web/src/components/purple-team-panel.tsx (B11). Renders `Report.blueTeam.purpleTeam` detected/undetected scenario verification results and stat tiles.
+ThreatModelPanel: In apps/web/src/components/threat-model-panel.tsx (B11). Renders B7's `Report.blueTeam.threatModel.markdown` via a small dependency-free Markdown line renderer (headings/bullets/inline bold).
+HardeningPanel: In apps/web/src/components/hardening-panel.tsx (B11). Renders B9's `Report.blueTeam.hardening.recommendations` behind an "Advisory only" banner, distinct from Layer 4 fixes.
 
 Component Composition and State Connections
 Presentational Primitives: Components in apps/web/src/components/ui are strictly presentational and receive data and callbacks exclusively via React props.

@@ -2,6 +2,7 @@ import {
   SarifLogSchema,
   CATEGORY_TAXONOMY,
   type ConfirmedFinding,
+  type DetectionRule,
   type OwaspId,
   type Report,
   type ReportFinding,
@@ -376,20 +377,100 @@ export function exportFilename(report: Report, descriptor: ReportExportDescripto
 }
 
 /**
- * Build and download an export in the browser. Pure string generation happens in
- * the `build` functions above (unit-tested); this only wraps the Blob download,
- * so it must run in a browser (guarded by a `typeof document` check).
+ * Trigger a browser download of an in-memory string as a file — the shared Blob
+ * mechanic every client-side exporter in this module (and, per B11, the
+ * Detection Rules panel) builds on. Must run in a browser (guarded by a
+ * `typeof document` check).
  */
-export function downloadReportExport(report: Report, descriptor: ReportExportDescriptor): void {
+export function downloadTextFile(filename: string, content: string, contentType: string): void {
   if (typeof document === "undefined") return;
-  const content = descriptor.build(report);
-  const blob = new Blob([content], { type: descriptor.contentType });
+  const blob = new Blob([content], { type: contentType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = exportFilename(report, descriptor);
+  anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Build and download an export in the browser. Pure string generation happens in
+ * the `build` functions above (unit-tested); this only wraps the Blob download.
+ */
+export function downloadReportExport(report: Report, descriptor: ReportExportDescriptor): void {
+  downloadTextFile(
+    exportFilename(report, descriptor),
+    descriptor.build(report),
+    descriptor.contentType,
+  );
+}
+
+/* --------------------------- blue-team detection rules (B11) ------------------- */
+
+/**
+ * Client-side detection-rule exports (B11 — Detection Rules console page),
+ * following the SAME loaded-Report, no-server-round-trip pattern as the
+ * compliance-tab exports above. `DetectionRule.content` is already the real
+ * rule text (Sigma YAML / OTTL / Splunk SPL) generated server-side by
+ * `packages/report/src/detection-rules` (B3/B4) — this module only formats it
+ * for download, never regenerates or reinterprets the rule logic.
+ */
+
+const DETECTION_RULE_EXTENSION: Record<DetectionRule["format"], string> = {
+  sigma: "yml",
+  otel: "ottl",
+  siem_query: "spl",
+};
+
+const DETECTION_RULE_CONTENT_TYPE: Record<DetectionRule["format"], string> = {
+  sigma: "application/yaml",
+  otel: "text/plain",
+  siem_query: "text/plain",
+};
+
+/** One rule's downloadable filename, scoped to the finding it detects. */
+export function detectionRuleFilename(rule: DetectionRule): string {
+  return `montr-detection-${rule.findingId}-${rule.format}.${DETECTION_RULE_EXTENSION[rule.format]}`;
+}
+
+/** Download a single generated detection rule's raw content. */
+export function downloadDetectionRule(rule: DetectionRule): void {
+  downloadTextFile(
+    detectionRuleFilename(rule),
+    rule.content,
+    DETECTION_RULE_CONTENT_TYPE[rule.format],
+  );
+}
+
+/** Concatenate every generated rule into one text bundle, headered per rule. */
+export function renderDetectionRuleBundle(
+  rules: readonly DetectionRule[],
+  findingTitleFor: (findingId: string) => string,
+): string {
+  return rules
+    .map((rule) => {
+      const header = [
+        `# Finding: ${findingTitleFor(rule.findingId)} (${rule.findingId})`,
+        `# Format: ${rule.format}`,
+        `# MITRE ATT&CK: ${rule.mitreTechniques.join(", ") || "—"}`,
+        `# Provenance: ${rule.provenance}`,
+      ].join("\n");
+      return `${header}\n${rule.content}`;
+    })
+    .join("\n\n" + "-".repeat(72) + "\n\n");
+}
+
+/** Download every generated detection rule for a scan as one bundled text file. */
+export function downloadDetectionRuleBundle(
+  scanId: string,
+  rules: readonly DetectionRule[],
+  findingTitleFor: (findingId: string) => string,
+): void {
+  downloadTextFile(
+    `montr-detection-rules-${scanId}.txt`,
+    renderDetectionRuleBundle(rules, findingTitleFor),
+    "text/plain",
+  );
 }

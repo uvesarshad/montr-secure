@@ -22,6 +22,12 @@
     },
     {
       "path": "../llm-gateway"
+    },
+    {
+      "path": "../report"
+    },
+    {
+      "path": "../state-store"
     }
   ]
 }

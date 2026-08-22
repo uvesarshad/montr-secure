@@ -13,7 +13,8 @@
   },
   "bin": {
     "montr-qa": "./dist/cli.js",
-    "montr-qa-owasp-benchmark": "./dist/owasp-benchmark-cli.js"
+    "montr-qa-owasp-benchmark": "./dist/owasp-benchmark-cli.js",
+    "montr-qa-blue-team": "./dist/blue-team-cli.js"
   },
   "files": [
     "dist"
@@ -28,6 +29,8 @@
     "qa:variance": "tsc -b && node dist/cli.js --variance",
     "qa:variance:selfcheck": "tsc -b && node dist/cli.js --variance --variance-selfcheck",
     "qa:owasp-benchmark": "tsc -b && node dist/owasp-benchmark-cli.js",
+    "qa:blue-team-corpus": "tsc -b && node dist/blue-team-cli.js",
+    "qa:blue-team-corpus:selfcheck": "tsc -b && node dist/blue-team-cli.js",
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {
@@ -36,6 +39,8 @@
     "@montr/contracts": "workspace:*",
     "@montr/fixtures": "workspace:*",
     "@montr/llm-gateway": "workspace:*",
+    "@montr/report": "workspace:*",
+    "@montr/state-store": "workspace:*",
     "fast-glob": "^3.3.3"
   }
 }

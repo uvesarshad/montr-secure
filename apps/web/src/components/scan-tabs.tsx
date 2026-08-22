@@ -17,6 +17,11 @@ const TABS: readonly ScanTab[] = [
   { label: "Overview", segment: "", roles: ["operator", "approver", "viewer"] },
   { label: "Cost Estimate", segment: "estimate", roles: ["operator", "approver", "viewer"] },
   { label: "Report", segment: "report", roles: ["operator", "approver", "viewer"] },
+  // Detection rules, ATT&CK coverage, attack paths, purple-team results, threat
+  // model, and hardening recs are all report-derived READ data (§16) — viewer-
+  // visible like the Report tab, per docs/auth/authorization.md's
+  // `view_reports_and_audit` matrix entry (no mutation lives on this page).
+  { label: "Blue Team", segment: "blue-team", roles: ["operator", "approver", "viewer"] },
   { label: "Fixes & PRs", segment: "fixes", roles: ["operator", "approver", "viewer"] },
   { label: "DAST", segment: "dast", roles: ["operator", "approver"] },
 ];

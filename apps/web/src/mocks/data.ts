@@ -627,17 +627,432 @@ const reportCompleted = {
       variancePct: -0.09,
     },
   },
-  // B10 — blue-team sections. This mock predates that wave's `generateAt`
-  // build call, so it honestly reports the empty state (mirrors what
-  // `buildReport` itself emits when no App Map / hardening / purple-team
-  // inputs are supplied) rather than fabricating section content.
+  // B10/B11 — blue-team sections, populated with real, finding-grounded
+  // sample data (not empty stubs) so the B11 console pages under
+  // scans/[scanId]/blue-team are actually visually testable under MSW.
+  // Every id/technique/rule below is derived from the SAME three confirmed
+  // findings above (confSqli/confXss/confIdor) — no invented findings.
   blueTeam: {
-    mitreAttack: { findings: [], coverage: [] },
-    detectionEngineering: { rules: [], coverage: [] },
-    attackPaths: [],
-    threatModel: { present: false },
-    hardening: { advisoryOnly: true, recommendations: [] },
-    purpleTeam: { entries: [], totalScenarios: 0, detectedCount: 0, undetectedCount: 0 },
+    mitreAttack: {
+      findings: [
+        {
+          findingId: "conf_sqli_0001",
+          title: confSqli.title,
+          category: "sql_injection",
+          severity: "critical",
+          techniques: [
+            {
+              id: "T1190",
+              name: "Exploit Public-Facing Application",
+              tactic: "Initial Access",
+              framework: "attack-enterprise",
+              url: "https://attack.mitre.org/techniques/T1190/",
+            },
+            {
+              id: "T1213",
+              name: "Data from Information Repositories",
+              tactic: "Collection",
+              framework: "attack-enterprise",
+              url: "https://attack.mitre.org/techniques/T1213/",
+            },
+          ],
+        },
+        {
+          findingId: "conf_xss_0001",
+          title: confXss.title,
+          category: "xss",
+          severity: "high",
+          techniques: [
+            {
+              id: "T1059.007",
+              name: "Command and Scripting Interpreter: JavaScript",
+              tactic: "Execution",
+              framework: "attack-enterprise",
+              url: "https://attack.mitre.org/techniques/T1059/007/",
+            },
+            {
+              id: "T1539",
+              name: "Steal Web Session Cookie",
+              tactic: "Credential Access",
+              framework: "attack-enterprise",
+              url: "https://attack.mitre.org/techniques/T1539/",
+            },
+          ],
+        },
+        {
+          findingId: "conf_idor_0001",
+          title: confIdor.title,
+          category: "broken_access_control",
+          severity: "high",
+          techniques: [
+            {
+              id: "T1548",
+              name: "Abuse Elevation Control Mechanism",
+              tactic: "Privilege Escalation, Defense Evasion",
+              framework: "attack-enterprise",
+              url: "https://attack.mitre.org/techniques/T1548/",
+            },
+            {
+              id: "T1078",
+              name: "Valid Accounts",
+              tactic: "Initial Access, Persistence, Privilege Escalation, Defense Evasion",
+              framework: "attack-enterprise",
+              url: "https://attack.mitre.org/techniques/T1078/",
+            },
+          ],
+        },
+      ],
+      coverage: [
+        {
+          technique: {
+            id: "T1059.007",
+            name: "Command and Scripting Interpreter: JavaScript",
+            tactic: "Execution",
+            framework: "attack-enterprise",
+            url: "https://attack.mitre.org/techniques/T1059/007/",
+          },
+          findingCount: 1,
+          findingIds: ["conf_xss_0001"],
+        },
+        {
+          technique: {
+            id: "T1078",
+            name: "Valid Accounts",
+            tactic: "Initial Access, Persistence, Privilege Escalation, Defense Evasion",
+            framework: "attack-enterprise",
+            url: "https://attack.mitre.org/techniques/T1078/",
+          },
+          findingCount: 1,
+          findingIds: ["conf_idor_0001"],
+        },
+        {
+          technique: {
+            id: "T1190",
+            name: "Exploit Public-Facing Application",
+            tactic: "Initial Access",
+            framework: "attack-enterprise",
+            url: "https://attack.mitre.org/techniques/T1190/",
+          },
+          findingCount: 1,
+          findingIds: ["conf_sqli_0001"],
+        },
+        {
+          technique: {
+            id: "T1213",
+            name: "Data from Information Repositories",
+            tactic: "Collection",
+            framework: "attack-enterprise",
+            url: "https://attack.mitre.org/techniques/T1213/",
+          },
+          findingCount: 1,
+          findingIds: ["conf_sqli_0001"],
+        },
+        {
+          technique: {
+            id: "T1539",
+            name: "Steal Web Session Cookie",
+            tactic: "Credential Access",
+            framework: "attack-enterprise",
+            url: "https://attack.mitre.org/techniques/T1539/",
+          },
+          findingCount: 1,
+          findingIds: ["conf_xss_0001"],
+        },
+        {
+          technique: {
+            id: "T1548",
+            name: "Abuse Elevation Control Mechanism",
+            tactic: "Privilege Escalation, Defense Evasion",
+            framework: "attack-enterprise",
+            url: "https://attack.mitre.org/techniques/T1548/",
+          },
+          findingCount: 1,
+          findingIds: ["conf_idor_0001"],
+        },
+      ],
+    },
+    detectionEngineering: {
+      rules: [
+        {
+          id: "detrule_sqli_0001",
+          clientId: CLIENT_ID,
+          scanId: "scan_demo_completed",
+          findingId: "conf_sqli_0001",
+          format: "sigma",
+          content: [
+            "title: SQL injection attempt on GET /api/users",
+            "id: montr-conf_sqli_0001",
+            "status: stable",
+            "logsource:",
+            "  category: webserver",
+            "detection:",
+            "  selection:",
+            "    cs-uri-stem|startswith: '/api/users'",
+            "    cs-method: 'GET'",
+            '    cs-uri-query|contains: "\'"',
+            "  condition: selection",
+            "level: high",
+            "tags:",
+            "  - attack.initial-access",
+            "  - attack.t1190",
+            "  - attack.collection",
+            "  - attack.t1213",
+            "",
+          ].join("\n"),
+          mitreTechniques: ["T1190", "T1213"],
+          provenance: "static",
+          logSignature: {
+            fields: ["cs-uri-query", "cs-method", "cs-uri-stem"],
+            pattern: 'cs-uri-stem startswith "/api/users" AND cs-uri-query contains "\'"',
+            falseAlarmSources: [
+              'An internal reporting/BI tool bulk-exporting user records whose free-text name fields legitimately contain apostrophes (e.g. "O\'Brien").',
+            ],
+          },
+          createdAt: T.report,
+        },
+        {
+          id: "detrule_xss_0001",
+          clientId: CLIENT_ID,
+          scanId: "scan_demo_completed",
+          findingId: "conf_xss_0001",
+          format: "otel",
+          content: [
+            "-- OTTL filter/transform condition (montr-conf_xss_0001)",
+            'condition: attributes["http.route"] == "/search" and',
+            '  IsMatch(attributes["http.request.header.referer"], ".*<script.*|.*onerror=.*")',
+          ].join("\n"),
+          mitreTechniques: ["T1059.007", "T1539"],
+          provenance: "static",
+          logSignature: {
+            fields: ["http.route", "http.request.header.referer", "http.request.query.q"],
+            pattern: 'http.route == "/search" AND query.q matches <script|onerror=',
+            falseAlarmSources: [
+              "A documentation/QA crawler submitting literal HTML snippets as search terms during content review.",
+            ],
+          },
+          createdAt: T.report,
+        },
+        {
+          id: "detrule_idor_0001",
+          clientId: CLIENT_ID,
+          scanId: "scan_demo_completed",
+          findingId: "conf_idor_0001",
+          format: "siem_query",
+          content: [
+            'index=web_access sourcetype=access_combined uri_path="/api/orders/*" method=GET',
+            '| eval order_id=mvindex(split(uri_path, "/"), -1)',
+            "| stats values(order_id) as orders_viewed count by user, src_ip",
+            "| where count > 20",
+          ].join("\n"),
+          mitreTechniques: ["T1548", "T1078"],
+          provenance: "live",
+          logSignature: {
+            fields: ["uri_path", "user", "src_ip"],
+            pattern:
+              "single session requesting > 20 distinct /api/orders/{id} values in a short window",
+            falseAlarmSources: [
+              "A customer-support agent's admin tool paging through many orders on behalf of different customers in one session.",
+            ],
+          },
+          createdAt: T.report,
+        },
+      ],
+      coverage: [
+        {
+          id: "detcov_sqli_0001",
+          clientId: CLIENT_ID,
+          scanId: "scan_demo_completed",
+          findingId: "conf_sqli_0001",
+          detected: true,
+          reasoning:
+            "app/api/users/route.ts logs via a structured logger (winston) that captures the request query string; the Sigma rule's cs-uri-query condition matches a real logged field.",
+          detectionRuleId: "detrule_sqli_0001",
+          verification: {
+            scenarioId: "scenario_sqli_0001",
+            fired: true,
+            verifiedAt: T.report,
+            evidence:
+              "purple-team run purple_run_0007 — rule matched the injected payload in the captured request.",
+          },
+          createdAt: T.report,
+        },
+        {
+          id: "detcov_xss_0001",
+          clientId: CLIENT_ID,
+          scanId: "scan_demo_completed",
+          findingId: "conf_xss_0001",
+          detected: "unknown",
+          reasoning:
+            "app/search/page.tsx only has console.* logging (no structured fields) — cannot confirm whether an alerting pipeline would actually capture the referer header the rule depends on.",
+          detectionRuleId: "detrule_xss_0001",
+          createdAt: T.report,
+        },
+        {
+          id: "detcov_idor_0001",
+          clientId: CLIENT_ID,
+          scanId: "scan_demo_completed",
+          findingId: "conf_idor_0001",
+          detected: false,
+          reasoning:
+            "app/api/orders/[id]/route.ts has no request logging at all (a silent route, per the B6 telemetry-surface scan) — the SPL rule has no log source to alert against.",
+          detectionRuleId: "detrule_idor_0001",
+          verification: {
+            scenarioId: "scenario_idor_0001",
+            fired: false,
+            verifiedAt: T.report,
+            evidence:
+              "purple-team run purple_run_0007 — no matching log line for the scenario's requests.",
+          },
+          createdAt: T.report,
+        },
+      ],
+    },
+    attackPaths: [
+      {
+        id: "attackpath_0001",
+        clientId: CLIENT_ID,
+        scanId: "scan_demo_completed",
+        steps: [
+          {
+            findingId: "conf_sqli_0001",
+            note: "SQL injection on the public GET /api/users route dumps the User table, including session/auth-adjacent fields — enough for an attacker to reuse a real identity.",
+          },
+          {
+            findingId: "conf_idor_0001",
+            note: "Using a harvested identity, the attacker walks GET /api/orders/[id] sequentially — no ownership check — to read every customer's order history.",
+          },
+        ],
+        feasibilityScore: 0.62,
+        severity: "critical",
+        narrative:
+          "An unauthenticated SQL injection on GET /api/users leaks enough user data to let an attacker impersonate a real account, then pivot into the IDOR-exposed orders endpoint and enumerate every customer's order history end to end.",
+        createdAt: T.report,
+      },
+    ],
+    threatModel: {
+      present: true,
+      summary:
+        "Two trust boundaries carry real, exploitable risk: an unauthenticated public API surface (SQL injection, reflected XSS) and a session-authenticated account boundary with no ownership checks (IDOR). Both should be prioritized before the next release.",
+      markdown: [
+        "# Threat model — shop-web",
+        "",
+        "This application exposes confirmed, reachable attack surfaces across its public catalog API and its authenticated account API.",
+        "",
+        "## Trust boundaries",
+        "",
+        "- **Public API boundary** (`/api/users`, `/search`) — unauthenticated; Spoofing and Tampering both apply, corroborated by the confirmed SQL injection and reflected XSS findings on these exact routes.",
+        "- **Authenticated account boundary** (`/api/orders/[id]`) — session-authenticated but has no per-user ownership check, so Tampering and Information Disclosure both apply despite the auth requirement.",
+        "",
+        "## STRIDE roll-up",
+        "",
+        "- Spoofing: 1 boundary",
+        "- Tampering: 2 boundaries",
+        "- Information disclosure: 2 boundaries",
+        "- Elevation of privilege: 1 boundary",
+        "",
+        "## Abuse cases",
+        "",
+        "- An anonymous attacker enumerates the `q` search parameter against `/api/users` to exfiltrate the full user table via SQL injection.",
+        "- An authenticated low-privilege user increments the numeric order id in `/api/orders/[id]` to read other customers' order history.",
+        "",
+      ].join("\n"),
+    },
+    hardening: {
+      advisoryOnly: true,
+      recommendations: [
+        {
+          id: "harden_headers_0001",
+          category: "security_headers",
+          severity: "medium",
+          title: "Add hardened response headers to the Next.js response pipeline",
+          gap: "No helmet/@fastify/helmet dependency and no next.config.js headers() export were detected — responses ship with no X-Content-Type-Options, X-Frame-Options, or Strict-Transport-Security header.",
+          recommendation: [
+            "// next.config.js",
+            "async headers() {",
+            "  return [{",
+            '    source: "/:path*",',
+            "    headers: [",
+            '      { key: "X-Content-Type-Options", value: "nosniff" },',
+            '      { key: "X-Frame-Options", value: "DENY" },',
+            '      { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },',
+            "    ],",
+            "  }];",
+            "}",
+          ].join("\n"),
+          rationale:
+            "Missing security headers make clickjacking and MIME-sniffing easier to chain with the confirmed reflected XSS in /search.",
+          evidence: [
+            "package.json: no helmet/@fastify/helmet dependency",
+            "next.config.js: no headers() export",
+          ],
+          framework: "nextjs",
+          relatedFindingIds: ["conf_xss_0001"],
+          createdAt: T.report,
+        },
+        {
+          id: "harden_cookie_0001",
+          category: "cookie_policy",
+          severity: "high",
+          title: "Set Secure, HttpOnly, and SameSite on the session cookie",
+          gap: "The session cookie observed in the IDOR live-DAST transcript is set with no Secure/HttpOnly/SameSite attributes.",
+          recommendation:
+            'res.setHeader("Set-Cookie", `session=${token}; Secure; HttpOnly; SameSite=Lax; Path=/`);',
+          rationale:
+            "An unattributed session cookie is readable by client-side script (compounding the confirmed XSS) and can be replayed cross-site.",
+          evidence: [
+            "app/api/orders/[id]/route.ts: Set-Cookie header has no Secure/HttpOnly/SameSite attributes",
+            "conf_idor_0001 live-DAST transcript: session cookie sent with no attributes",
+          ],
+          framework: "nextjs",
+          relatedFindingIds: ["conf_idor_0001", "conf_xss_0001"],
+          createdAt: T.report,
+        },
+        {
+          id: "harden_waf_0001",
+          category: "waf_rules",
+          severity: "high",
+          title: "Enable managed SQLi + XSS rule groups at the edge",
+          gap: "No WAF/managed-rule-group configuration was detected in front of the public API surface confirmed vulnerable to SQL injection and reflected XSS.",
+          recommendation:
+            "AWS WAF: enable AWSManagedRulesSQLiRuleSet and AWSManagedRulesCommonRuleSet. Cloudflare: enable the Managed Ruleset's SQLi and XSS rule groups. ModSecurity/OWASP CRS: include REQUEST-942-APPLICATION-ATTACK-SQLI.conf and REQUEST-941-APPLICATION-ATTACK-XSS.conf.",
+          rationale:
+            "A managed WAF rule group gives immediate perimeter mitigation for both confirmed injection classes while the code-level fixes go through PR review.",
+          evidence: [
+            "conf_sqli_0001: confirmed SQL injection, no WAF layer detected in front of the route",
+            "conf_xss_0001: confirmed reflected XSS, no WAF layer detected in front of the route",
+          ],
+          relatedFindingIds: ["conf_sqli_0001", "conf_xss_0001"],
+          createdAt: T.report,
+        },
+      ],
+    },
+    purpleTeam: {
+      entries: [
+        {
+          scenarioId: "scenario_sqli_0001",
+          scenarioName: "SQLi data-exfil via GET /api/users?q=",
+          findingId: "conf_sqli_0001",
+          findingCategory: "sql_injection",
+          detectionRuleId: "detrule_sqli_0001",
+          detected: true,
+          reason:
+            "The Sigma rule's cs-uri-query|contains \"'\" condition matched the scenario's actual injected payload in the captured request.",
+        },
+        {
+          scenarioId: "scenario_idor_0001",
+          scenarioName: "IDOR cross-user order enumeration",
+          findingId: "conf_idor_0001",
+          findingCategory: "broken_access_control",
+          detectionRuleId: "detrule_idor_0001",
+          detected: false,
+          reason:
+            "The route has no request logging at all (a silent route, per the B6 telemetry-surface scan) — the SPL rule has no log source to alert against, so it structurally could not fire.",
+        },
+      ],
+      totalScenarios: 2,
+      detectedCount: 1,
+      undetectedCount: 1,
+    },
   },
 } satisfies Report;
 

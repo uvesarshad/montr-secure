@@ -3,7 +3,8 @@
 #
 # Pipeline: install → lint → typecheck → test → build, plus:
 #   - golden-corpus  : precision/recall/FP-rate regression gate (@montr/qa), non-zero on regression,
-#                      plus the A23 model-variance matrix (per-model accuracy-cliff check).
+#                      plus the A23 model-variance matrix (per-model accuracy-cliff check) and the
+#                      B12 blue-team detection-corpus gate (detection precision/recall, non-zero on regression).
 #   - self-scan      : dogfood Semgrep SAST + Gitleaks secrets on our OWN source.
 #   - docker         : compose config validate + image build.
 #   - helm           : lint (strict) + template (permutations) + kubeconform.
@@ -140,6 +141,35 @@ jobs:
       # never a blocker — see `docs/infra/testing.md`.
       - name: Model-variance matrix — per-model accuracy cliff check (non-zero on a floor-or-better regression)
         run: pnpm --filter @montr/qa qa:variance
+
+      # ⛔ Blue-team detection-corpus gate (B12 — the blue-team mirror of this
+      # job's golden-corpus scan above). Runs the REAL B3 detection-rule
+      # generator (packages/report/src/detection-rules) and the REAL B5
+      # purple-team evaluator (packages/confirm/src/purple-loop.ts's
+      # runPurpleTeamScenario, identically gated to every other scenario
+      # caller) against 9 hand-traced, ground-truth-labelled scenarios from
+      # the real REDTEAM_SCENARIO_CATALOGUE (packages/state-store/src/redteam-catalogue.ts)
+      # — fully offline (in-process fake HTTP transport, never a real socket;
+      # no live LLM/provider credentials needed, same pattern as the
+      # golden-corpus scan above). Scores the real per-scenario fired/not-fired
+      # verdicts against corpus/blue-team-baseline.json's committed thresholds,
+      # exiting non-zero on a detection-precision/recall regression — see
+      # docs/infra/testing.md and packages/qa/src/blue-team-corpus.ts's header
+      # for exactly how each label was traced and why 9 of the 13 catalogue
+      # templates are covered (not all 13).
+      - name: Real blue-team detection-corpus run (B12)
+        run: node scripts/blue-team-corpus-scan.mjs --out blue-team-scan.json
+
+      - name: Blue-team detection-precision/recall gate (non-zero on regression)
+        run: pnpm --filter @montr/qa qa:blue-team-corpus -- --findings ${{ github.workspace }}/blue-team-scan.json
+
+      - name: Upload real blue-team-scan.json (debugging a regression)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blue-team-corpus-scan
+          path: blue-team-scan.json
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Self-scan / dogfood (§4.8, §14, §19 DoD "scans itself clean"; fixes A7).

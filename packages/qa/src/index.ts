@@ -33,8 +33,13 @@ export * from "./findings-io.js";
 export * from "./report.js";
 export * from "./owasp-benchmark.js";
 export * from "./owasp-benchmark-report.js";
+export * from "./blue-team-corpus.js";
+export * from "./blue-team-baseline.js";
+export * from "./blue-team-findings-io.js";
+export * from "./blue-team-report.js";
 export { run } from "./cli.js";
 export { run as runOwaspBenchmarkCli } from "./owasp-benchmark-cli.js";
+export { run as runBlueTeamCorpusCli } from "./blue-team-cli.js";
 
 import {
   DEFAULT_BASELINE,

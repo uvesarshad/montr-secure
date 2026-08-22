@@ -470,6 +470,12 @@ importers:
       '@montr/llm-gateway':
         specifier: workspace:*
         version: link:../llm-gateway
+      '@montr/report':
+        specifier: workspace:*
+        version: link:../report
+      '@montr/state-store':
+        specifier: workspace:*
+        version: link:../state-store
       fast-glob:
         specifier: ^3.3.3
         version: 3.3.3
