@@ -198,9 +198,7 @@ const OTHER_CONTROLLER = [
   "}",
 ].join("\n");
 
-async function javaExtractions(
-  entries: Array<[string, string]>,
-): Promise<{
+async function javaExtractions(entries: Array<[string, string]>): Promise<{
   files: { root: import("../packages/appmap/src/languages/java/parser").TSNode }[];
   routes: ReturnType<typeof extractFile>["routes"];
 }> {

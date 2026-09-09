@@ -52,16 +52,18 @@ budget hard-halt ON, telemetry OFF, egress default-deny.
 
 ## Database migrations
 
-Prisma migrations are owned by `@montr/state-store` (WS-C). A one-shot `migrate`
-service is provided behind a compose **profile** so the default `up` never blocks
-on it:
+Prisma migrations are owned by `@montr/state-store`. The one-shot `migrate`
+service (`prisma migrate deploy`, via `apps/api/src/migrate.ts`) runs as part of
+the normal `docker compose up` — `api` and `worker` both declare
+`depends_on: { migrate: { condition: service_completed_successfully } }`, so a
+fresh database is always migrated before either app service starts. No extra
+step or profile flag is needed for the one-command bring-up above.
+
+To (re-)run migrations on their own, without starting the rest of the stack:
 
 ```bash
-docker compose --profile migrate run --rm migrate
+docker compose run --rm migrate
 ```
-
-WS-C swaps the placeholder command for `prisma migrate deploy`; then the app
-services can add `depends_on: { migrate: { condition: service_completed_successfully } }`.
 
 ## `.dockerignore` note
 
@@ -81,10 +83,8 @@ bridge network. Compose does not enforce egress at L3 — use the Helm
 host firewall for single-VM installs. `.env` / `config.json` are git-ignored;
 never commit real secrets.
 
-## Wave-0 stub caveat
+## Status
 
-`apps/api`, `apps/worker`, and `apps/web` are currently Wave-0 stubs (they export
-their entrypoints but do not yet start long-lived servers). The images build and
-the stack wires up correctly; the containers will run the real servers once
-WS-L/WS-D/WS-K implement the app bootstraps. The compose/Helm contract
-(ports, health routes, config, hardening) is stable and forward-compatible.
+`apps/api`, `apps/worker`, and `apps/web` are real production bootstraps — the
+compose stack starts the full Fastify API, BullMQ worker, and Next.js console,
+not placeholder stubs.

@@ -31,8 +31,10 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const CONFIG = "scripts/selfscan.vitest.config.ts";
 const TEST = "scripts/selfscan.run.test.ts";
-// Resolve the workspace-local vitest (POSIX bin; the CI/dev hosts are darwin/linux).
-const vitest = fileURLToPath(new URL("../node_modules/.bin/vitest", import.meta.url));
+// Resolve vitest's JS entry and run it with the current Node binary. Spawning the
+// `.bin/vitest` shim directly breaks on Windows (the shim has no .exe/.cmd here),
+// so go through `process.execPath` + the package's `vitest.mjs` — portable on all OSes.
+const vitest = fileURLToPath(new URL("../node_modules/vitest/vitest.mjs", import.meta.url));
 
 const args = process.argv.slice(2);
 let outPath = "selfscan.json";
@@ -46,7 +48,7 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-const result = spawnSync(vitest, ["run", "--config", CONFIG, TEST], {
+const result = spawnSync(process.execPath, [vitest, "run", "--config", CONFIG, TEST], {
   cwd: root,
   stdio: "inherit",
   env: {

@@ -78,12 +78,13 @@ services:
   # migrate — one-shot Prisma migration runner (runs to completion, then exits).
   # Runs `prisma migrate deploy` against the @montr/state-store schema (see
   # apps/api/src/migrate.ts + Dockerfile.api, which COPYs the schema +
-  # migrations into the image and sets MONTR_PRISMA_SCHEMA). Enabled via the
-  # `migrate` profile so it does not run on every `up` unless requested:
-  #   docker compose --profile migrate run --rm migrate
+  # migrations into the image and sets MONTR_PRISMA_SCHEMA). Participates in
+  # the normal `up` (no profile gate) so a fresh database always gets migrated
+  # before `api`/`worker` start — see their `depends_on: migrate` below.
+  # restart is explicitly "no" (not the app-hardening anchor's
+  # `unless-stopped`): this is a run-once job that must exit, not loop.
   # -------------------------------------------------------------------------
   migrate:
-    profiles: ["migrate"]
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
@@ -120,6 +121,8 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -157,6 +160,8 @@ services:
       # Writable scratch for repo checkouts / sandboxed analysis (root FS is RO).
       - workspacedata:/workspace
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

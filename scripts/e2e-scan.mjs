@@ -21,10 +21,12 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const TEST = "apps/worker/src/e2e-scan.test.ts";
-// Resolve the workspace-local vitest (POSIX bin; the CI/dev hosts are darwin/linux).
-const vitest = fileURLToPath(new URL("../node_modules/.bin/vitest", import.meta.url));
+// Resolve vitest's JS entry and run it with the current Node binary. Spawning the
+// `.bin/vitest` shim directly breaks on Windows (the shim has no .exe/.cmd here),
+// so go through `process.execPath` + the package's `vitest.mjs` — portable on all OSes.
+const vitest = fileURLToPath(new URL("../node_modules/vitest/vitest.mjs", import.meta.url));
 
-const result = spawnSync(vitest, ["run", TEST], {
+const result = spawnSync(process.execPath, [vitest, "run", TEST], {
   cwd: root,
   stdio: "inherit",
   env: { ...process.env, E2E_PRINT: "1" },
