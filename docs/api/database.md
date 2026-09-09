@@ -62,6 +62,25 @@ Migration Strategy
 Schema Migrations: Schema modifications are authored in packages/state-store/prisma/schema.prisma and validated using pnpm prisma:validate and pnpm prisma:format.
 Generation: Client code generation is triggered via pnpm prisma:generate during root postinstall hooks.
 
+Migration Directory Rename (A8, 2026-09-09) — one-time operator action for existing databases
+What happened: Prisma applies migrations in lexicographic directory order. The original single-digit directory names (`0_init` ... `9_blue_team_entities`) sorted after `10_detection_rule_log_signature` and `11_llm_provider_expansion`, so a fresh database died applying migration 10 before a table three migrations later actually created it — no fresh install could migrate at all (docs/plan/26-09-09-audit-july-line-divergence.md A8). The fix zero-padded the ten single-digit directories to `00_init` ... `09_blue_team_entities`; `10_` and `11_` were already two digits and are unchanged.
+Who is affected: any database that already ran `prisma migrate deploy` against the OLD directory names before this fix — i.e. any pre-existing dev machine, staging environment, or production database. Prisma records applied migrations by directory name in the `_prisma_migrations` table, so those databases now see the ten renamed migrations as brand new and will try to re-run them on the next deploy (fails outright, or worse, partially re-applies DDL against tables that already exist). **Do this before deploying past this commit against any database with data worth keeping.**
+What a fresh install needs: nothing. `_prisma_migrations` starts empty, so `prisma migrate deploy` (the compose `migrate` service) applies all twelve migrations under their current (padded) names on its own, in the correct order.
+How to fix an affected database: run `scripts/resolve-migration-rename.mjs`. It connects to the target database, inspects `_prisma_migrations` directly, and classifies it into fresh (nothing to do), old names present (needs resolving), or already correct (nothing to do) before doing anything — it never assumes which case applies. It refuses outright, printing exactly what it found, if `_prisma_migrations` contains anything unexpected (an unfinished/failed migration row, or a migration name it doesn't recognize). Defaults to a dry run; pass `--apply` to actually act. Idempotent — safe to re-run, including after a partial `--apply` run.
+
+```bash
+# Dry run against deploy/docker/.env's DATABASE_URL (default) — prints what it would do.
+node scripts/resolve-migration-rename.mjs
+
+# Point at a specific database explicitly instead:
+node scripts/resolve-migration-rename.mjs --database-url=postgresql://user:pass@host:5432/db
+
+# Actually resolve the renamed migrations (once satisfied with the dry run):
+node scripts/resolve-migration-rename.mjs --apply
+```
+
+Under the hood, for each of the ten renamed migrations still recorded only under its old name, `--apply` runs `pnpm --filter @montr/state-store exec prisma migrate resolve --applied <new_name>` — Prisma's own supported way to mark a migration applied without re-running its SQL — then re-queries `_prisma_migrations` to verify the fix actually took, rather than trusting the CLI's exit code alone. Exit codes: `0` nothing to do or apply succeeded, `1` refused (unexpected state) or apply failed partway, `2` dry run found renamed migrations still needing `--apply`. See the script's own header comment for full detail; verified locally against a real `pgvector/pgvector:pg16` container across all three states (fresh, old-names, already-correct) plus the anomaly-refusal paths.
+
 Update Triggers
 Update this file when Prisma models, fields, enums, or relationships are modified in packages/state-store/prisma/schema.prisma, or when repository access patterns change in packages/state-store.
 

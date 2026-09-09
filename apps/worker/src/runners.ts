@@ -455,6 +455,14 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         ctx.priorOutputs.layer3?.confirmed ??
         (await ctx.store.confirmed.listByScan(ctx.clientId, ctx.scanId));
       const source = (opts.sourceReader ?? ((c) => defaultSourceReader(opts, c)))(ctx);
+      // A5 — bounded agentic fix loop: OFF by default (`ctx.config.fixGeneration
+      // .agentLoop.enabled` is false unless an operator explicitly configures
+      // it — see FixAgentLoopConfigSchema in @montr/config). `agentLoop` is
+      // populated on the layer4 context ONLY when configured; left absent
+      // otherwise so the unconfigured path is the exact single-shot call
+      // `generateOne` always ran (see generate.ts's `ctx.agentLoop?.enabled`
+      // branch — byte-for-byte unchanged default request shape).
+      const agentLoopConfig = ctx.config.fixGeneration.agentLoop;
       return generateFixes({
         clientId: ctx.clientId,
         scanId: ctx.scanId,
@@ -464,6 +472,15 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         // ⛔ Categories forced to human review regardless of the toggle (§11).
         humanRequiredCategoriesAlways: ctx.config.autoFix.humanRequiredCategoriesAlways,
         ...(opts.now ? { now: opts.now } : {}),
+        ...(agentLoopConfig.enabled
+          ? {
+              agentLoop: {
+                enabled: true,
+                maxIterations: agentLoopConfig.maxIterations,
+                maxToolCalls: agentLoopConfig.maxToolCalls,
+              },
+            }
+          : {}),
         confirmed,
       });
     },

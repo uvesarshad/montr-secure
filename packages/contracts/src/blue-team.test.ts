@@ -49,7 +49,7 @@ describe("DetectionRuleSchema", () => {
   });
 
   it("defaults mitreTechniques to an empty array when omitted", () => {
-    const { mitreTechniques, ...rest } = base;
+    const { mitreTechniques: _mitreTechniques, ...rest } = base;
     const parsed = DetectionRuleSchema.parse(rest);
     expect(parsed.mitreTechniques).toEqual([]);
   });

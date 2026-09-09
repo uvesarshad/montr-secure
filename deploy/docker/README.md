@@ -65,6 +65,20 @@ To (re-)run migrations on their own, without starting the rest of the stack:
 docker compose run --rm migrate
 ```
 
+**Upgrading an existing database?** Migration directories were zero-padded
+(`0_init` → `00_init`, etc.) to fix an ordering bug that broke fresh installs
+(A8). A fresh database needs nothing — the above just works. Any database
+that already migrated under the OLD names needs a one-time fixup first, or
+`migrate` will try to re-run those migrations and fail:
+
+```bash
+node scripts/resolve-migration-rename.mjs          # dry run
+node scripts/resolve-migration-rename.mjs --apply  # actually fix it
+```
+
+See `docs/api/database.md`'s "Migration Directory Rename (A8, 2026-09-09)"
+section for exactly who is affected and what the script does.
+
 ## `.dockerignore` note
 
 The build **context is the repo root** (`context: ../..`) so the monorepo can

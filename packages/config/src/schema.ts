@@ -187,6 +187,36 @@ export const DiscoveryConfigSchema = z.object({
 export type DiscoveryConfig = z.infer<typeof DiscoveryConfigSchema>;
 
 /**
+ * A5 — the bounded agentic fix loop (`proposeFixWithAgent` in
+ * packages/fix/src/generate.ts's `FixGenerationContext.agentLoop`). ⛔ OFF by
+ * default, mirroring the constructor-opt-in convention `FixGenerationContext`
+ * itself documents for `containerProof`/`ConfirmDeps.investigation`/`escalation`:
+ * an unconfigured deployment gets the EXACT single-shot fix-generation call
+ * unchanged (no retries, no tool use, no extra token spend or latency).
+ *
+ * `maxIterations` bounds real proposal attempts (each is one additional model
+ * round-trip — cost and latency scale directly with it); `maxToolCalls`
+ * bounds `read_file` tool round-trips separately and defaults to 0 (no tool
+ * exposed at all). Both are capped well below any plausible legitimate value
+ * so a config typo (an extra zero) cannot turn into runaway spend.
+ */
+export const FixAgentLoopConfigSchema = z.object({
+  /** ⛔ OFF by default (A5). */
+  enabled: z.boolean().default(false),
+  /** Real proposal attempts, NOT tool round-trips. 1–10; each is a model round-trip. */
+  maxIterations: z.number().int().nonnegative().max(10).default(3),
+  /** `read_file` tool round-trips. 0 (default) exposes no tool at all. 0–20. */
+  maxToolCalls: z.number().int().nonnegative().max(20).default(0),
+});
+export type FixAgentLoopConfig = z.infer<typeof FixAgentLoopConfigSchema>;
+
+/** Layer 4 (fix generation) configuration (§7 L4). */
+export const FixGenerationConfigSchema = z.object({
+  agentLoop: FixAgentLoopConfigSchema.default({}),
+});
+export type FixGenerationConfig = z.infer<typeof FixGenerationConfigSchema>;
+
+/**
  * Per-tenant BullMQ queue isolation (A27). `perTenantIsolation` is OFF by
  * default: today's six shared per-layer queues (`montr.layer0`…`montr.layer5`,
  * packages/contracts/src/queue.ts's QUEUE_NAMES) are unchanged — correct for
@@ -243,6 +273,7 @@ export const MontrConfigSchema = z.object({
   security: SecurityConfigSchema.default({}),
   discovery: DiscoveryConfigSchema.default({}),
   queue: QueueConfigSchema.default({}),
+  fixGeneration: FixGenerationConfigSchema.default({}),
 });
 export type MontrConfig = z.infer<typeof MontrConfigSchema>;
 

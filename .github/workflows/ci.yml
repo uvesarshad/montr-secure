@@ -67,6 +67,54 @@ jobs:
           DATABASE_URL: postgresql://montr:montr@localhost:5432/montr?schema=public
 
   # ---------------------------------------------------------------------------
+  # Windows compatibility leg (suggested enhancement — "Add a Windows CI leg,
+  # or drop the pretence"). This session fixed five scripts (e2e-scan,
+  # selfscan, corpus-scan, benchmark-owasp, blue-team-corpus-scan) that used
+  # to spawn the `node_modules/.bin/vitest` shim directly — which has no
+  # .exe/.cmd resolution on Windows — and added `.gitattributes` to force LF
+  # line endings regardless of a contributor's `core.autocrlf`. Every other
+  # job in this file runs on ubuntu-latest, so neither fix was covered by
+  # anything; without this leg both would silently rot the next time someone
+  # touches those scripts.
+  #
+  # Deliberately narrow. Install, typecheck, and the vitest unit suite are the
+  # steps that are genuinely OS-sensitive (path handling, shim resolution,
+  # line endings) and are cheap to run. `scripts/e2e-scan.mjs` is added on top
+  # because it is one of the five fixed scripts AND runs fully offline (the
+  # in-process FAKE LLM gateway + in-memory store the real e2e test uses — no
+  # Postgres, no Redis, no network), so it is both the highest-value script to
+  # protect here and safe to run on a plain Windows runner. Docker, compose,
+  # the integration-smoke job, Semgrep/CodeQL, and the corpus/benchmark scans
+  # are deliberately NOT here — they need Linux containers or heavy external
+  # tooling (gitleaks/semgrep binaries, docker compose) that would be slow or
+  # flaky on Windows, and none of them exercise a Windows-specific code path.
+  #
+  # continue-on-error: true — this is the FIRST run of any of this code on
+  # Windows ever, so treat it as a discovery run rather than a gate on day
+  # one. Revisit once it has gone genuinely green (not just "the step ran")
+  # for a real stretch of runs; a permanently-ignored job would be worthless,
+  # but a job that is red on day one and blocks every PR is worse.
+  # ---------------------------------------------------------------------------
+  windows:
+    name: windows (install → typecheck → test → e2e)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Unit tests
+        run: pnpm run test
+      - name: E2E scan (offline, in-process — exercises the A2 Windows fix directly)
+        run: pnpm run e2e
+
+  # ---------------------------------------------------------------------------
   # Golden-corpus regression gate (§4.7). Blocks the release on any regression
   # of precision / recall / FP-rate vs the committed corpus/baseline.json.
   #
@@ -330,16 +378,23 @@ jobs:
       - name: helm template (default + permutations render clean)
         run: |
           set -euo pipefail
-          helm template montr "$CHART" > /dev/null
+          # networkpolicy.yaml deliberately `required`s an LLM egress CIDR and
+          # rejects 0.0.0.0/0 — a real default-deny guarantee (§4.6), not a
+          # chart bug. Every render must therefore supply one. We use TEST-NET-3
+          # (RFC 5737 documentation range), which is obviously non-routable, so a
+          # copy-paste from CI into a real values file cannot silently open egress.
+          LLM_CIDR="203.0.113.0/24"
+          helm template montr "$CHART" --set networkPolicy.llmEndpoint.cidr="$LLM_CIDR" > /dev/null
           # Vault/CSI secret provider path.
-          helm template montr "$CHART" --set secrets.csi.enabled=true > /dev/null
+          helm template montr "$CHART" --set networkPolicy.llmEndpoint.cidr="$LLM_CIDR" \
+            --set secrets.csi.enabled=true > /dev/null
           # External managed datastores (bundled Postgres/Redis disabled).
-          helm template montr "$CHART" \
+          helm template montr "$CHART" --set networkPolicy.llmEndpoint.cidr="$LLM_CIDR" \
             --set postgres.enabled=false --set redis.enabled=false \
             --set secrets.databaseUrl='postgresql://u:p@db:5432/montr?schema=public' \
             --set redis.externalUrl='redis://redis:6379' > /dev/null
           # Autoscaling + Ingress + restrictive NetworkPolicy ingress.
-          helm template montr "$CHART" \
+          helm template montr "$CHART" --set networkPolicy.llmEndpoint.cidr="$LLM_CIDR" \
             --set api.autoscaling.enabled=true --set worker.autoscaling.enabled=true \
             --set ingress.enabled=true --set networkPolicy.ingress.enabled=true > /dev/null
       - name: Validate rendered manifests (kubeconform, best-effort)
@@ -347,7 +402,7 @@ jobs:
         run: |
           curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz" \
             | tar -xz kubeconform || { echo "kubeconform unavailable — skipping (best-effort)"; exit 0; }
-          helm template montr "$CHART" \
+          helm template montr "$CHART" --set networkPolicy.llmEndpoint.cidr=203.0.113.0/24 \
             | ./kubeconform -strict -summary -kubernetes-version 1.28.0 -ignore-missing-schemas
 
   # ---------------------------------------------------------------------------

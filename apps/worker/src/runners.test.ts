@@ -4,6 +4,7 @@ import {
   SCAN_ID,
   CANDIDATE_DEP_ID,
   CANDIDATE_SQLI_ID,
+  CONFIRMED_XSS_ID,
   REPO_URL,
   createFakeLlmGateway,
   mockAppMap,
@@ -14,8 +15,17 @@ import {
   mockUnconfirmedFindings,
   mockLayer0Output,
 } from "@montr/fixtures";
-import type { LLMGateway, LLMRequest } from "@montr/contracts";
+import type {
+  LLMGateway,
+  LLMRequest,
+  LLMResponse,
+  LLMStreamEvent,
+  LLMToolCall,
+  ModelDescriptor,
+  StopReason,
+} from "@montr/contracts";
 import type { SemgrepJson } from "@montr/discovery";
+import { createMapSourceReader } from "@montr/fix";
 import { createLayerRunners } from "./runners.js";
 import { makeInMemoryStore, makeLayerContext, clone, hardenedConfig } from "./testkit.js";
 
@@ -245,6 +255,186 @@ describe("layer runner adapters — Layer 4 (fix generation)", () => {
     expect(out.fixes.every((f) => f.riskClass === "human-required")).toBe(true);
     expect(writes["fixes.create"]).toBeUndefined();
   });
+
+  it("A5 — with no fixGeneration config set, the gateway request is unchanged and the agent loop never engages", async () => {
+    const { store } = makeInMemoryStore();
+    const { gateway: spied, requests } = spyGateway(gateway);
+    const runners = createLayerRunners({ gateway: spied }); // no repoRoot ⇒ empty source reader
+    const config = hardenedConfig(); // nothing configured ⇒ off-by-default
+    expect(config.fixGeneration.agentLoop.enabled).toBe(false);
+
+    const ctx = makeLayerContext<"layer4">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer4") as never,
+      store,
+      config,
+      priorOutputs: { layer3: { confirmed: mockConfirmedFindings, unconfirmed: [] } },
+    });
+
+    await runners.layer4(ctx);
+
+    // Exactly one gateway call per confirmed finding — the single-shot path,
+    // never a retry loop — and none of the requests carry a `tools` array
+    // (the agent loop's read_file tool is only ever attached when enabled).
+    expect(requests).toHaveLength(mockConfirmedFindings.length);
+    for (const request of requests) {
+      expect(request.tools).toBeUndefined();
+      expect(request.responseFormat).toBe("json");
+    }
+  });
+
+  it("A5 — with fixGeneration.agentLoop configured, the bounded agent loop is reached with the operator's bounds", async () => {
+    const XSS_ORIGINAL_LINES = [
+      "import React from 'react';",
+      "",
+      "export default function SearchPage({ q }) {",
+      "  return (",
+      "    <div>",
+      "      <h1>Search</h1>",
+      "      <div>",
+      "        <div dangerouslySetInnerHTML={{ __html: q }} />",
+      "      </div>",
+      "    </div>",
+      "  );",
+      "}",
+      "",
+    ];
+    const XSS_ORIGINAL = XSS_ORIGINAL_LINES.join("\n");
+    const VULN_LINE_NO = 8;
+    const FIXED_LINE = XSS_ORIGINAL_LINES[VULN_LINE_NO - 1]!.replace(
+      /<(\w+)\s+dangerouslySetInnerHTML=\{\{\s*__html:\s*([\s\S]*?)\s*\}\}\s*\/>/,
+      (_m, tag: string, expr: string) => `<${tag}>{${expr.trim()}}</${tag}>`,
+    );
+    const STILL_VULNERABLE_LINE = `${XSS_ORIGINAL_LINES[VULN_LINE_NO - 1]!} // TODO`;
+
+    const goodEditsJson = JSON.stringify({
+      edits: [{ startLine: VULN_LINE_NO, endLine: VULN_LINE_NO, replacement: FIXED_LINE }],
+      rationale: "removed dangerouslySetInnerHTML",
+    });
+    const stillVulnerableEditsJson = JSON.stringify({
+      edits: [
+        { startLine: VULN_LINE_NO, endLine: VULN_LINE_NO, replacement: STILL_VULNERABLE_LINE },
+      ],
+      rationale: "attempted fix",
+    });
+
+    const FAKE_MODEL: ModelDescriptor = {
+      provider: "anthropic",
+      modelId: "claude-sonnet-5",
+      tier: "default",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      supportsTools: true,
+      supportsStreaming: true,
+      belowFloor: false,
+    };
+    let respSeq = 0;
+    function textResponse(content: string, stopReason: StopReason = "end_turn"): LLMResponse {
+      respSeq++;
+      return {
+        id: `resp_${respSeq}`,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        content,
+        stopReason,
+        usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+        latencyMs: 1,
+      };
+    }
+    function toolUseResponse(toolCalls: LLMToolCall[]): LLMResponse {
+      respSeq++;
+      return {
+        id: `resp_tool_${respSeq}`,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        content: "",
+        stopReason: "tool_use",
+        usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+        latencyMs: 1,
+        toolCalls,
+      };
+    }
+
+    /** A gateway that returns queued responses in order, recording every request. */
+    class QueueGateway implements LLMGateway {
+      readonly requests: LLMRequest[] = [];
+      private readonly queue: LLMResponse[];
+      constructor(responses: LLMResponse[]) {
+        this.queue = [...responses];
+      }
+      complete(request: LLMRequest): Promise<LLMResponse> {
+        this.requests.push({ ...request, messages: [...request.messages] });
+        const next = this.queue.shift();
+        if (!next) {
+          throw new Error(
+            `QueueGateway: complete() called more times (${this.requests.length}) than queued`,
+          );
+        }
+        return Promise.resolve(next);
+      }
+      async *stream(request: LLMRequest): AsyncGenerator<LLMStreamEvent> {
+        const response = await this.complete(request);
+        yield { type: "text_delta", text: response.content };
+        yield { type: "message_done", usage: response.usage, stopReason: response.stopReason };
+      }
+      listModels(): ModelDescriptor[] {
+        return [FAKE_MODEL];
+      }
+      resolveModel(): ModelDescriptor {
+        return FAKE_MODEL;
+      }
+    }
+
+    const xssFinding = mockConfirmedFindings.find((f) => f.id === CONFIRMED_XSS_ID)!;
+    const filePath = xssFinding.location.file;
+
+    const queueGateway = new QueueGateway([
+      // Tool round: the model inspects a sibling file before answering — proves
+      // maxToolCalls > 0 actually reached the model as an offered tool.
+      toolUseResponse([{ id: "call_1", name: "read_file", input: { path: "shared/helper.ts" } }]),
+      // Proposal attempt #1: structurally valid but leaves the vuln in place —
+      // must be retried (proves maxIterations > 1 is actually exercised).
+      textResponse(stillVulnerableEditsJson),
+      // Proposal attempt #2: a real fix — accepted.
+      textResponse(goodEditsJson),
+    ]);
+
+    const { store } = makeInMemoryStore();
+    const config = hardenedConfig({
+      fixGeneration: { agentLoop: { enabled: true, maxIterations: 3, maxToolCalls: 2 } },
+    });
+    const runners = createLayerRunners({
+      gateway: queueGateway,
+      sourceReader: () =>
+        createMapSourceReader({
+          [filePath]: XSS_ORIGINAL,
+          "shared/helper.ts": "export const HELPER = 1;\n",
+        }),
+    });
+    const ctx = makeLayerContext<"layer4">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer4") as never,
+      store,
+      config,
+      priorOutputs: { layer3: { confirmed: [xssFinding], unconfirmed: [] } },
+    });
+
+    const out = await runners.layer4(ctx);
+
+    // 1 tool round + 2 proposal attempts (bounded within maxIterations: 3,
+    // maxToolCalls: 2) — proves the operator's configured bounds actually
+    // reached the loop, not just that it engaged at all.
+    expect(queueGateway.requests).toHaveLength(3);
+    expect(queueGateway.requests[0]!.tools?.some((t) => t.name === "read_file")).toBe(true);
+
+    const fix = out.fixes[0]!;
+    expect(fix.rationale).toContain("Model-proposed");
+    expect(fix.riskClass).toBe("auto-eligible");
+  }, 30_000);
 });
 
 describe("layer runner adapters — Layer 5 (report + gate)", () => {

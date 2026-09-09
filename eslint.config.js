@@ -46,6 +46,8 @@ export default tseslint.config(
       "**/.turbo/**",
       "**/coverage/**",
       "**/*.tsbuildinfo",
+      // Next.js build output (apps/web/.next) — generated, not source.
+      "**/.next/**",
       // Fixture sample repos contain INTENTIONALLY vulnerable code — never lint them.
       "packages/fixtures/sample-repos/**",
       // Golden corpus (corpus/README.md) — vendored real-world + intentionally

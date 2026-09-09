@@ -22,6 +22,14 @@ packages/state-store/prisma/*.db
 .env
 .env.*
 !.env.example
+
+# Narrow carve-out: the deliberately-vulnerable IaC test fixture ships a FAKE
+# .env on purpose. The detector's missing-.dockerignore rule only fires when a
+# secret-bearing file is actually present in the build context, so without this
+# the fixture is incomplete on a fresh clone — the test then passes only on the
+# machine that created the file by hand, and fails in CI. Fake values ONLY;
+# never put a real credential under this path.
+!packages/fixtures/sample-repos/**/.env
 *.pem
 *.key
 secrets/

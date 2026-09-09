@@ -27,6 +27,7 @@
     "selfscan": "node scripts/selfscan.mjs",
     "smoke": "node scripts/integration-smoke.mjs",
     "check:unwired-seams": "node scripts/check-unwired-seams.mjs",
+    "migrate:resolve-rename": "node scripts/resolve-migration-rename.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "clean": "turbo run clean && rm -rf **/dist **/.tsbuildinfo node_modules/.cache",

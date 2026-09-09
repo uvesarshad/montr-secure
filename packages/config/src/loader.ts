@@ -107,6 +107,20 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
   // packages/orchestrator/src/bullmq-scheduler.ts.
   set("MONTR_QUEUE_PER_TENANT_ISOLATION", ["queue", "perTenantIsolation"], parseBool);
   set("MONTR_QUEUE_TENANT_IDS", ["queue", "tenantIds"], parseList);
+  // A5 — bounded agentic fix loop. OFF by default — see FixAgentLoopConfigSchema's
+  // doc comment (packages/config/src/schema.ts) and packages/fix/src/generate.ts's
+  // `FixGenerationContext.agentLoop`.
+  set("MONTR_FIX_AGENT_LOOP_ENABLED", ["fixGeneration", "agentLoop", "enabled"], parseBool);
+  set(
+    "MONTR_FIX_AGENT_LOOP_MAX_ITERATIONS",
+    ["fixGeneration", "agentLoop", "maxIterations"],
+    parseNum,
+  );
+  set(
+    "MONTR_FIX_AGENT_LOOP_MAX_TOOL_CALLS",
+    ["fixGeneration", "agentLoop", "maxToolCalls"],
+    parseNum,
+  );
   // HashiCorp Vault connection (only consulted when MONTR_KEY_SOURCE=vault).
   set("VAULT_ADDR", ["security", "vault", "addr"]);
   set("VAULT_TOKEN", ["security", "vault", "token"]);
