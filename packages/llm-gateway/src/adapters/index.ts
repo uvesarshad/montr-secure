@@ -4,8 +4,28 @@ import { AnthropicAdapter } from "./anthropic.js";
 import { BedrockAdapter } from "./bedrock.js";
 import { VertexAdapter } from "./vertex.js";
 import { AzureAdapter } from "./azure.js";
+import { OpenAiCompatibleAdapter } from "./openai-compatible.js";
 import type { ProviderAdapter } from "./types.js";
 import type { AdapterEgress } from "./egress.js";
+
+/**
+ * Per-provider defaults for the OpenAI Chat-Completions-compatible adapter
+ * (A3). The host must match `PROVIDER_DEFAULT_HOSTS` in @montr/security so the
+ * egress guard permits it when no explicit `llm.endpoint` is set. Operators
+ * override the base URL via `llm.endpoint` (e.g. a regional/`.cn` or
+ * private-proxy host).
+ */
+const OPENAI_COMPATIBLE: Partial<Record<Provider, { baseUrl: string; host: string }>> = {
+  openai: { baseUrl: "https://api.openai.com/v1", host: "api.openai.com" },
+  google: {
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    host: "generativelanguage.googleapis.com",
+  },
+  xai: { baseUrl: "https://api.x.ai/v1", host: "api.x.ai" },
+  moonshot: { baseUrl: "https://api.moonshot.ai/v1", host: "api.moonshot.ai" },
+  zhipu: { baseUrl: "https://open.bigmodel.cn/api/paas/v4/", host: "open.bigmodel.cn" },
+  deepseek: { baseUrl: "https://api.deepseek.com", host: "api.deepseek.com" },
+};
 
 /**
  * Adapter factory. Selecting the provider from @montr/config is the ONLY place
@@ -30,6 +50,22 @@ export function createAdapter(
       return new VertexAdapter({ config, egress });
     case "azure":
       return new AzureAdapter({ config, egress });
+    case "openai":
+    case "google":
+    case "xai":
+    case "moonshot":
+    case "zhipu":
+    case "deepseek": {
+      const d = OPENAI_COMPATIBLE[provider];
+      if (!d) throw new Error(`No OpenAI-compatible defaults for provider: ${provider}`);
+      return new OpenAiCompatibleAdapter({
+        provider,
+        defaultBaseUrl: d.baseUrl,
+        defaultHost: d.host,
+        config,
+        egress,
+      });
+    }
     default: {
       const exhaustive: never = provider;
       throw new Error(`Unknown LLM provider: ${String(exhaustive)}`);
@@ -65,7 +101,13 @@ export {
   type OpenAiClientLike,
   type OpenAiChatCompletionLike,
   type OpenAiChatChunkLike,
+  buildBody as buildOpenAiCompatibleBody,
+  openAiToolCalls,
 } from "./azure.js";
+export {
+  OpenAiCompatibleAdapter,
+  type OpenAiCompatibleAdapterOptions,
+} from "./openai-compatible.js";
 export {
   type ProviderAdapter,
   type AdapterCompletion,

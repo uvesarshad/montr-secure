@@ -1,7 +1,8 @@
 /**
  * @montr/llm-gateway — the ONLY package permitted to import a provider SDK
  * (golden rule #2, §8.2). Provides the unified LLMGateway over Anthropic, AWS
- * Bedrock, GCP Vertex, and Azure OpenAI adapters, with retries+backoff, per-call
+ * Bedrock, GCP Vertex, Azure OpenAI, and (A3) direct OpenAI, Google Gemini,
+ * xAI, Moonshot, Zhipu, and DeepSeek adapters, with retries+backoff, per-call
  * timeouts, structured errors, ⛔ metadata-only logging (golden rule #1), the ⛔
  * key-tier guard (§11), the model-floor warning (DECIDE-3), and per-call token
  * accounting emitted to @montr/cost-meter (golden rule #8). Provider + endpoint
@@ -54,6 +55,7 @@ export {
   BedrockAdapter,
   VertexAdapter,
   AzureAdapter,
+  OpenAiCompatibleAdapter,
   makeUsage,
   type ProviderAdapter,
   type AdapterCompletion,
@@ -71,6 +73,7 @@ export {
   type OpenAiClientLike,
   type OpenAiChatCompletionLike,
   type OpenAiChatChunkLike,
+  type OpenAiCompatibleAdapterOptions,
 } from "./adapters/index.js";
 
 export {

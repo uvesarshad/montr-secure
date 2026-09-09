@@ -13,6 +13,7 @@ Anthropic: Native adapter in packages/llm-gateway/src/adapters/anthropic.ts. Use
 AWS Bedrock: Bedrock adapter in packages/llm-gateway/src/adapters/bedrock.ts supporting Claude model deployments in customer AWS accounts.
 GCP Vertex AI: Google Cloud Vertex AI adapter in packages/llm-gateway/src/adapters/vertex.ts.
 Azure OpenAI: Azure OpenAI adapter in packages/llm-gateway/src/adapters/azure.ts.
+Direct OpenAI, Google Gemini, xAI Grok, Moonshot Kimi, Zhipu GLM, DeepSeek (A3): one generic OpenAiCompatibleAdapter in packages/llm-gateway/src/adapters/openai-compatible.ts covers all six — the openai SDK pointed at each provider's own base URL with a Bearer key, sharing azure.ts's request-body builder and tool-call parser rather than a second copy. Moonshot, Zhipu, and DeepSeek default to the data_retaining key tier (packages/llm-gateway/src/keytier.ts) absent an operator-declared enterprise tier.
 Rate Limits and Fallbacks: packages/llm-gateway/src/retry.ts implements exponential backoff with jitter on HTTP 429 rate limit responses. Key-tier safety guards flag data-retaining consumer keys.
 
 Version Control Systems in packages/report

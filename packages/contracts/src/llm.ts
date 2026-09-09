@@ -9,8 +9,29 @@ import { LayerIdSchema } from "./enums.js";
  * key; per-call logging is metadata-only (golden rule #1).
  */
 
-/** Supported providers (BYO-key). Montr never holds its own model relationship. */
-export const ProviderSchema = z.enum(["anthropic", "bedrock", "vertex", "azure"]);
+/**
+ * Supported providers (BYO-key). Montr never holds its own model relationship.
+ *
+ * A3: `anthropic`/`bedrock`/`vertex`/`azure` each have a dedicated adapter
+ * (packages/llm-gateway/src/adapters/{anthropic,bedrock,vertex,azure}.ts).
+ * The remaining six — `openai` (direct GPT), `google` (Gemini via its
+ * OpenAI-compatibility endpoint), `xai` (Grok), `moonshot` (Kimi), `zhipu`
+ * (GLM), `deepseek` — are all reached through ONE generic
+ * `OpenAiCompatibleAdapter` (packages/llm-gateway/src/adapters/openai-compatible.ts):
+ * the `openai` SDK with a per-provider `baseURL` + Bearer key.
+ */
+export const ProviderSchema = z.enum([
+  "anthropic",
+  "bedrock",
+  "vertex",
+  "azure",
+  "openai",
+  "google",
+  "xai",
+  "moonshot",
+  "zhipu",
+  "deepseek",
+]);
 export type Provider = z.infer<typeof ProviderSchema>;
 
 /** Model tiers mapped to the recommended matrix (DECIDE-3). */

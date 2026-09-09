@@ -191,9 +191,18 @@ export function createEmbeddingAdapter(
   switch (provider) {
     case "azure":
       return new AzureEmbeddingAdapter({ config, egress });
+    // Everything below has no embeddings adapter today: the three pre-A3
+    // providers, and A3's six OpenAI-compatible ones. All get the same honest
+    // "not implemented" stub, never a silent fallback to a wrong provider.
     case "anthropic":
     case "bedrock":
     case "vertex":
+    case "openai":
+    case "google":
+    case "xai":
+    case "moonshot":
+    case "zhipu":
+    case "deepseek":
       return new UnsupportedEmbeddingAdapter(provider);
     default: {
       const exhaustive: never = provider;

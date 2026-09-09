@@ -19,14 +19,20 @@ import {
  */
 
 describe("ProviderSchema / ModelTierSchema", () => {
-  it("Provider accepts the four BYO-key providers", () => {
+  it("Provider accepts the original four BYO-key providers", () => {
     for (const p of ["anthropic", "bedrock", "vertex", "azure"]) {
       expect(ProviderSchema.parse(p)).toBe(p);
     }
   });
 
+  it("Provider accepts the six A3 OpenAI-compatible providers", () => {
+    for (const p of ["openai", "google", "xai", "moonshot", "zhipu", "deepseek"]) {
+      expect(ProviderSchema.parse(p)).toBe(p);
+    }
+  });
+
   it("Provider rejects an unsupported provider", () => {
-    expect(() => ProviderSchema.parse("openai")).toThrow();
+    expect(() => ProviderSchema.parse("mistral")).toThrow();
   });
 
   it("ModelTier accepts triage/default/confirmation and rejects others", () => {

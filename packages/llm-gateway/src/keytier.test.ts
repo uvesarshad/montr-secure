@@ -42,6 +42,22 @@ describe("detectKeyTier", () => {
   it("an explicit declaredTier of 'enterprise' overrides an otherwise-unknown Anthropic key", () => {
     expect(detectKeyTier({ provider: "anthropic", declaredTier: "enterprise" })).toBe("enterprise");
   });
+
+  it("classifies direct openai/google/xai keys as 'unknown' (cannot be confirmed) — fail-safe (A3)", () => {
+    expect(detectKeyTier({ provider: "openai" })).toBe("unknown");
+    expect(detectKeyTier({ provider: "google" })).toBe("unknown");
+    expect(detectKeyTier({ provider: "xai" })).toBe("unknown");
+  });
+
+  it("classifies moonshot/zhipu/deepseek as 'data_retaining' by default (A3) — consumer/CN tier", () => {
+    expect(detectKeyTier({ provider: "moonshot" })).toBe("data_retaining");
+    expect(detectKeyTier({ provider: "zhipu" })).toBe("data_retaining");
+    expect(detectKeyTier({ provider: "deepseek" })).toBe("data_retaining");
+  });
+
+  it("an explicit declaredTier of 'enterprise' overrides an otherwise-data_retaining deepseek key", () => {
+    expect(detectKeyTier({ provider: "deepseek", declaredTier: "enterprise" })).toBe("enterprise");
+  });
 });
 
 describe("applyKeyTierGuard", () => {

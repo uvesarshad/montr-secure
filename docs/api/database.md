@@ -19,7 +19,7 @@ Key Resolution: Encryption keys are supplied via environment variables, Kubernet
 Core Relational Models in packages/state-store/prisma/schema.prisma
 Client: Represents a tenant organization owning users, scans, application maps, audit logs, DAST targets, and credentials.
 User: Represents an authenticated operator, approver, or viewer carrying an Argon2 password hash and role designation.
-LlmCredential: BYO-key configuration storing encrypted provider credentials, provider type, and verified key tier.
+LlmCredential: BYO-key configuration storing encrypted provider credentials, provider type, and verified key tier. `provider` is the `Provider` enum — additively extended by migration `11_llm_provider_expansion` (A3) from the original four (anthropic, bedrock, vertex, azure) to ten, adding openai, google, xai, moonshot, zhipu, deepseek — the six BYO-key providers reached through the generic `OpenAiCompatibleAdapter` (packages/llm-gateway/src/adapters/openai-compatible.ts). STRICTLY ADDITIVE (`ALTER TYPE ... ADD VALUE`, mirroring migrations 7/8's enum-extension precedent) — no existing row or enum value is affected.
 AppMap: Structural snapshot of a repository commit containing routes, entry points, data stores, ORM models, taint flow graphs, and (B1) an optional persisted ThreatModel.
 Route, TaintSource, TaintSink: Structural application elements linked to AppMap representing HTTP paths, input sources, and database/command sinks.
 Scan: Primary execution entity recording repository target, branch, scan mode, status, gate state, cost estimates, and actual costs.

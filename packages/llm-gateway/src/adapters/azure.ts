@@ -58,7 +58,18 @@ export interface OpenAiClientLike {
   };
 }
 
-function buildBody(request: LLMRequest, modelId: string): Record<string, unknown> {
+/**
+ * Build an OpenAI Chat-Completions-shaped request body (A8: tools; A13:
+ * structured output). Shared by every adapter that speaks this wire format —
+ * Azure OpenAI here, plus the generic {@link OpenAiCompatibleAdapter}
+ * (packages/llm-gateway/src/adapters/openai-compatible.ts, A3) for `openai`,
+ * `google`, `xai`, `moonshot`, `zhipu`, `deepseek`. Exported (not private, as
+ * in the July line's port target) so it stays the SINGLE body-builder for
+ * every OpenAI-wire-format provider rather than forking into two copies with
+ * drifting capabilities — see this function's `responseFormat` branch, the
+ * one part of current's body-building that July's adapter never had.
+ */
+export function buildBody(request: LLMRequest, modelId: string): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: modelId,
     max_tokens: request.maxTokens,
@@ -85,8 +96,12 @@ function buildBody(request: LLMRequest, modelId: string): Record<string, unknown
   return body;
 }
 
-/** Extract OpenAI-shaped tool calls from a chat-completion choice (A8). */
-function openAiToolCalls(
+/**
+ * Extract OpenAI-shaped tool calls from a chat-completion choice (A8).
+ * Exported alongside {@link buildBody} so the generic OpenAI-compatible
+ * adapter (A3) shares the SAME parsing rather than a second copy.
+ */
+export function openAiToolCalls(
   toolCalls: OpenAiToolCallLike[] | null | undefined,
 ): LLMToolCall[] | undefined {
   if (!toolCalls || toolCalls.length === 0) return undefined;

@@ -40,6 +40,14 @@ enum Provider {
   bedrock
   vertex
   azure
+  // A3: six additional BYO-key providers reached through the generic
+  // OpenAI-compatible adapter (packages/llm-gateway/src/adapters/openai-compatible.ts).
+  openai
+  google
+  xai
+  moonshot
+  zhipu
+  deepseek
 }
 
 enum ScanMode {
