@@ -40,12 +40,40 @@ export type LLMPurpose = z.infer<typeof LLMPurposeSchema>;
 export const TextBlockSchema = z.object({ type: z.literal("text"), text: z.string() });
 export type TextBlock = z.infer<typeof TextBlockSchema>;
 
+/**
+ * A tool call the model made (A8). Populated on {@link LLMResponseSchema} when
+ * the provider returned one or more tool-use/function-call blocks instead of
+ * (or alongside) text. `input` is the provider-parsed JSON arguments object —
+ * always an object, never a raw string (adapters are responsible for parsing
+ * provider-specific argument encodings, e.g. Azure/OpenAI's stringified
+ * `function.arguments`, before constructing this).
+ *
+ * A4: also reused on {@link LLMMessageSchema}'s `toolCalls` field so a prior
+ * assistant tool call can be re-encoded onto a FOLLOWING turn (see
+ * packages/llm-gateway/src/mapping.ts's `toAnthropicMessages`/
+ * `toOpenAiMessages`/`toVertexContents`) — one shape for the concept in both
+ * directions, never a second `arguments`-named sibling.
+ */
+export const LLMToolCallSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  input: z.record(z.string(), z.unknown()),
+});
+export type LLMToolCall = z.infer<typeof LLMToolCallSchema>;
+
 export const LLMMessageSchema = z.object({
   role: LLMRoleSchema,
   content: z.union([z.string(), z.array(TextBlockSchema)]),
-  /** For tool-result messages. */
+  /** For tool-result messages (role "tool"): the call this result answers. */
   toolCallId: z.string().optional(),
   name: z.string().optional(),
+  /**
+   * For assistant turns that called tools (A4): the calls made, so a gateway
+   * caller can re-encode a prior tool exchange onto a following turn. Additive
+   * and optional — every existing message (plain user/assistant text, or a
+   * role:"tool" result) is unaffected and keeps parsing unchanged.
+   */
+  toolCalls: z.array(LLMToolCallSchema).optional(),
 });
 export type LLMMessage = z.infer<typeof LLMMessageSchema>;
 
@@ -66,21 +94,6 @@ export const LLMToolDefinitionSchema = z.object({
   parameters: z.record(z.string(), z.unknown()),
 });
 export type LLMToolDefinition = z.infer<typeof LLMToolDefinitionSchema>;
-
-/**
- * A tool call the model made (A8). Populated on {@link LLMResponseSchema} when
- * the provider returned one or more tool-use/function-call blocks instead of
- * (or alongside) text. `input` is the provider-parsed JSON arguments object —
- * always an object, never a raw string (adapters are responsible for parsing
- * provider-specific argument encodings, e.g. Azure/OpenAI's stringified
- * `function.arguments`, before constructing this).
- */
-export const LLMToolCallSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  input: z.record(z.string(), z.unknown()),
-});
-export type LLMToolCall = z.infer<typeof LLMToolCallSchema>;
 
 /**
  * Extended-thinking / reasoning-depth setting (A8, E10). Mirrors the current

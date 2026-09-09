@@ -11,6 +11,15 @@ import { resolveAnthropicOutputFormat } from "./structured-output.js";
  * `buildBody`/`buildRequest` attaches the mapped tool list when
  * `request.tools` is present, and parses a tool-use/function-call response
  * back into a typed {@link LLMToolCall}[] (see each adapter's response mapper).
+ *
+ * A4: {@link toAnthropicMessages}, {@link toVertexContents} and
+ * {@link toOpenAiMessages} also re-encode a PRIOR tool exchange onto a
+ * following turn — an assistant message's `toolCalls` (contract's `.input`
+ * naming throughout, never July's `.arguments`) becomes `tool_use` /
+ * `functionCall` / `tool_calls`, and a `role: "tool"` message becomes
+ * `tool_result` / `functionResponse` / a `role: "tool"` turn. This is what
+ * turns single-round "the model asked for a tool" into a sustained tool
+ * conversation.
  */
 
 /** Collapse a message content union into a plain string. */
@@ -32,16 +41,56 @@ export function collectSystem(request: LLMRequest): string | undefined {
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
+/**
+ * One block of an Anthropic-shaped message's content array (A4: tool
+ * round-tripping). `tool_use` re-encodes a prior assistant tool call;
+ * `tool_result` re-encodes the tool's reply to it — the pair that lets a tool
+ * exchange be carried forward onto a following turn.
+ */
+export type AnthropicMessageContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; tool_use_id: string; content: string };
+
 interface RoleContent {
   role: "user" | "assistant";
-  content: string;
+  content: string | AnthropicMessageContentBlock[];
 }
 
-/** Messages for Anthropic/Bedrock: user/assistant turns only (tool → user). */
+/**
+ * Messages for Anthropic/Bedrock: user/assistant turns. A4: a `role: "tool"`
+ * message becomes a user turn carrying a `tool_result` block (keyed by
+ * `toolCallId`); an assistant turn that made tool calls carries `tool_use`
+ * blocks alongside any text — so a prior tool exchange re-encodes onto a
+ * FOLLOWING turn instead of collapsing to plain text.
+ */
 export function toAnthropicMessages(request: LLMRequest): RoleContent[] {
   const out: RoleContent[] = [];
   for (const m of request.messages) {
     if (m.role === "system") continue;
+    if (m.role === "tool") {
+      out.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: m.toolCallId ?? "",
+            content: contentToString(m.content),
+          },
+        ],
+      });
+      continue;
+    }
+    if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
+      const blocks: AnthropicMessageContentBlock[] = [];
+      const text = contentToString(m.content);
+      if (text) blocks.push({ type: "text", text });
+      for (const tc of m.toolCalls) {
+        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+      }
+      out.push({ role: "assistant", content: blocks });
+      continue;
+    }
     out.push({
       role: m.role === "assistant" ? "assistant" : "user",
       content: contentToString(m.content),
@@ -50,16 +99,57 @@ export function toAnthropicMessages(request: LLMRequest): RoleContent[] {
   return out;
 }
 
-export interface VertexContent {
-  role: "user" | "model";
-  parts: Array<{ text: string }>;
+/**
+ * One part of a Vertex (Gemini) content turn (A4: tool round-tripping).
+ * `functionCall` re-encodes a prior assistant tool call; `functionResponse`
+ * re-encodes the tool's reply — Gemini's equivalent of Anthropic's
+ * `tool_use`/`tool_result` pair.
+ */
+export interface VertexPart {
+  text?: string;
+  functionCall?: { name: string; args: Record<string, unknown> };
+  functionResponse?: { name: string; response: Record<string, unknown> };
 }
 
-/** Contents for Vertex (Gemini): user/model turns; system handled separately. */
+export interface VertexContent {
+  role: "user" | "model";
+  parts: VertexPart[];
+}
+
+/**
+ * Contents for Vertex (Gemini): user/model turns; system handled separately.
+ * A4: a `role: "tool"` message becomes a user turn carrying a
+ * `functionResponse` part; a `model` turn that made tool calls carries
+ * `functionCall` parts alongside any text.
+ */
 export function toVertexContents(request: LLMRequest): VertexContent[] {
   const out: VertexContent[] = [];
   for (const m of request.messages) {
     if (m.role === "system") continue;
+    if (m.role === "tool") {
+      out.push({
+        role: "user",
+        parts: [
+          {
+            functionResponse: {
+              name: m.name ?? "tool",
+              response: { result: contentToString(m.content) },
+            },
+          },
+        ],
+      });
+      continue;
+    }
+    if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
+      const parts: VertexPart[] = [];
+      const text = contentToString(m.content);
+      if (text) parts.push({ text });
+      for (const tc of m.toolCalls) {
+        parts.push({ functionCall: { name: tc.name, args: tc.input } });
+      }
+      out.push({ role: "model", parts });
+      continue;
+    }
     out.push({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: contentToString(m.content) }],
@@ -68,18 +158,54 @@ export function toVertexContents(request: LLMRequest): VertexContent[] {
   return out;
 }
 
-export interface OpenAiMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+/** A tool call re-encoded onto OpenAI/Azure's `assistant.tool_calls` wire shape (A4). */
+export interface OpenAiToolCallWire {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
 }
 
-/** Messages for Azure OpenAI: system prepended, then user/assistant (tool → user). */
+export interface OpenAiMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  /** Present on an assistant turn that made tool calls (A4). */
+  tool_calls?: OpenAiToolCallWire[];
+  /** Present on a `role: "tool"` turn: the call this result answers (A4). */
+  tool_call_id?: string;
+}
+
+/**
+ * Messages for Azure OpenAI: system prepended, then user/assistant. A4: a
+ * `role: "tool"` message becomes a `role: "tool"` turn carrying `tool_call_id`;
+ * an assistant turn that made tool calls carries `tool_calls` (arguments
+ * re-serialized to JSON strings, OpenAI's wire encoding) alongside any text.
+ */
 export function toOpenAiMessages(request: LLMRequest): OpenAiMessage[] {
   const out: OpenAiMessage[] = [];
   const system = collectSystem(request);
   if (system) out.push({ role: "system", content: system });
   for (const m of request.messages) {
     if (m.role === "system") continue;
+    if (m.role === "tool") {
+      out.push({
+        role: "tool",
+        content: contentToString(m.content),
+        tool_call_id: m.toolCallId ?? "",
+      });
+      continue;
+    }
+    if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
+      out.push({
+        role: "assistant",
+        content: contentToString(m.content),
+        tool_calls: m.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function" as const,
+          function: { name: tc.name, arguments: JSON.stringify(tc.input) },
+        })),
+      });
+      continue;
+    }
     out.push({
       role: m.role === "assistant" ? "assistant" : "user",
       content: contentToString(m.content),
