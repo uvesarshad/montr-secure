@@ -23,7 +23,7 @@ import { createPrismaClient, type MontrPrismaClient } from "./prisma.js";
  */
 
 const migrationSqlPath = fileURLToPath(
-  new URL("../prisma/migrations/3_audit_immutability_trigger/migration.sql", import.meta.url),
+  new URL("../prisma/migrations/03_audit_immutability_trigger/migration.sql", import.meta.url),
 );
 
 describe("AuditEvent immutability trigger — migration SQL", () => {

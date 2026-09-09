@@ -27,7 +27,11 @@ services:
   # Postgres 16 — pipeline/app state (dogfoods the target stack).
   # -------------------------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    # pgvector, not plain Postgres: migration 05_semantic_code_index does
+    # `CREATE EXTENSION vector` and fails on the official image, which blocked
+    # every fresh install. This is the image the migration's own header calls
+    # for — Postgres 16 with pgvector pre-built.
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

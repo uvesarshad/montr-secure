@@ -9,7 +9,7 @@
  * gateway — fast, but never boot a single real container), THIS script brings
  * up the REAL compose stack from the REAL images built off
  * deploy/docker/Dockerfile.{api,worker,web} — postgres, redis, the one-shot
- * `migrate` profile service (A1), api, worker, web — over the REAL docker
+ * one-shot `migrate` job (auto-run via depends_on), api, worker, web — over the REAL docker
  * network, and drives it purely through the REAL, versioned HTTP surface
  * (A3's `/api/v1/...` routes): register → login → POST /api/v1/scans with a
  * real target repo → poll until the real worker container has picked the job
@@ -189,19 +189,23 @@ async function main() {
 
   if (!SKIP_BUILD) {
     log("building api/worker/web + migrate images (docker compose build)");
-    run("docker", compose("--profile", "migrate", "build"));
+    run("docker", compose("build"));
   } else {
     log("--skip-build: reusing already-built images");
   }
 
-  log("starting postgres + redis");
-  run("docker", compose("up", "-d", "postgres", "redis"));
-
-  log("running the A1 one-shot migrate profile (prisma migrate deploy) against postgres");
-  run("docker", compose("--profile", "migrate", "run", "--rm", "migrate"));
-
-  log("starting api + worker + web (real images, real entrypoints — A1)");
-  run("docker", compose("up", "-d", "api", "worker", "web"));
+  // Bring the stack up exactly the way deploy/docker/README.md documents it —
+  // one `up`, no manual migration step. This is deliberate: the previous version
+  // of this script ran `--profile migrate run --rm migrate` by hand BEFORE
+  // starting api/worker, which meant it kept passing while the documented
+  // one-command bring-up was broken (the migrate service was profile-gated and
+  // nothing depended on it, so a real operator got api/worker against a
+  // schema-less database). Working around the bug is what let it survive. Now
+  // migrations must run because api/worker declare
+  // `depends_on: migrate: service_completed_successfully` — if that wiring
+  // regresses, this job fails instead of silently compensating.
+  log("bringing up the whole stack the documented way (docker compose up -d)");
+  run("docker", compose("up", "-d"));
 
   log(`polling ${API_BASE}/health (timeout ${HEALTH_TIMEOUT_MS}ms)`);
   await pollUntil("api /health to report healthy", HEALTH_TIMEOUT_MS, 2000, async () => {
@@ -360,7 +364,7 @@ async function main() {
   }
 
   console.log(
-    "\n[smoke] PASS — postgres, redis, the A1 migrate profile, api, worker, and web all came " +
+    "\n[smoke] PASS — postgres, redis, the one-shot migrate job, api, worker, and web all came " +
       "up as real containers, talked to each other over the real docker network, and a real " +
       "scan created through the real A3 /api/v1/scans route reached real, persisted Layer-0 " +
       "output (App Map + cost estimate) built from a real fixture repo by the real worker " +

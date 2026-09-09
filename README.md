@@ -21,8 +21,9 @@ Repo/PR ─► L0 Intake & Scoping    App Map (routes, ORM models, taint sources
 ```
 
 Cross-cutting: **Orchestrator** (resumable FSM + kill switch), **State Store** (Postgres, encrypted,
-append-only hash-chained audit log), **LLM Gateway** (BYO-key over Anthropic / Bedrock / Vertex /
-Azure OpenAI), **Cost Meter** (estimate → meter → hard-halt ceiling).
+append-only hash-chained audit log), **LLM Gateway** (BYO-key over ten providers:
+Anthropic / Bedrock / Vertex / Azure OpenAI, plus OpenAI / Google / xAI / Moonshot / Zhipu /
+DeepSeek through a shared OpenAI-compatible adapter), **Cost Meter** (estimate → meter → hard-halt ceiling).
 
 ## Supported stacks
 

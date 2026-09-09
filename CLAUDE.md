@@ -43,7 +43,7 @@ CLAUDE.md and AGENTS.md must stay identical in their Stack summary and Key paths
 
 ## Stack summary
 
-Node.js 20+ · TypeScript strict · Turborepo · Fastify REST API · Next.js 14 App Router · BullMQ · Redis 7 · PostgreSQL 16 · Prisma ORM · Tailwind CSS v4 · Vitest · Anthropic/Bedrock/Vertex/Azure LLM Gateway
+Node.js 20+ · TypeScript strict · Turborepo · Fastify REST API · Next.js 14 App Router · BullMQ · Redis 7 · PostgreSQL 16 · Prisma ORM · Tailwind CSS v4 · Vitest · 10-provider BYO-key LLM Gateway (Anthropic/Bedrock/Vertex/Azure + OpenAI/Google/xAI/Moonshot/Zhipu/DeepSeek)
 
 ## Key paths
 

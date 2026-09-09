@@ -280,8 +280,11 @@ jobs:
   # complexity here (a `docker save`/`load` round-trip of 3 images is slower
   # than a cached rebuild on the same Dockerfiles `docker` just validated).
   #
-  # Brings up the REAL compose stack (postgres, redis, the A1 `migrate`
-  # profile, api, worker, web), polls the real /health endpoint, registers +
+  # Brings up the REAL compose stack the way deploy/docker/README.md documents
+  # it — a single `docker compose up -d`, with the one-shot `migrate` job pulled
+  # in automatically by api/worker's `depends_on`. It must NOT migrate by hand:
+  # doing so is what previously let a broken documented bring-up keep passing
+  # CI. Polls the real /health endpoint, registers +
   # logs in a user, creates a real scan against the vulnerable-nextjs fixture
   # via the real /api/v1/scans route, and asserts the real worker container
   # persisted a real Layer-0 App Map + cost estimate back to real Postgres —

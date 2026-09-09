@@ -18,6 +18,10 @@ the comparison.
 
 Findings A1, A2, A6 and A7 are defects in **current** code (regressions or gaps versus July).
 Findings A3, A4 and A5 are **capabilities** the July line had that current lacks.
+Findings A8, A9 and A10 were found later, while verifying the A1 fix against a
+real clean-volume deploy. They are pre-existing defects in current code, unrelated
+to the July line — and A8/A9 are more severe than anything the comparison itself
+turned up: together they meant no fresh install could migrate at all.
 
 ---
 
@@ -156,6 +160,74 @@ not a functional break — but it compounds A2.
 `apps/web` are stubs. They are real production bootstraps. Misleading to any new operator, and
 directly adjacent to the A1 bring-up error.
 **Effort:** minutes; fold into the A1 fix.
+
+## A8 (P0) — Migrations could never run on a fresh database: broken ordering
+
+Prisma applies migrations in lexicographic directory order. With single-digit
+names, `10_detection_rule_log_signature` and `11_llm_provider_expansion` sorted
+_before_ `1_phase4_scale_intelligence`, so a fresh database ran migration 10
+immediately after `0_init` and died: `relation "DetectionRule" does not exist`
+(that table is created three migrations later, in `9_blue_team_entities`).
+
+Consequence: **no fresh install could migrate at all.** Existing databases were
+unaffected, because they were migrated incrementally as the schema grew and
+`_prisma_migrations` already recorded each one — which is exactly why this went
+unnoticed. It breaks only for a new operator, new environment, or CI from a
+clean volume.
+
+Pre-existing since migration 10 landed with the blue-team work (2026-08-22).
+Not introduced by A3's migration 11, which was never even reached.
+
+**Fix:** zero-padded all twelve migration directories (`00_init` …
+`11_llm_provider_expansion`), so ordering is correct now and stays correct
+through migration 99. Nothing in the codebase referenced the old names
+(verified by grep across ts/mjs/json/yml/sh).
+
+**⚠ Operator impact — a decision, not an automatic step.** Renaming a migration
+directory changes the name Prisma records in `_prisma_migrations`. Any database
+that already applied the old names will treat the ten renamed migrations as new
+and try to re-run them. For such a database, run
+`prisma migrate resolve --applied <new_name>` once per renamed migration, or
+reset if the data is disposable. Fresh installs need nothing.
+
+## A9 (P0) — Migrations could never run on a fresh database: missing pgvector
+
+With A8's ordering fixed, the chain then failed at `05_semantic_code_index`:
+`extension "vector" is not available`. That migration does `CREATE EXTENSION
+vector`, but `deploy/docker/docker-compose.yml` pinned `postgres:16-alpine` and
+`deploy/helm/montr-secure/values.yaml` defaulted to the same — neither ships
+pgvector.
+
+This was a known, deliberately deferred follow-up: the migration's own header
+says in full that the bundled images lack pgvector, names
+`pgvector/pgvector:pg16` as the fix, and states the image swap is "tracked as a
+required follow-up". The follow-up was never closed, so the deferral silently
+became a fresh-install blocker.
+
+**Fix:** both bundled deployments now use `pgvector/pgvector:pg16` — Postgres 16
+with the extension pre-built, exactly as the migration's header prescribes.
+
+Note for non-bundled targets: a managed or BYO Postgres must also have pgvector
+available. It is a "trusted" extension on most managed providers from PG13+, but
+that is not guaranteed — confirm before relying on it in a locked-down or
+air-gapped environment.
+
+**Verified together:** all twelve migrations now apply cleanly to an empty
+database, and `scripts/integration-smoke.mjs` passes end to end from torn-down
+volumes — the stack comes up on a single documented `docker compose up -d`,
+migrations run automatically via the A1 dependency, and a real scan created
+through the real API route reaches persisted Layer-0 output.
+
+## A10 (P1) — The integration smoke test compensated for A1 instead of testing it
+
+`scripts/integration-smoke.mjs` ran `docker compose --profile migrate run --rm
+migrate` by hand _before_ starting api and worker. That is not the documented
+bring-up, so the job kept passing while the documented path was broken (A1).
+
+**Fix:** the script now brings the stack up with a single `docker compose up -d`
+and lets api/worker's `depends_on` pull in the one-shot migrate job. If that
+wiring regresses, CI now fails instead of silently compensating. The CI job
+comment in `.github/workflows/ci.yml` was corrected to match.
 
 ---
 
