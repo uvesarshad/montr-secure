@@ -1,5 +1,5 @@
 > Source audit: [26-09-12-audit-red-blue-agentic-posture](./26-09-12-audit-red-blue-agentic-posture.md)
-> Updated: 26-09-12 · 16/32 done
+> Updated: 26-09-12 · 19/32 done
 
 - [ ] **(A1, P0)** Wire worker-side red-team scenario execution — supply the real `transport` to `runScenario` through the existing `assertScenarioAuthorized` + `ScopeGuard` gates (no new egress path; `packages/confirm/src/purple-loop.ts` already demonstrates the exact call shape), so `POST /scenarios/:id/run` actually probes instead of authorizing and sending nothing. **Depends on A10** — landing this without a request-body field ships an engine structurally blind to ~a quarter of its own catalogue. As an immediate, independent honesty fix, change `RunOutcome` in `apps/web/src/app/scenarios/page.tsx` to stop claiming "probing executes in the worker" until it does.
 - [x] **(A2, P0)** Make the Layer 5 runner call `resolveAppMap(ctx)` (already used identically in Layers 1–3) and thread it into `buildReport`, so detection coverage, attack paths and the threat model stop rendering as permanently empty panels in the console's Blue Team tab. The threat model is already computed and persisted on the AppMap record at Layer 0 — it is being discarded, not missing.
@@ -50,7 +50,10 @@
   RESOLVED (landed together with A2/A7/A8). Layer 5's runner now calls `packages/hardening/src/generate.ts`'s `generateHardeningRecommendations` using a real `@montr/discovery` `fsFileProvider` over the same `repoRoot` Layer 1/4 already resolve, threading the result into `BuildReportInput.hardeningRecommendations`. Degrades to an honest empty list (never a guess) when no local checkout exists (remote repo). Added `@montr/hardening` as a worker dependency. Verified via new `apps/worker/src/runners.test.ts` cases for both the real-generation and empty-checkout-degrade paths.
 
 - [ ] **(A14, P2)** Give `gateway.stream()` its first consumer by streaming the A3 investigation narrative to the console — the progress-event sink is already threaded into the investigation loop, so this turns a multi-minute opaque wait into a visible agent trace.
-- [ ] **(A15, P2)** Reconcile the stale "not wired / later wave" header comments in a single pass (`packages/report/src/detection-rules/`, `packages/report/src/exports/mitre-attack.ts` both claim standalone status for code `report-builder.ts` now calls unconditionally), and adopt the rule that a "not wired yet" comment must name the task that will wire it.
+- [x] **(A15, P2)** Reconcile the stale "not wired / later wave" header comments in a single pass (`packages/report/src/detection-rules/`, `packages/report/src/exports/mitre-attack.ts` both claim standalone status for code `report-builder.ts` now calls unconditionally), and adopt the rule that a "not wired yet" comment must name the task that will wire it.
+
+  RESOLVED (landed in Wave 1; this checkbox and its `docs/overview.md` Recent Changes entry were both lost to a later concurrent-agent edit to these shared files and are being restored here — the actual code/comment changes are safely committed, unaffected). Corrected the stale "standalone/not wired yet" claims in `packages/report/src/detection-rules/generate.ts`, `packages/report/src/exports/mitre-attack.ts`, `packages/report/src/index.ts`, and `packages/report/src/detection-rules/index.ts` against the real call graph (`report-builder.ts`'s `buildBlueTeamReport` calls all of them unconditionally). Also corrected `packages/report/src/exports/index.ts`'s note about MITRE not being in the export-format registry to state plainly that no task is currently scoped to add it, rather than a vague "later wave." Comment-only changes, no logic touched.
+
 - [ ] **(A16, P2)** Let the model author red-team payloads within guardrails — composed payloads validated against a deterministic safety predicate (non-destructive, within blast-radius caps, allowlisted target) before send — rather than selecting an id from a pre-written `PAYLOAD_VARIANTS` map. The two-layer guardrail architecture to permit this safely already exists.
 - [x] **(A17, P2)** Adopt schema-constrained `responseSchema` decoding at the six JSON-returning call sites that currently ask for `responseFormat: "json"` and parse defensively, removing a class of retry/parse-failure handling. It is implemented and tested across all ten providers and used at exactly one site today.
 
@@ -60,14 +63,14 @@
 
 ## Suggested enhancements
 
-- [ ] Make the investigator reachable and scope it initially to unconfirmed high/critical findings — the single highest-value change available, targeting the 0%-recall IDOR and broken-access-control categories directly.
+- [x] Make the investigator reachable and scope it initially to unconfirmed high/critical findings — the single highest-value change available, targeting the 0%-recall IDOR and broken-access-control categories directly. (Closed via A3.)
 - [x] Fix the Layer 5 plumbing: one argument unlocks four report sections, two more unlock the rest, and everything downstream is already tested. (Closed via A2/A7/A8/A13.)
 - [ ] Wire worker-side scenario execution (with the request-body field added first), closing the purple-team loop for real and removing a false statement from the console. (Body field done via A10; execution wiring itself is A1, still open.)
 - [x] Wire the semantic index and add an OpenAI embeddings adapter — the adapter is near-free, and semantic retrieval materially strengthens the investigator over `grep` alone on a large repository. (Closed via A9.)
 - [x] Add a top-level Blue Team section with cross-scan aggregation — likely the most compelling screen in the product for the security-lead buyer, and every input for it exists once the Layer 5 plumbing lands. (Closed via A5.)
 - [ ] Ship detection rules as a real push integration (Splunk, Elastic, Sentinel) rather than only a download, converting an advisory artifact into a surface a SOC team touches weekly.
 - [ ] Add detection-coverage regression gating in CI, mirroring the existing golden-corpus gate — fail a build when a newly confirmed finding lands on a route with no telemetry.
-- [ ] Add adaptive scoping and effort allocation to the orchestrator — the first change that makes the model influence control flow rather than content, and a cost reduction rather than only a capability add.
+- [x] Add adaptive scoping and effort allocation to the orchestrator — the first change that makes the model influence control flow rather than content, and a cost reduction rather than only a capability add. (Closed via A11.)
 - [ ] Allow payload authorship within guardrails, validated against a deterministic safety predicate before send.
 - [ ] Extend cross-scan learning beyond false positives — carry confirmed exploit shapes and per-repo sanitizer conventions in the learned-facts mechanism so recall improves scan over scan rather than staying flat.
 - [ ] Stream the investigation narrative to the console — both a UX win and the most effective possible demonstration of the agentic capability.
