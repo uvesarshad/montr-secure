@@ -6,13 +6,21 @@
  * fixture pair under `packages/fixtures/sample-repos/iac-samples/` — the same
  * "real files, not hand-typed strings" discipline
  * `secrets.real-output.test.ts` uses for gitleaks output. No `semgrep`
- * runner is injected, so the optional Semgrep IaC pass gracefully degrades
- * (binary very likely absent in CI) and every assertion below is entirely
- * attributable to the structural detectors.
+ * runner is injected, so the optional Semgrep IaC pass must gracefully
+ * degrade for every assertion below to be entirely attributable to the
+ * structural detectors — PATH is stubbed file-wide (below) to GUARANTEE that,
+ * rather than relying on the ambient assumption that semgrep merely happens
+ * to be absent wherever the suite runs. That assumption held for CI's
+ * `build`/`windows` jobs (neither installs semgrep) but not hermetically: a
+ * developer machine with a real semgrep on PATH for other work (e.g.
+ * reproducing the golden-corpus gate locally, A11) made the optional pass
+ * fire for real, surfacing genuine extra findings (e.g. a real Terraform
+ * "no logging" rule) these fixtures' hand-written expectations never
+ * accounted for.
  */
 import nodePath from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { getHardenedDefaults } from "@montr/config";
 import { createNullLogger } from "@montr/telemetry";
 import { AppMapSchema, type ScanScope } from "@montr/contracts";
@@ -64,6 +72,20 @@ function makeCtx(repoRoot: string): DetectorContext {
 function rulesOf(candidates: { ruleId: string }[]): string[] {
   return candidates.map((c) => c.ruleId).sort();
 }
+
+// File-wide: guarantee the optional Semgrep IaC pass can never find a real
+// `semgrep` binary, regardless of what happens to be installed on the machine
+// running this suite — see the file header for why this must be hermetic, not
+// ambient. Every describe block below expects assertions attributable ONLY to
+// the structural detectors; the one block that already injects a runner
+// (`degrades gracefully with no Semgrep binary/runner`) is unaffected, since it
+// never shells out in the first place.
+beforeAll(() => {
+  vi.stubEnv("PATH", "/nonexistent-path-for-hermetic-semgrep-absence-test");
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("discovery/iac — vulnerable fixture (real files on disk)", () => {
   const repoRoot = nodePath.join(FIXTURES_ROOT, "vulnerable");

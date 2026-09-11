@@ -4,7 +4,7 @@
  * injectable runners, and file access uses the in-memory provider or the real
  * fs walker over the @montr/fixtures sample repos. No network, no DB.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import nodePath from "node:path";
 import { tmpdir } from "node:os";
@@ -224,10 +224,24 @@ describe("discovery/sast", () => {
   });
 
   it("THROWS (never silently degrades) when the real semgrep binary is absent", async () => {
-    // No injected runner + a real repoRoot -> defaultSemgrepRunner shells out;
-    // semgrep is not installed in CI, so this must throw, not degrade to [].
-    const ctx = makeCtx({ repoRoot: VULN_REPO });
-    await expect(detectSast(ctx)).rejects.toThrow(RequiredDetectorUnavailableError);
+    // No injected runner + a real repoRoot -> defaultSemgrepRunner shells out
+    // to the REAL `semgrep` on PATH (see sast.ts's execa("semgrep", ...) call).
+    // This test needs that binary to genuinely be unresolvable, which used to
+    // rely on the ambient assumption that semgrep isn't installed wherever the
+    // suite runs — true in CI's `build`/`windows` jobs (they never install it),
+    // but NOT hermetic: a developer machine with semgrep on PATH for other work
+    // (e.g. reproducing the golden-corpus gate locally, A11) silently made this
+    // test fail to exercise its own subject, since defaultSemgrepRunner then
+    // finds a real binary and returns real output instead of throwing.
+    // Stub PATH to a directory with nothing in it so the binary is
+    // UNCONDITIONALLY unresolvable, regardless of what's installed locally.
+    vi.stubEnv("PATH", "/nonexistent-path-for-hermetic-semgrep-absence-test");
+    try {
+      const ctx = makeCtx({ repoRoot: VULN_REPO });
+      await expect(detectSast(ctx)).rejects.toThrow(RequiredDetectorUnavailableError);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("THROWS when the runner itself throws (execution error)", async () => {

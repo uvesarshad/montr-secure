@@ -86,6 +86,16 @@ function vulnInput(overrides: Partial<RunDiscoveryInput> = {}): RunDiscoveryInpu
   };
 }
 
+// Every test in this block uses a fully injected/mocked semgrep+gitleaks
+// runner (no real subprocess), so it's intrinsically fast — but the vitest
+// default 5000ms per-test timeout isn't generous enough once the suite runs
+// alongside OTHER files that do spawn real, slow subprocesses (e.g.
+// iac.test.ts's semgrep pass, e2e-scan.test.ts's live-scanners mode): under
+// vitest's default parallel worker pool, CPU contention from those siblings
+// can push this block's otherwise-trivial tests past 5000ms even though
+// nothing here is actually slow. An explicit, generous block-level timeout
+// avoids spurious failures that have nothing to do with this file's own logic
+// (confirmed: every test here passes in well under 2s in isolation).
 describe("discovery/runDiscovery over the vulnerable sample", () => {
   it("emits the exact Layer1Output contract with the expected finding categories", async () => {
     const output = await runDiscovery(vulnInput());
@@ -155,7 +165,7 @@ describe("discovery/runDiscovery over the vulnerable sample", () => {
     });
     expect(output.candidates).toEqual([]);
   });
-});
+}, 20_000);
 
 describe("discovery/runDiscovery over the clean sample", () => {
   it("SAST + secrets/config produce zero candidates (supports the <5% FP posture)", async () => {
