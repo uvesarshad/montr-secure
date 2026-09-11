@@ -65,7 +65,12 @@ function posix(p: string): string {
   return p.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 function relPath(abs: string, dir: string): string {
-  return posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+  // `dir` is a native-separator (node:path) path; ts-morph's getFilePath() is
+  // always forward-slash, even on Windows. Normalize dir before comparing —
+  // otherwise startsWith silently fails on Windows and every path here falls
+  // through to the untouched absolute path instead of a repo-relative one.
+  const posixDir = posix(dir);
+  return posix(abs.startsWith(posixDir) ? abs.slice(posixDir.length).replace(/^\//, "") : abs);
 }
 
 /** Deterministic, stable route id from method + path (same slug shape as `routes.ts`). */

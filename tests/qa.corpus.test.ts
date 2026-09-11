@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { describe, it, expect } from "vitest";
 import type { Category } from "@montr/contracts";
 import { loadCorpus } from "../packages/qa/src/corpus";
@@ -68,7 +69,9 @@ describe("loadCorpus — merged golden corpus", () => {
   it("resolves every repo to an existing absolute directory", async () => {
     const corpus = await loadCorpus();
     for (const repo of corpus.repos) {
-      expect(repo.path.startsWith("/")).toBe(true);
+      // NOT `.startsWith("/")` — a Windows absolute path starts with a drive
+      // letter (e.g. "C:\"), never "/". isAbsolute() is the portable check.
+      expect(isAbsolute(repo.path)).toBe(true);
       expect(existsSync(repo.path)).toBe(true);
     }
   });

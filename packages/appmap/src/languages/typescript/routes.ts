@@ -285,9 +285,15 @@ function stringLiteralsOf(expr: Node): string[] {
  * signal the route's own file already gave.
  */
 function applyNextMiddlewareAuth(project: Project, dir: string, routes: Route[]): void {
+  // `dir` is a native-separator (node:path) path; ts-morph's getFilePath() is
+  // always forward-slash, even on Windows. Normalize dir before comparing —
+  // otherwise startsWith silently fails on Windows and middleware is never found.
+  const posixDir = posix(dir);
   const mw = project.getSourceFiles().find((sf) => {
     const abs = sf.getFilePath();
-    const rel = posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+    const rel = posix(
+      abs.startsWith(posixDir) ? abs.slice(posixDir.length).replace(/^\//, "") : abs,
+    );
     return /^(?:src\/)?middleware\.(ts|js|tsx|jsx)$/i.test(rel);
   });
   if (!mw) return;
@@ -333,6 +339,10 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
   const routeIdsByFile = new Map<string, string[]>();
   const handlersByRouteId = new Map<string, FnLike>();
   const seen = new Set<string>();
+  // `dir` is a native-separator (node:path) path; ts-morph's getFilePath() is
+  // always forward-slash, even on Windows. Normalize dir before comparing —
+  // otherwise startsWith silently fails on Windows and no route is ever found.
+  const posixDir = posix(dir);
 
   const addRoute = (route: Route, file: string, handlerFn?: FnLike): void => {
     const key = `${route.method} ${route.path}`;
@@ -352,7 +362,9 @@ export function scanRoutes(project: Project, dir: string): RouteScanResult {
 
   for (const sf of project.getSourceFiles()) {
     const abs = sf.getFilePath();
-    const rel = posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+    const rel = posix(
+      abs.startsWith(posixDir) ? abs.slice(posixDir.length).replace(/^\//, "") : abs,
+    );
     const root = stripRoot(rel);
     if (!root) continue;
     const filename = rel.split("/").pop() ?? "";

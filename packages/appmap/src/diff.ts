@@ -57,10 +57,16 @@ export function computeDiffScope(
   const fileSet = new Set(sourceFiles.map(posix));
   const forward = new Map<string, Set<string>>(); // file → files it imports
   const reverse = new Map<string, Set<string>>(); // file → files that import it
+  // `dir` comes from node:path (native separator, backslashes on Windows);
+  // `sf.getFilePath()` is always forward-slash from ts-morph. Normalize `dir`
+  // once so the startsWith comparison below doesn't silently fail on Windows.
+  const posixDir = posix(dir);
 
   for (const sf of project.getSourceFiles()) {
     const abs = sf.getFilePath();
-    const rel = posix(abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs);
+    const rel = posix(
+      abs.startsWith(posixDir) ? abs.slice(posixDir.length).replace(/^\//, "") : abs,
+    );
     if (!fileSet.has(rel)) continue;
     for (const imp of sf.getImportDeclarations()) {
       const target = resolveImport(rel, imp.getModuleSpecifierValue(), fileSet);

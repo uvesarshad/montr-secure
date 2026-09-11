@@ -219,11 +219,14 @@ function finalize(
 
 /** Repo-relative source paths currently loaded in the project. */
 function filesFromProject(project: import("ts-morph").Project, dir: string): string[] {
+  // ts-morph normalizes `getFilePath()` to forward slashes on every platform,
+  // but `dir` comes from node:path and keeps the native separator (backslashes
+  // on Windows). Comparing them raw makes `startsWith` fail on Windows and
+  // silently falls through to the untouched absolute path — normalize BOTH
+  // sides to forward slashes before comparing, not just the final output.
+  const posixDir = dir.replace(/\\/g, "/");
   return project.getSourceFiles().map((sf) => {
-    const abs = sf.getFilePath();
-    return (abs.startsWith(dir) ? abs.slice(dir.length).replace(/^\//, "") : abs).replace(
-      /\\/g,
-      "/",
-    );
+    const abs = sf.getFilePath().replace(/\\/g, "/");
+    return abs.startsWith(posixDir) ? abs.slice(posixDir.length).replace(/^\//, "") : abs;
   });
 }

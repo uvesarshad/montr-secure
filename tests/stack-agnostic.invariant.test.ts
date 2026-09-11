@@ -29,7 +29,7 @@
  * Fully OFFLINE. No network, no Postgres/Redis, no provider SDK.
  */
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -217,7 +217,11 @@ describe("⛔ structural invariant: L2/L4/L5 source carries no stack-specific co
     const offenders: string[] = [];
     for (const dir of STACK_AGNOSTIC_SRC) {
       for (const file of tsSources(dir)) {
-        if (LANGUAGE_AWARE_EXCEPTIONS.has(file.split("/").pop()!)) continue;
+        // NOT file.split("/").pop() — `file` comes from tsSources()'s
+        // node:path join(), so on Windows it has no "/" at all and split()
+        // returns the whole path unchanged, meaning the exception list never
+        // matches and the excepted file gets flagged as a false offender.
+        if (LANGUAGE_AWARE_EXCEPTIONS.has(basename(file))) continue;
         const text = readFileSync(file, "utf8");
         const fw = text.match(FRAMEWORK_TOKEN);
         const ext = text.match(EXT_BRANCH);
