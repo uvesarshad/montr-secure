@@ -31,10 +31,12 @@
     "@montr/cost-meter": "workspace:*",
     "@montr/discovery": "workspace:*",
     "@montr/fix": "workspace:*",
+    "@montr/hardening": "workspace:*",
     "@montr/llm-gateway": "workspace:*",
     "@montr/orchestrator": "workspace:*",
     "@montr/report": "workspace:*",
     "@montr/security": "workspace:*",
+    "@montr/semantic-index": "workspace:*",
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*"
   },

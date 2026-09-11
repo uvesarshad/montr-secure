@@ -26,6 +26,7 @@
     "@montr/contracts": "workspace:*",
     "@montr/llm-gateway": "workspace:*",
     "@montr/security": "workspace:*",
+    "@montr/semantic-index": "workspace:*",
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*",
     "playwright-core": "^1.61.1",

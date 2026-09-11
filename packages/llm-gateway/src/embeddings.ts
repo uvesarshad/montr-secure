@@ -11,21 +11,23 @@
  * real product choice and not an implementation detail):
  *
  * Anthropic does not serve an embeddings endpoint at all — there is no
- * first-party model to call. That leaves Bedrock, Vertex, and Azure as the
- * three BYO-key providers this gateway already speaks. This file implements
- * ONLY Azure OpenAI today (`AzureEmbeddingAdapter`, mirroring
- * `adapters/azure.ts`'s existing use of the `openai` SDK's `AzureOpenAI`
- * client) because:
+ * first-party model to call. That leaves Bedrock, Vertex, Azure, and (A9)
+ * direct OpenAI as the BYO-key providers this gateway can serve embeddings
+ * for. This file implements Azure OpenAI (`AzureEmbeddingAdapter`) and direct
+ * OpenAI (`OpenAiEmbeddingAdapter`) today because:
  *
- *   1. It reuses an SDK already a dependency of this package (no new
- *      provider SDK import, honoring golden rule #2 — @montr/llm-gateway is
- *      the only package allowed to import a provider SDK, and only from
+ *   1. Both reuse the `openai` SDK, already a dependency of this package (no
+ *      new provider SDK import, honoring golden rule #2 — @montr/llm-gateway
+ *      is the only package allowed to import a provider SDK, and only from
  *      inside its own adapters).
- *   2. Azure's `/embeddings` endpoint is the OpenAI wire format — the exact
- *      shape `client.embeddings.create({ model, input })` — so there is no
- *      provider-specific request/response mapping to invent; `azure.ts`'s
- *      `createDefaultAzureClient` pattern for resolving endpoint/key from
- *      `@montr/config` applies unchanged.
+ *   2. Both providers' `/embeddings` endpoint is the identical OpenAI wire
+ *      format — `client.embeddings.create({ model, input })` — so there is
+ *      no provider-specific request/response mapping to invent. Azure's
+ *      adapter mirrors `adapters/azure.ts`'s `createDefaultAzureClient`
+ *      pattern for resolving endpoint/key from `@montr/config`; OpenAI's
+ *      mirrors `adapters/openai-compatible.ts`'s baseURL + Bearer-key
+ *      convention (A3), reusing the SAME default base URL
+ *      (`https://api.openai.com/v1`) and `config.llm.endpoint` override.
  *   3. Bedrock and Vertex DO offer real embedding models (Titan Embeddings,
  *      Cohere-on-Bedrock, and Vertex's `text-embedding-*` family
  *      respectively) — but each is a genuinely different wire protocol from
@@ -34,19 +36,24 @@
  *      adding them is real, protocol-specific adapter work, not a
  *      copy-paste of this file. That work is a documented follow-up, not
  *      done here — see the `NotImplementedError` thrown by
- *      `bedrock`/`vertex`/`anthropic` below, which mirrors exactly how
+ *      `bedrock`/`vertex`/`anthropic`/the remaining five OpenAI-compatible
+ *      providers (google/xai/moonshot/zhipu/deepseek — each speaks a
+ *      DIFFERENT, non-OpenAI-shaped embeddings API or none at all, so
+ *      grouping them with `openai` here would be a silent wrong-provider
+ *      routing bug, not a shortcut) below, which mirrors exactly how
  *      `submitBatch`/`pollBatch`/`getBatchResults` already signal
  *      per-provider capability gaps elsewhere in this package.
  *
- * A deployer without Azure configured has no embeddings path today — that is
- * an honest limitation of a same-day BYO-multi-provider product decision, not
- * a bug. `packages/semantic-index` depends on an injected
- * `EmbeddingProviderAdapter` rather than hardcoding Azure, so a Bedrock/Vertex
- * (or fully offline/local) implementation is a drop-in addition later.
+ * A deployer without Azure or OpenAI configured has no embeddings path
+ * today — an honest limitation, not a bug. `packages/semantic-index` depends
+ * on an injected `EmbeddingProviderAdapter` rather than hardcoding a
+ * provider, so a Bedrock/Vertex (or fully offline/local) implementation is a
+ * drop-in addition later.
  */
 import { NotImplementedError, ProviderNotConfiguredError, type Provider } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
 import type { AdapterEgress } from "./adapters/egress.js";
+import { resolveOutboundTarget } from "./adapters/egress.js";
 
 /** Non-code metadata attached to every embedding call — logged, never the input text bodies. */
 export interface EmbeddingCallMetadata {
@@ -167,7 +174,101 @@ async function createDefaultAzureEmbeddingClient(
   return new mod.AzureOpenAI({ apiKey, endpoint, apiVersion, maxRetries: 0 });
 }
 
-/** Unsupported-provider stub — see this file's doc comment for why only Azure is implemented today. */
+/** Minimal shape of the `openai` SDK's default export this adapter needs (same client the chat `openai-compatible.ts` adapter builds). */
+export interface OpenAiEmbeddingClientLike {
+  embeddings: {
+    create(
+      body: { model: string; input: string[] },
+      options?: { signal?: AbortSignal },
+    ): Promise<{
+      data?: Array<{ embedding?: number[] }>;
+      model?: string;
+      usage?: { prompt_tokens?: number; total_tokens?: number };
+    }>;
+  };
+}
+
+const OPENAI_EMBEDDINGS_DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const OPENAI_EMBEDDINGS_DEFAULT_HOST = "api.openai.com";
+
+/**
+ * Direct OpenAI embeddings adapter (A9). Same wire shape as
+ * `AzureEmbeddingAdapter` above — the `openai` SDK's `embeddings.create`
+ * call — pointed at OpenAI's own base URL with a Bearer API key instead of
+ * Azure's tenancy client, mirroring `adapters/openai-compatible.ts`'s
+ * baseURL/Bearer-key convention for the chat path (A3).
+ */
+export class OpenAiEmbeddingAdapter implements EmbeddingProviderAdapter {
+  readonly provider = "openai" as const;
+  private client?: OpenAiEmbeddingClientLike;
+
+  constructor(private readonly options: CreateEmbeddingAdapterOptions) {
+    this.client = options.client as OpenAiEmbeddingClientLike | undefined;
+  }
+
+  private baseUrl(): string {
+    return this.options.config.llm.endpoint ?? OPENAI_EMBEDDINGS_DEFAULT_BASE_URL;
+  }
+
+  private assertEgress(): void {
+    this.options.egress?.assert(
+      resolveOutboundTarget(this.options.config.llm.endpoint, OPENAI_EMBEDDINGS_DEFAULT_HOST),
+    );
+  }
+
+  private async getClient(): Promise<OpenAiEmbeddingClientLike> {
+    if (!this.client) {
+      this.client = await createDefaultOpenAiEmbeddingClient(this.options.config, this.baseUrl());
+    }
+    return this.client;
+  }
+
+  async embed(request: EmbeddingRequest, signal?: AbortSignal): Promise<EmbeddingResult> {
+    if (request.input.length === 0) {
+      return { embeddings: [], model: request.model, usage: { inputTokens: 0 } };
+    }
+    this.assertEgress();
+    const client = await this.getClient();
+    const result = await client.embeddings.create(
+      { model: request.model, input: request.input },
+      signal ? { signal } : undefined,
+    );
+    const embeddings = (result.data ?? []).map((row) => row.embedding ?? []);
+    if (embeddings.length !== request.input.length) {
+      throw new Error(
+        `Embeddings adapter returned ${embeddings.length} vectors for ${request.input.length} inputs`,
+      );
+    }
+    return {
+      embeddings,
+      model: result.model ?? request.model,
+      usage: { inputTokens: result.usage?.prompt_tokens ?? result.usage?.total_tokens ?? 0 },
+    };
+  }
+}
+
+async function createDefaultOpenAiEmbeddingClient(
+  config: MontrConfig,
+  baseURL: string,
+): Promise<OpenAiEmbeddingClientLike> {
+  const apiKey = config.llm.apiKey;
+  if (!apiKey) {
+    throw new ProviderNotConfiguredError("OpenAI API key not configured (llm.apiKey)", {
+      provider: "openai",
+    });
+  }
+  const mod = (await import("openai")) as unknown as {
+    OpenAI?: new (opts: Record<string, unknown>) => OpenAiEmbeddingClientLike;
+    default?: new (opts: Record<string, unknown>) => OpenAiEmbeddingClientLike;
+  };
+  const OpenAI = mod.OpenAI ?? mod.default;
+  if (!OpenAI) {
+    throw new ProviderNotConfiguredError("openai SDK unavailable", { provider: "openai" });
+  }
+  return new OpenAI({ apiKey, baseURL, maxRetries: 0 });
+}
+
+/** Unsupported-provider stub — see this file's doc comment for why only Azure/OpenAI are implemented today. */
 class UnsupportedEmbeddingAdapter implements EmbeddingProviderAdapter {
   constructor(readonly provider: Provider) {}
 
@@ -191,13 +292,18 @@ export function createEmbeddingAdapter(
   switch (provider) {
     case "azure":
       return new AzureEmbeddingAdapter({ config, egress });
+    case "openai":
+      return new OpenAiEmbeddingAdapter({ config, egress });
     // Everything below has no embeddings adapter today: the three pre-A3
-    // providers, and A3's six OpenAI-compatible ones. All get the same honest
-    // "not implemented" stub, never a silent fallback to a wrong provider.
+    // providers, and five of A3's six OpenAI-compatible ones (google/xai/
+    // moonshot/zhipu/deepseek — each a genuinely different embeddings wire
+    // shape or no embeddings endpoint at all; see this file's header for why
+    // grouping them with `openai` would be a silent wrong-provider bug, not
+    // a shortcut). All get the same honest "not implemented" stub, never a
+    // silent fallback to a wrong provider.
     case "anthropic":
     case "bedrock":
     case "vertex":
-    case "openai":
     case "google":
     case "xai":
     case "moonshot":

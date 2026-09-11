@@ -37,6 +37,7 @@ export * from "./vcs.js";
 export * from "./exports/index.js";
 
 // B3/B4 — Sigma/OTel/SIEM detection-rule generation + the "what this looks
-// like in your logs" narrative, per confirmed finding. Standalone/unwired —
-// see detection-rules/generate.ts's header.
+// like in your logs" narrative, per confirmed finding. WIRED: called from
+// report-builder.ts's buildBlueTeamReport — see detection-rules/generate.ts's
+// header.
 export * from "./detection-rules/index.js";

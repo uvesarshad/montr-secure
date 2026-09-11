@@ -4,7 +4,18 @@
  * aliases. NOT part of the shipped surface.
  */
 import { MontrConfigSchema, type MontrConfig } from "@montr/config";
-import type { AuditEvent, AuditEventInput, CostActual, Fix, LayerId, Scan } from "@montr/contracts";
+import type {
+  AuditEvent,
+  AuditEventInput,
+  CostActual,
+  DetectionCoverage,
+  DetectionRule,
+  DetectionVerificationResult,
+  Fix,
+  LayerId,
+  RedTeamScenario,
+  Scan,
+} from "@montr/contracts";
 import type { LayerContext, LayerRunners } from "@montr/orchestrator";
 import type { StateStore } from "@montr/state-store";
 import type { Logger } from "@montr/telemetry";
@@ -96,6 +107,23 @@ export function makeInMemoryStore(): InMemoryStore {
     return a;
   };
 
+  // A7/A8 — in-memory stand-ins for the real Prisma-backed B1 repositories
+  // (packages/state-store/src/blue-team.ts's detectionCoverage/detectionRules,
+  // packages/state-store/src/repositories.ts's redTeamScenarios), sufficient
+  // for apps/worker/src/runners.ts's Layer 3 wiring to exercise real
+  // create/listByFinding/updateVerification/list calls in tests.
+  const detectionCoverageByClient = new Map<string, DetectionCoverage[]>();
+  const detectionRulesByClient = new Map<string, DetectionRule[]>();
+  const redTeamScenariosByClient = new Map<string, RedTeamScenario[]>();
+  const arrFor = <T>(map: Map<string, T[]>, c: string): T[] => {
+    let a = map.get(c);
+    if (!a) {
+      a = [];
+      map.set(c, a);
+    }
+    return a;
+  };
+
   const candidates = findingRepo();
   const probable = findingRepo();
   const confirmed = findingRepo();
@@ -169,6 +197,78 @@ export function makeInMemoryStore(): InMemoryStore {
             .filter((x) => x.scanId === sid)
             .map(clone),
         ),
+    },
+    // A7 (B6/B1) — DetectionCoverageRepository stand-in.
+    detectionCoverage: {
+      create: (c: string, row: DetectionCoverage) => {
+        arrFor(detectionCoverageByClient, c).push(clone(row));
+        return Promise.resolve(clone(row));
+      },
+      get: (c: string, id: string) =>
+        Promise.resolve(
+          clone(arrFor(detectionCoverageByClient, c).find((x) => x.id === id) ?? null),
+        ),
+      list: (c: string) => Promise.resolve(arrFor(detectionCoverageByClient, c).map(clone)),
+      listByFinding: (c: string, findingId: string) =>
+        Promise.resolve(
+          arrFor(detectionCoverageByClient, c)
+            .filter((x) => x.findingId === findingId)
+            .slice()
+            .reverse()
+            .map(clone),
+        ),
+      updateVerification: (c: string, id: string, verification: DetectionVerificationResult) => {
+        const a = arrFor(detectionCoverageByClient, c);
+        const i = a.findIndex((x) => x.id === id);
+        if (i < 0) {
+          return Promise.reject(new Error(`detectionCoverage.updateVerification: no row ${id}`));
+        }
+        const updated: DetectionCoverage = { ...a[i]!, verification };
+        a[i] = updated;
+        return Promise.resolve(clone(updated));
+      },
+    },
+    // A7/A8 (B3/B1) — DetectionRuleRepository stand-in.
+    detectionRules: {
+      create: (c: string, row: DetectionRule) => {
+        arrFor(detectionRulesByClient, c).push(clone(row));
+        return Promise.resolve(clone(row));
+      },
+      get: (c: string, id: string) =>
+        Promise.resolve(clone(arrFor(detectionRulesByClient, c).find((x) => x.id === id) ?? null)),
+      list: (c: string) => Promise.resolve(arrFor(detectionRulesByClient, c).map(clone)),
+      listByFinding: (c: string, findingId: string) =>
+        Promise.resolve(
+          arrFor(detectionRulesByClient, c)
+            .filter((x) => x.findingId === findingId)
+            .slice()
+            .reverse()
+            .map(clone),
+        ),
+    },
+    // A8 (Phase-4) — RedTeamScenarioRepository stand-in.
+    redTeamScenarios: {
+      create: (c: string, row: RedTeamScenario) => {
+        arrFor(redTeamScenariosByClient, c).push(clone(row));
+        return Promise.resolve(clone(row));
+      },
+      get: (c: string, id: string) =>
+        Promise.resolve(
+          clone(arrFor(redTeamScenariosByClient, c).find((x) => x.id === id) ?? null),
+        ),
+      list: (c: string) => Promise.resolve(arrFor(redTeamScenariosByClient, c).map(clone)),
+      update: (c: string, row: RedTeamScenario) => {
+        const a = arrFor(redTeamScenariosByClient, c);
+        const i = a.findIndex((x) => x.id === row.id);
+        if (i >= 0) a[i] = clone(row);
+        return Promise.resolve(clone(row));
+      },
+      delete: (c: string, id: string) => {
+        const a = arrFor(redTeamScenariosByClient, c);
+        const i = a.findIndex((x) => x.id === id);
+        if (i >= 0) a.splice(i, 1);
+        return Promise.resolve();
+      },
     },
     resume: {
       save: (c: string, t: { scanId: string }) => {

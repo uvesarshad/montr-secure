@@ -146,6 +146,31 @@ export async function buildAppMap(
     });
     appMap = { ...appMap, telemetrySurfaces };
 
+    // A9 — best-effort semantic codebase index build, alongside the App Map,
+    // using the SAME sandboxed checkout before it is cleaned up in the
+    // `finally` below. Structural hook only (see `BuildAppMapDeps.semanticIndex`'s
+    // doc comment) — this package never imports @montr/semantic-index
+    // directly (that package already depends on this one for parser reuse,
+    // so the reverse import would be circular). Best-effort: any failure (no
+    // pgvector, no embeddings key configured, network) is logged and
+    // swallowed here — it can never fail or delay the scan's actual App Map.
+    if (deps.semanticIndex) {
+      progress("semantic-index", 91, "building semantic code index");
+      try {
+        await deps.semanticIndex({
+          dir: workspace.dir,
+          clientId,
+          appMapId,
+          commitSha,
+          repo: input.repo,
+        });
+      } catch (err) {
+        logger.warn("appmap.semantic_index.failed", {
+          message: err instanceof Error ? err.message : "unknown",
+        });
+      }
+    }
+
     // Persist (per-client, encrypted) with DECIDE-2 stale invalidation + audit.
     if (deps.appMaps) {
       progress("persist", 92, "persisting map");

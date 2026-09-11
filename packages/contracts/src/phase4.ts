@@ -81,6 +81,15 @@ export const RedTeamStepSchema = z.object({
   method: HttpMethodSchema.optional(),
   /** Request path RELATIVE to the allowlisted target (never an absolute URL). */
   path: z.string().optional(),
+  /**
+   * Request body payload for this step, sent verbatim by `runScenario`
+   * (packages/confirm/src/scenarios.ts) when a transport is supplied. Additive
+   * and optional — a step without one behaves exactly as before (no body
+   * sent). Needed for scenarios whose confirming payload is a POST/PUT body
+   * rather than a query parameter (e.g. command_injection, ssrf,
+   * insecure_deserialization in the OWASP starter catalogue).
+   */
+  body: z.string().optional(),
   /** What indicates the step succeeded (proof signal). */
   expectation: z.string().optional(),
 });

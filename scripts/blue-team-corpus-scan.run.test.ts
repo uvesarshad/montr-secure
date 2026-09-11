@@ -110,9 +110,20 @@ describe("blue-team-corpus-scan — real B3+B5 run over the labelled blue-team c
     expect(raw.results.length).toBe(results.length);
   });
 
-  it("this is a REAL run, not a tautological echo — both fired:true and fired:false verdicts occur", () => {
-    expect(results.some((r) => r.actualFired === true)).toBe(true);
-    expect(results.some((r) => r.actualFired === false)).toBe(true);
+  it("this is a REAL run, not a tautological echo — real per-case evidence varies with the real request shape", () => {
+    // A10 (2026-09-12) gave RedTeamStep a real `body` field and wired runScenario to
+    // send it, resolving the only 3 sources of a false verdict in this labelled
+    // subset (owasp-a03-command-injection, owasp-a08-software-data-integrity,
+    // owasp-a10-ssrf — see blue-team-corpus.ts's module header). All 9 labelled
+    // cases now genuinely fire, so a fired:true/fired:false split is no longer
+    // available as the "this isn't a hardcoded stub" signal. Instead, assert the
+    // real per-case evidence text genuinely varies by HOW each case fired — some
+    // are route-only (no CATEGORY_MARKERS entry for their category), some fire on
+    // a query-string marker, and some (the 3 A10 fixed) fire on a request-body
+    // marker — which a hardcoded always-true stub could not produce.
+    expect(results.some((r) => /no payload-marker condition/.test(r.evidence))).toBe(true);
+    expect(results.some((r) => /found in the query string/.test(r.evidence))).toBe(true);
+    expect(results.some((r) => /found in the request body/.test(r.evidence))).toBe(true);
   });
 
   it("every hand-traced ground-truth label matches the real measured verdict", () => {

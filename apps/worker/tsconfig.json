@@ -49,6 +49,9 @@
     },
     {
       "path": "../../packages/llm-gateway"
+    },
+    {
+      "path": "../../packages/semantic-index"
     }
   ]
 }

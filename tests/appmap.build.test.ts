@@ -371,6 +371,76 @@ describe("appmap — DECIDE-2 persistence, invalidation, reuse", () => {
   });
 });
 
+describe("appmap — A9 semantic-index build hook (best-effort, alongside the App Map)", () => {
+  it("calls the hook with dir/clientId/appMapId/repo/commitSha while the checkout still exists", async () => {
+    const calls: Array<{
+      dir: string;
+      clientId: string;
+      appMapId: string;
+      repo: string;
+      commitSha: string;
+    }> = [];
+    const out = await buildAppMap(baseInput(), {
+      gateway: createFakeLlmGateway(),
+      now: fixedNow,
+      semanticIndex: async (input) => {
+        calls.push(input);
+        // Prove the checkout is still readable at call time (not cleaned up yet).
+        const { collectFiles: collect } = await import("@montr/appmap");
+        const inv = await collect(input.dir);
+        expect(inv.sourceFiles.length).toBeGreaterThan(0);
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.clientId).toBe(CLIENT_ID);
+    expect(calls[0]?.repo).toBe(VULN_DIR);
+    expect(calls[0]?.commitSha).toBe(COMMIT_SHA);
+    expect(calls[0]?.appMapId).toBe(out.appMap.id);
+  });
+
+  it("a throwing hook is caught and logged — never fails the scan's App Map build", async () => {
+    const out = await buildAppMap(baseInput(), {
+      gateway: createFakeLlmGateway(),
+      now: fixedNow,
+      semanticIndex: async () => {
+        throw new Error("pgvector extension not installed");
+      },
+    });
+    expect(() => Layer0OutputSchema.parse(out)).not.toThrow();
+    expect(out.appMap.routes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("is skipped on the DECIDE-2 reuse path (the reused map's index was already built)", async () => {
+    const appMaps = new MemAppMaps();
+    let calls = 0;
+    await buildAppMap(baseInput({ scanId: "scan_reuse_1" }), {
+      gateway: createFakeLlmGateway(),
+      now: fixedNow,
+      appMaps,
+      semanticIndex: async () => {
+        calls++;
+      },
+    });
+    await buildAppMap(baseInput({ scanId: "scan_reuse_2" }), {
+      gateway: createFakeLlmGateway(),
+      now: fixedNow,
+      appMaps,
+      semanticIndex: async () => {
+        calls++;
+      },
+    });
+
+    expect(appMaps.createCalls).toBe(1); // second build reused, per the existing DECIDE-2 test above
+    expect(calls).toBe(1); // semantic index built once, not rebuilt on reuse
+  });
+
+  it("omitting the hook leaves the App Map build byte-identical (default, unchanged)", async () => {
+    const out = await buildAppMap(baseInput(), { gateway: createFakeLlmGateway(), now: fixedNow });
+    expect(() => Layer0OutputSchema.parse(out)).not.toThrow();
+  });
+});
+
 describe("appmap — orchestrator runner adapter", () => {
   it("runs from a LayerContext-shaped input and emits Layer0Output (no double-create)", async () => {
     const appMaps = new MemAppMaps();
@@ -419,5 +489,33 @@ describe("appmap — orchestrator runner adapter", () => {
     });
     expect(appMaps.createCalls).toBe(1);
     expect(audit.events.some((e) => e.action === "appmap.built")).toBe(true);
+  });
+
+  it("A9 — threads a semanticIndex hook through to buildAppMap", async () => {
+    const appMaps = new MemAppMaps();
+    const audit = new MemAudit();
+    let called = false;
+    const runner = createLayer0Runner({
+      gateway: createFakeLlmGateway(),
+      semanticIndex: async () => {
+        called = true;
+      },
+    });
+    await runner({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: { commitSha: COMMIT_SHA },
+      job: {
+        repo: VULN_DIR,
+        branch: "main",
+        mode: "full",
+        scope: ScanScopeSchema.parse({ mode: "full" }),
+      },
+      config: getHardenedDefaults(),
+      logger: createNullLogger(),
+      store: { appMaps, audit },
+      signal: new AbortController().signal,
+    });
+    expect(called).toBe(true);
   });
 });

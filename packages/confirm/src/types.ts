@@ -14,6 +14,7 @@ import type {
   ProbableFinding,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
+import type { SemanticMatch } from "@montr/semantic-index";
 import type { FalsePositiveTuning } from "./tuning.js";
 import type { TestRunner } from "./evidence.js";
 
@@ -202,6 +203,23 @@ export interface ConfirmDeps {
    * Tests inject a fake, mirroring `transport`/`browser`'s convention.
    */
   testRunner?: TestRunner;
+  /**
+   * A9 — optional semantic-code-search callback (`@montr/semantic-index`'s
+   * `querySemanticIndex`), wired into the E1 investigation loop's new
+   * `semantic_search` tool (`investigate-tools.ts`) so the investigator can
+   * retrieve structurally/semantically similar code by MEANING alongside its
+   * literal `grep`/`find_definition` tools — e.g. sweeping a confirmed
+   * finding's vulnerable pattern into other locations across the repo.
+   * Absent ⇒ `semantic_search` still appears in the loop's tool list (so the
+   * model's behavior is stable across a deployment where the index sometimes
+   * is and sometimes isn't available) but degrades to an honest "not
+   * available" tool result — never a crash, and never silently indistinguishable
+   * from "no matches found". Constructed in `apps/worker/src/runners.ts`,
+   * gated on the same `config.semanticIndex.enabled` + embeddings-capable
+   * provider + pgvector availability as the Layer 0 index build itself — see
+   * docs/modules/semantic-index.md's Consumption Status.
+   */
+  semanticSearch?: (queryText: string, topK?: number) => Promise<SemanticMatch[]>;
 }
 
 /* --------------------------------- outcomes -------------------------------- */

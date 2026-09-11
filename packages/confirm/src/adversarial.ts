@@ -86,6 +86,32 @@ function safeJson(text: string): unknown {
   }
 }
 
+/**
+ * A17: explicit schema for this verifier's own `{confirm, rationale}` reply
+ * shape. Without this, `metadata.purpose: "confirmation"` would resolve
+ * `packages/llm-gateway/src/structured-output.ts`'s PURPOSE_JSON_SCHEMAS
+ * default for that purpose instead — `confirm/src/static.ts`'s DIFFERENT
+ * `{confirmed, argument}` contract, which this file's own lenses never ask
+ * for. Under real provider-side schema-constrained decoding that mismatched
+ * default's `additionalProperties: false` would silently strip `confirm`/
+ * `rationale` from every real response, so `rec.confirm`/`rec.rationale`
+ * below would always read `undefined` and every verifier would vote reject
+ * — a live bug the fake-gateway-backed tests can't see, since a hand-mocked
+ * `complete()` returns canned content directly and never passes through the
+ * gateway's schema-constrained wire path. `request.responseSchema` (checked
+ * before the purpose-keyed default — see `resolveStructuredOutputSchema`)
+ * overrides it with this call site's own real shape.
+ */
+const VERIFIER_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    confirm: { type: "boolean" },
+    rationale: { type: "string" },
+  },
+  required: [],
+  additionalProperties: false,
+};
+
 interface VerificationPayload {
   category: string;
   exposure: string;
@@ -109,6 +135,7 @@ async function runOneVerifier(
     maxTokens: 1024,
     temperature: 0,
     responseFormat: "json",
+    responseSchema: VERIFIER_RESPONSE_SCHEMA,
     stream: false,
     metadata: {
       scanId: input.scanId,

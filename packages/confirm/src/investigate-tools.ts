@@ -8,15 +8,21 @@
  * in `evidence.ts`, invoked only after the loop concludes, exactly once, on
  * exactly the one file path the model named (never agent-directed mid-loop).
  *
- * Tools read from two sources only: the already-built `AppMap` (routes, ORM
+ * Tools read from three sources: the already-built `AppMap` (routes, ORM
  * models, taint sources/sinks/flows — structural facts Layer 0 already
- * extracted) and, when a repo checkout is available (`ConfirmInput.repoRoot`),
- * the actual source tree via a small local file-read/scan helper (below).
- * `repoRoot` is optional — when absent (e.g. a resumed/distributed run with no
- * local checkout), `read_file`/`grep`/`find_definition` degrade to a clear
- * "no repo checkout available" message rather than throwing, and the AppMap
- * tools (`list_routes`, `get_orm_model`, `query_call_graph`) still work fully,
- * since they only ever read the in-memory App Map.
+ * extracted); when a repo checkout is available (`ConfirmInput.repoRoot`),
+ * the actual source tree via a small local file-read/scan helper (below); and
+ * (A9) an optional semantic codebase index (`@montr/semantic-index`'s
+ * `querySemanticIndex`, injected as `InvestigationToolContext.semanticSearch`)
+ * for retrieval by MEANING rather than literal text. `repoRoot` is optional —
+ * when absent (e.g. a resumed/distributed run with no local checkout),
+ * `read_file`/`grep`/`find_definition` degrade to a clear "no repo checkout
+ * available" message rather than throwing, and the AppMap tools
+ * (`list_routes`, `get_orm_model`, `query_call_graph`) still work fully,
+ * since they only ever read the in-memory App Map. `semanticSearch` is
+ * likewise optional — absent (no pgvector, no embeddings-capable provider
+ * key, or the index simply wasn't built for this scan) ⇒ `semantic_search`
+ * degrades the same way, never throws.
  *
  * Deliberately NOT reused: `@montr/appmap`'s `readRepoFile`/`collectFiles`.
  * No other Layer 1-5 package takes a build-time dependency on `@montr/appmap`
@@ -31,6 +37,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { AppMap } from "@montr/contracts";
 import type { LLMToolDefinition } from "@montr/contracts";
+import type { SemanticMatch } from "@montr/semantic-index";
 
 const IGNORED_DIRS = new Set([
   "node_modules",
@@ -103,6 +110,15 @@ export interface InvestigationToolContext {
   appMap: AppMap;
   /** Local checkout root for the scan's repo. Absent ⇒ file/grep tools degrade gracefully. */
   repoRoot?: string;
+  /**
+   * A9 — optional semantic-code-search callback (`@montr/semantic-index`'s
+   * `querySemanticIndex`, injected structurally — see `types.ts`'s
+   * `ConfirmDeps.semanticSearch` doc comment for why). Absent ⇒
+   * `semantic_search` degrades to a clear "no semantic code index available"
+   * message, mirroring `read_file`/`grep`'s "no repo checkout available"
+   * convention above, rather than throwing or silently returning zero matches.
+   */
+  semanticSearch?: (queryText: string, topK?: number) => Promise<SemanticMatch[]>;
 }
 
 const MAX_READ_LINES = 400;
@@ -298,6 +314,52 @@ function toolQueryCallGraph(input: Record<string, unknown>, ctx: InvestigationTo
   return capResult(JSON.stringify({ file, line: line ?? null, edgeCount: edges.length, edges }));
 }
 
+/* ---------------------------- tool: semantic_search ---------------------------- */
+
+const MAX_SEMANTIC_SEARCH_TOP_K = 20;
+const DEFAULT_SEMANTIC_SEARCH_TOP_K = 8;
+
+async function toolSemanticSearch(
+  input: Record<string, unknown>,
+  ctx: InvestigationToolContext,
+): Promise<string> {
+  const query = asString(input.query);
+  if (!query) return JSON.stringify({ error: "semantic_search requires a non-empty 'query'." });
+  if (!ctx.semanticSearch) {
+    return JSON.stringify({
+      error: "no semantic code index available in this run.",
+      hint: "use grep/find_definition instead to search by literal text/symbol name.",
+    });
+  }
+  const topK = Math.min(
+    Math.max(1, asNumber(input.topK) ?? DEFAULT_SEMANTIC_SEARCH_TOP_K),
+    MAX_SEMANTIC_SEARCH_TOP_K,
+  );
+  try {
+    const matches = await ctx.semanticSearch(query, topK);
+    return capResult(
+      JSON.stringify({
+        query,
+        matchCount: matches.length,
+        matches: matches.map((m) => ({
+          file: m.file,
+          startLine: m.startLine,
+          endLine: m.endLine,
+          language: m.language,
+          kind: m.kind,
+          symbolName: m.symbolName,
+          similarity: Number(m.similarity.toFixed(4)),
+          content: m.content,
+        })),
+      }),
+    );
+  } catch (err) {
+    return JSON.stringify({
+      error: `semantic_search failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
 /* -------------------------------- tool: list_routes ---------------------------- */
 
 function toolListRoutes(input: Record<string, unknown>, ctx: InvestigationToolContext): string {
@@ -343,7 +405,8 @@ function toolGetOrmModel(input: Record<string, unknown>, ctx: InvestigationToolC
 export const SUBMIT_CONCLUSION_TOOL = "submit_conclusion";
 
 /**
- * The six READ-ONLY repo tools (E1) plus the one terminal tool the loop uses
+ * The seven READ-ONLY repo tools (E1's original six plus A9's `semantic_search`)
+ * plus the one terminal tool the loop uses
  * to end an investigation with a structured verdict (`investigate.ts` treats a
  * call to `submit_conclusion` as the end of the loop, never executes it here).
  */
@@ -397,6 +460,26 @@ export const INVESTIGATION_TOOL_DEFINITIONS: LLMToolDefinition[] = [
         line: { type: "number", description: "Optional 1-based line to narrow the query." },
       },
       required: ["file"],
+    },
+  },
+  {
+    name: "semantic_search",
+    description:
+      "Search the repository's semantic code index (AST-chunked, embedding-based) for code structurally/semantically similar to a natural-language description or a code snippet — complements grep's literal-text search by retrieving by MEANING (e.g. 'other places user input reaches a raw SQL query', or a copy of this finding's own vulnerable snippet to sweep for the same pattern elsewhere). Returns the most similar chunks ranked by similarity. May be unavailable in this run (see the result's 'error' field) — fall back to grep/find_definition when it is.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "A natural-language description OR a code snippet to search for similar code.",
+        },
+        topK: {
+          type: "number",
+          description: "Max results to return (default 8, max 20).",
+        },
+      },
+      required: ["query"],
     },
   },
   {
@@ -473,6 +556,8 @@ export async function executeInvestigationTool(
         return await toolFindDefinition(input, ctx);
       case "query_call_graph":
         return toolQueryCallGraph(input, ctx);
+      case "semantic_search":
+        return await toolSemanticSearch(input, ctx);
       case "list_routes":
         return toolListRoutes(input, ctx);
       case "get_orm_model":

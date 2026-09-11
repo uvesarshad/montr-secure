@@ -1,10 +1,16 @@
+import { createServer } from "node:http";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   CLIENT_ID,
   SCAN_ID,
   CANDIDATE_DEP_ID,
   CANDIDATE_SQLI_ID,
+  CONFIRMED_SQLI_ID,
   CONFIRMED_XSS_ID,
+  FIXED_NOW,
   REPO_URL,
   createFakeLlmGateway,
   mockAppMap,
@@ -24,6 +30,7 @@ import type {
   ModelDescriptor,
   StopReason,
 } from "@montr/contracts";
+import { RedTeamScenarioSchema } from "@montr/contracts";
 import type { SemgrepJson } from "@montr/discovery";
 import { createMapSourceReader } from "@montr/fix";
 import { createLayerRunners } from "./runners.js";
@@ -232,7 +239,178 @@ describe("layer runner adapters — Layer 3 (confirmation)", () => {
     expect(out.confirmed.every((c) => c.proofType === "static")).toBe(true);
     expect(writes["confirmed.bulkCreate"]).toBeUndefined();
     expect(writes["unconfirmed.bulkCreate"]).toBeUndefined();
+    // A8 — allowLive is off, so the purple-team loop never engages (see
+    // runPurpleTeamVerification's own doc comment on why).
+    expect(out.purpleTeamEntries).toEqual([]);
   });
+
+  it("A7 — persists a real tri-state DetectionCoverage row (B6) for every confirmed finding", async () => {
+    const { store } = makeInMemoryStore();
+    const runners = createLayerRunners({ gateway });
+    const ctx = makeLayerContext<"layer3">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer3", { allowLive: false }) as never,
+      store,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer2: { probable: mockProbableFindings, demoted: [] },
+      },
+    });
+
+    const out = await runners.layer3(ctx);
+    expect(out.confirmed.length).toBe(2);
+
+    // Real repository calls: persistDetectionCoverageForScan actually wrote
+    // through ctx.store.detectionCoverage — not a mocked-away no-op.
+    const rows = await store.detectionCoverage.list(CLIENT_ID);
+    expect(rows.length).toBe(2);
+    const findingIds = rows.map((r) => r.findingId).sort();
+    expect(findingIds).toEqual([...out.confirmed.map((c) => c.id)].sort());
+    for (const row of rows) {
+      expect(["true", "false", "unknown"]).toContain(String(row.detected));
+      expect(row.reasoning.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("A8 — with allowLive on and a matching enabled scenario, the purple-team loop is actually reached and safely refuses an unauthorized target (fail-safe; confirmation itself is unaffected)", async () => {
+    const { store } = makeInMemoryStore();
+    // An enabled, real catalogue-shaped scenario whose coarse "injection"
+    // category maps (REDTEAM_CATEGORY_TO_FINDING_CATEGORIES) to sql_injection
+    // — matches the confirmed SQLi finding's category.
+    const scenario = RedTeamScenarioSchema.parse({
+      id: "scn_test_injection_0001",
+      clientId: CLIENT_ID,
+      name: "Test injection scenario",
+      category: "injection",
+      steps: [{ order: 0, action: "probe baseline", method: "GET", path: "/api/users" }],
+      targetAllowlistRef: "https://staging.example.test",
+      version: 1,
+      enabled: true,
+      createdBy: "test",
+      createdAt: FIXED_NOW,
+    });
+    await store.redTeamScenarios.create(CLIENT_ID, scenario);
+
+    const warnings: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    const logger = {
+      debug() {},
+      info() {},
+      warn(message: string, fields?: Record<string, unknown>) {
+        warnings.push({ message, fields });
+      },
+      error() {},
+      child() {
+        return logger;
+      },
+    };
+
+    const runners = createLayerRunners({ gateway });
+    const ctx = makeLayerContext<"layer3">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      // ⛔ allowLive is true (the orchestrator's approver gate), but
+      // hardenedConfig()'s default config.dast.enabled is false — the SAME
+      // guardrail every other live-DAST caller in this codebase is subject
+      // to (packages/confirm/src/guard.ts's assertLiveAuthorized). This
+      // proves the purple-team wiring reuses that gate rather than adding a
+      // new, looser one.
+      job: baseJob("layer3", { allowLive: true }) as never,
+      store,
+      logger,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer2: { probable: mockProbableFindings, demoted: [] },
+      },
+    });
+
+    const out = await runners.layer3(ctx);
+
+    // Confirmation itself is byte-identical to the allowLive:false case —
+    // a refused purple-team pair never touches the confirmed/unconfirmed sets.
+    expect(out.confirmed.length).toBe(2);
+    expect(out.unconfirmed.length).toBe(1);
+    expect(out.purpleTeamEntries).toEqual([]);
+
+    // Layer 3 derives its OWN confirmed-finding ids (cf_static_<probableId>),
+    // distinct from the report-layer fixtures' CONFIRMED_SQLI_ID — look up
+    // the real one this run actually produced.
+    const sqliFinding = out.confirmed.find((c) => c.category === "sql_injection")!;
+    const failure = warnings.find((w) => w.message === "worker.purple_team.verification_failed");
+    expect(failure).toBeDefined();
+    expect(failure?.fields?.["scenarioId"]).toBe(scenario.id);
+    expect(failure?.fields?.["findingId"]).toBe(sqliFinding.id);
+    expect(String(failure?.fields?.["error"])).toContain("dast.enabled=false");
+  });
+
+  it("A8 — end to end: a real allowlisted target actually runs the scenario and persists a genuine live verification onto the finding's DetectionCoverage row", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const target = `http://127.0.0.1:${port}`;
+
+    try {
+      const { store } = makeInMemoryStore();
+      const scenario = RedTeamScenarioSchema.parse({
+        id: "scn_test_injection_live_0001",
+        clientId: CLIENT_ID,
+        name: "Test live injection scenario",
+        category: "injection",
+        steps: [{ order: 0, action: "probe baseline", method: "GET", path: "/api/users" }],
+        targetAllowlistRef: target,
+        version: 1,
+        enabled: true,
+        createdBy: "test",
+        createdAt: FIXED_NOW,
+      });
+      await store.redTeamScenarios.create(CLIENT_ID, scenario);
+
+      const config = hardenedConfig({ dast: { enabled: true, allowlist: [target] } });
+      const runners = createLayerRunners({ gateway });
+      const ctx = makeLayerContext<"layer3">({
+        scanId: SCAN_ID,
+        clientId: CLIENT_ID,
+        scan: clone(mockScan),
+        // stagingUrl deliberately omitted — this test isolates the purple-team
+        // loop (which resolves its OWN target from the scenario's
+        // targetAllowlistRef) from Layer 3's separate live-DAST confirmation
+        // path, which requires its own stagingUrl to engage at all.
+        job: baseJob("layer3", { allowLive: true }) as never,
+        store,
+        config,
+        priorOutputs: {
+          layer0: mockLayer0Output,
+          layer2: { probable: mockProbableFindings, demoted: [] },
+        },
+      });
+
+      const out = await runners.layer3(ctx);
+      const sqliFinding = out.confirmed.find((c) => c.category === "sql_injection")!;
+
+      // A real scenario run actually happened — one entry, for the SQLi
+      // finding the "injection" scenario category matches.
+      expect(out.purpleTeamEntries.length).toBe(1);
+      expect(out.purpleTeamEntries[0]?.scenarioId).toBe(scenario.id);
+      expect(out.purpleTeamEntries[0]?.findingId).toBe(sqliFinding.id);
+      expect(out.purpleTeamEntries[0]?.findingCategory).toBe("sql_injection");
+
+      // The SAME DetectionCoverage row A7 persisted above now carries a real
+      // verification block (B5 composing on top of B6's row, not a second
+      // disconnected write).
+      const rows = await store.detectionCoverage.list(CLIENT_ID);
+      const sqliCoverage = rows.find((r) => r.findingId === sqliFinding.id);
+      expect(sqliCoverage?.verification).toBeDefined();
+      expect(sqliCoverage?.verification?.scenarioId).toBe(scenario.id);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 15_000);
 });
 
 describe("layer runner adapters — Layer 4 (fix generation)", () => {
@@ -283,6 +461,44 @@ describe("layer runner adapters — Layer 4 (fix generation)", () => {
       expect(request.tools).toBeUndefined();
       expect(request.responseFormat).toBe("json");
     }
+  });
+
+  it("A12 — logs a warning when the agent loop is enabled but maxToolCalls is explicitly 0", async () => {
+    const { store } = makeInMemoryStore();
+    const runners = createLayerRunners({ gateway }); // no repoRoot ⇒ empty source reader
+    // FixAgentLoopConfigSchema now defaults maxToolCalls to 3 (A12); this test
+    // exercises the one remaining silent-gap case, where an operator has
+    // explicitly overridden it back to 0.
+    const config = hardenedConfig({
+      fixGeneration: { agentLoop: { enabled: true, maxIterations: 1, maxToolCalls: 0 } },
+    });
+    const warnings: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    const logger = {
+      debug() {},
+      info() {},
+      warn(message: string, fields?: Record<string, unknown>) {
+        warnings.push({ message, fields });
+      },
+      error() {},
+      child() {
+        return logger;
+      },
+    };
+
+    const ctx = makeLayerContext<"layer4">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer4") as never,
+      store,
+      config,
+      logger,
+      priorOutputs: { layer3: { confirmed: mockConfirmedFindings, unconfirmed: [] } },
+    });
+
+    await runners.layer4(ctx);
+
+    expect(warnings.some((w) => w.message === "worker.fix_agent_loop.no_tool_calls")).toBe(true);
   });
 
   it("A5 — with fixGeneration.agentLoop configured, the bounded agent loop is reached with the operator's bounds", async () => {
@@ -448,6 +664,10 @@ describe("layer runner adapters — Layer 5 (report + gate)", () => {
       job: baseJob("layer5", { autoApply: false }) as never,
       store,
       priorOutputs: {
+        // A2 — Layer 5 now resolves the App Map exactly like Layers 1-3;
+        // without this the layer throws "App Map not found" (see the A2
+        // test below for the dedicated regression check on that wiring).
+        layer0: mockLayer0Output,
         layer1: { candidates: mockCandidateFindings },
         layer2: { probable: mockProbableFindings, demoted: [] },
         layer3: { confirmed: mockConfirmedFindings, unconfirmed: mockUnconfirmedFindings },
@@ -476,6 +696,7 @@ describe("layer runner adapters — Layer 5 (report + gate)", () => {
       job: baseJob("layer5", { autoApply: false }) as never,
       store,
       priorOutputs: {
+        layer0: mockLayer0Output,
         layer2: { probable: [], demoted: [demotedDep] },
         layer3: { confirmed: mockConfirmedFindings, unconfirmed: [] },
         layer4: { fixes: [] },
@@ -486,6 +707,179 @@ describe("layer runner adapters — Layer 5 (report + gate)", () => {
     // toolsConsolidated is derived from candidates + demoted; here only the
     // demoted dep (source "osv") is available, proving the cache path is used.
     expect(out.report.executiveSummary.toolsConsolidated).toContain("osv");
+  });
+
+  it("A2 — resolves the App Map like Layers 1-3 and threads it into buildReport: detection-coverage stops being permanently empty", async () => {
+    const { store } = makeInMemoryStore();
+    const runners = createLayerRunners({ gateway });
+    const ctx = makeLayerContext<"layer5">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer5", { autoApply: false }) as never,
+      store,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer3: { confirmed: mockConfirmedFindings, unconfirmed: [] },
+        layer4: { fixes: [] },
+      },
+    });
+
+    const out = await runners.layer5(ctx);
+    // buildDetectionCoverage (B6) can only produce a verdict per confirmed
+    // finding when it has a real App Map to resolve routes/telemetry
+    // against — before A2, `appMap` was always undefined here and this
+    // section rendered permanently empty ([]).
+    expect(out.report.blueTeam.detectionEngineering.coverage.length).toBe(
+      mockConfirmedFindings.length,
+    );
+    for (const c of out.report.blueTeam.detectionEngineering.coverage) {
+      expect(c.reasoning.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("throws when the App Map is genuinely unavailable, exactly like Layers 1-3", async () => {
+    const { store } = makeInMemoryStore();
+    const runners = createLayerRunners({ gateway });
+    const scanWithNoAppMap = { ...clone(mockScan), appMapId: undefined };
+    const ctx = makeLayerContext<"layer5">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: scanWithNoAppMap,
+      job: baseJob("layer5", { autoApply: false }) as never,
+      store,
+      priorOutputs: {
+        layer3: { confirmed: mockConfirmedFindings, unconfirmed: [] },
+        layer4: { fixes: [] },
+      },
+    });
+
+    await expect(runners.layer5(ctx)).rejects.toThrow(/App Map not found/);
+  });
+
+  it("A8 — purple-team entries computed at Layer 3 flow through the in-process priorOutputs cache into buildReport's purpleTeam section", async () => {
+    const { store } = makeInMemoryStore();
+    const runners = createLayerRunners({ gateway });
+    const purpleTeamEntries = [
+      {
+        scenarioId: "scn_test_0001",
+        scenarioName: "Test scenario",
+        findingId: CONFIRMED_SQLI_ID,
+        findingCategory: "sql_injection",
+        detected: true,
+        reason: "the rule's route+method condition matched the scenario's baseline request",
+      },
+    ];
+    const ctx = makeLayerContext<"layer5">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer5", { autoApply: false }) as never,
+      store,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer3: { confirmed: mockConfirmedFindings, unconfirmed: [], purpleTeamEntries },
+        layer4: { fixes: [] },
+      },
+    });
+
+    const out = await runners.layer5(ctx);
+    expect(out.report.blueTeam.purpleTeam.entries).toEqual(purpleTeamEntries);
+    expect(out.report.blueTeam.purpleTeam.totalScenarios).toBe(1);
+    expect(out.report.blueTeam.purpleTeam.detectedCount).toBe(1);
+  });
+
+  it("A8 — a resumed run with an empty in-process cache reports zero purple-team scenarios, never a fabricated verdict", async () => {
+    const { store } = makeInMemoryStore();
+    const runners = createLayerRunners({ gateway });
+    const ctx = makeLayerContext<"layer5">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer5", { autoApply: false }) as never,
+      store,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        // no layer3 cache at all — forces the store fallback for confirmed/
+        // unconfirmed, and [] for purpleTeamEntries (not persisted, by design).
+        layer4: { fixes: [] },
+      },
+    });
+    await store.confirmed.bulkCreate(CLIENT_ID, mockConfirmedFindings);
+
+    const out = await runners.layer5(ctx);
+    expect(out.report.blueTeam.purpleTeam).toEqual({
+      entries: [],
+      totalScenarios: 0,
+      detectedCount: 0,
+      undetectedCount: 0,
+    });
+  });
+
+  it("A13 — generates real advisory hardening recommendations from an actual repo checkout on disk and threads them into buildReport", async () => {
+    const { store } = makeInMemoryStore();
+    const repoRoot = mkdtempSync(join(tmpdir(), "montr-a13-hardening-"));
+    try {
+      // A genuinely empty checkout: mockAppMap.frameworks includes "nextjs"
+      // with no next.config.{js,mjs,ts,cjs} present, which
+      // detectSecurityHeaderGaps (packages/hardening/src/categories/
+      // security-headers.ts) real-detects as a missing-headers gap — not a
+      // hand-fed fixture.
+      writeFileSync(join(repoRoot, "package.json"), JSON.stringify({ name: "tmp" }));
+
+      const runners = createLayerRunners({ gateway, resolveRepoRoot: () => repoRoot });
+      const ctx = makeLayerContext<"layer5">({
+        scanId: SCAN_ID,
+        clientId: CLIENT_ID,
+        scan: clone(mockScan),
+        job: baseJob("layer5", { autoApply: false }) as never,
+        store,
+        priorOutputs: {
+          layer0: mockLayer0Output,
+          layer3: { confirmed: mockConfirmedFindings, unconfirmed: [] },
+          layer4: { fixes: [] },
+        },
+      });
+
+      const out = await runners.layer5(ctx);
+      expect(out.report.blueTeam.hardening.advisoryOnly).toBe(true);
+      expect(out.report.blueTeam.hardening.recommendations.length).toBeGreaterThan(0);
+      expect(
+        out.report.blueTeam.hardening.recommendations.some(
+          (r) => r.category === "security_headers",
+        ),
+      ).toBe(true);
+      // ⛔ Architectural boundary (B9): never a diff/patch/RiskClass field.
+      for (const r of out.report.blueTeam.hardening.recommendations) {
+        expect(r).not.toHaveProperty("diff");
+        expect(r).not.toHaveProperty("riskClass");
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("A13 — degrades to an honest empty list (never a guess) when there is no local repo checkout to inspect", async () => {
+    const { store } = makeInMemoryStore();
+    // No resolveRepoRoot override, and mockScan.repo is a remote https:// URL
+    // ⇒ defaultRepoRoot resolves to undefined, exactly like Layer 1/4's own
+    // remote-repo degradation.
+    const runners = createLayerRunners({ gateway });
+    const ctx = makeLayerContext<"layer5">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer5", { autoApply: false }) as never,
+      store,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer3: { confirmed: mockConfirmedFindings, unconfirmed: [] },
+        layer4: { fixes: [] },
+      },
+    });
+
+    const out = await runners.layer5(ctx);
+    expect(out.report.blueTeam.hardening.recommendations).toEqual([]);
   });
 });
 

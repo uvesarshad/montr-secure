@@ -30,13 +30,19 @@
  * for the full upstream spec (see that file's own header for why a subset is
  * the right scope here).
  *
- * A real, structural gap this evaluator surfaces "for free": `RedTeamStep`
- * (packages/contracts/src/phase4.ts) carries no request-body field, and
- * `runScenario` never sends one (scenarios.ts's transport.send call passes
- * only method/url/signal) — so a rule whose condition depends on
- * `cs-body|contains` can currently never fire against a scenario-run
- * transcript. `evaluateSigmaRule` reports this explicitly in its `reason`
- * rather than silently returning `fired: false` with no explanation.
+ * A10 (2026-09-12): `RedTeamStep` (packages/contracts/src/phase4.ts) now
+ * carries an optional `body` field, and `runScenario` (scenarios.ts) sends it
+ * verbatim when a step defines one and records it on the transcript exchange
+ * as `request.bodySnippet` — so a rule whose condition depends on
+ * `cs-body|contains` CAN fire against a scenario-run transcript, exactly like
+ * a `cs-uri-query|contains` condition already could. This was previously a
+ * genuine structural gap (no scenario step could ever populate a body at
+ * all); `evaluateSigmaRule` below still reports the specific per-request
+ * reason when a body-dependent marker isn't found — either because this
+ * particular exchange's step defined no body (the gap that remains for
+ * scenarios/steps that genuinely don't carry a body payload) or because the
+ * body it sent simply didn't contain the marker — rather than silently
+ * returning `fired: false` with no explanation either way.
  */
 import type {
   Category,
@@ -278,7 +284,7 @@ export function evaluateSigmaRule(
 
   const bodyGap =
     parsed.bodyContains.length > 0 && bodyString === ""
-      ? " — note: this scenario runner never sends a request body (RedTeamStep carries no body field, and runScenario's transport.send call passes only method/url), so a body-only marker can never match today"
+      ? " — note: this exchange's RedTeamStep defined no request body (RedTeamStep.body was unset for this step), so a body-only marker cannot match against it; a step with a body would be evaluated against it (see scenarios.ts's runScenario)"
       : "";
   const allMarkers = [...parsed.queryContains, ...parsed.bodyContains];
   return {

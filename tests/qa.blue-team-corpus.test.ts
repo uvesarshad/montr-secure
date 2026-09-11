@@ -34,9 +34,22 @@ describe("BLUE_TEAM_GROUND_TRUTH — labelled subset sanity", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("contains at least one expected-true and one expected-false case (not a trivially one-sided corpus)", () => {
+  it("contains at least one expected-true case", () => {
+    // Before A10 (2026-09-12), 3 of the 9 labelled cases (owasp-a03-command-injection,
+    // owasp-a08-software-data-integrity, owasp-a10-ssrf) were expectedFired: false —
+    // not because their scenario genuinely shouldn't trigger detection, but purely
+    // because RedTeamStep had no body field, so their body-only confirming payload
+    // could never be sent/found. A10 gave RedTeamStep a real `body` field, populated
+    // it on those 3 scenarios' confirming steps, and wired runScenario to send it —
+    // so all 9 labelled cases are now honestly expectedFired: true (see
+    // blue-team-corpus.ts's module header and each case's expectedReason for the
+    // traced explanation). This is a real, traceable consequence of fixing a genuine
+    // bug, not a corpus regression — but it does mean this labelled subset alone no
+    // longer exercises evaluateSigmaRule's negative/near-miss path; that path is
+    // covered directly by tests/confirm.purple-loop.test.ts's own hand-built
+    // negative-case unit tests (wrong path, no marker, unset body), independent of
+    // this corpus.
     expect(BLUE_TEAM_GROUND_TRUTH.some((c) => c.expectedFired)).toBe(true);
-    expect(BLUE_TEAM_GROUND_TRUTH.some((c) => !c.expectedFired)).toBe(true);
   });
 
   it("buildBlueTeamScenario reuses the catalogue template's REAL steps verbatim (never re-authored)", () => {

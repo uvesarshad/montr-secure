@@ -365,9 +365,12 @@ export type {
 export { exportAuditLog } from "@montr/state-store";
 export type { AuditExportFormat } from "@montr/state-store";
 
-// MITRE ATT&CK report surfacing (B2) — standalone, not yet wired into the
-// EXPORTERS registry above (no format enum slot exists for it yet; a later
-// wave wires this in alongside the other blue-team capabilities).
+// MITRE ATT&CK report surfacing (B2) — WIRED directly into the assembled
+// Report via report-builder.ts's buildBlueTeamReport (see mitre-attack.ts's
+// header), but NOT registered in the EXPORTERS registry above: no
+// `ExportFormat` enum slot exists for a standalone MITRE export today
+// (`packages/contracts/src/report.ts`'s `ExportFormatSchema`), and no task
+// currently scoped to add one.
 export {
   buildMitreFindingMappings,
   buildMitreAttackSection,

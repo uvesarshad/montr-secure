@@ -9,7 +9,7 @@ import {
   UnconfirmedFindingSchema,
 } from "./findings.js";
 import { FixSchema, PullRequestSchema } from "./fix.js";
-import { ReportSchema } from "./report.js";
+import { PurpleTeamScenarioSummaryEntrySchema, ReportSchema } from "./report.js";
 
 /**
  * Layer I/O contracts (§3.2, §7). Each layer consumes the previous layer's
@@ -38,10 +38,20 @@ export const Layer2OutputSchema = z.object({
 });
 export type Layer2Output = z.infer<typeof Layer2OutputSchema>;
 
-/** Layer 3 — Exploit Confirmation (probable → confirmed; rest to the appendix). */
+/**
+ * Layer 3 — Exploit Confirmation (probable → confirmed; rest to the appendix).
+ *
+ * `purpleTeamEntries` (A8) mirrors `Layer2Output.demoted`'s convention: an
+ * additive, non-persisted extra field carried ONLY through the orchestrator's
+ * in-process `priorOutputs` cache (see `packages/orchestrator/src/persist.ts`,
+ * which persists `confirmed`/`unconfirmed` but never this field) for Layer 5
+ * to fold into `BuildReportInput.purpleTeamEntries` — `[]` on a resumed/
+ * distributed run where the cache is empty, never fabricated.
+ */
 export const Layer3OutputSchema = z.object({
   confirmed: z.array(ConfirmedFindingSchema).default([]),
   unconfirmed: z.array(UnconfirmedFindingSchema).default([]),
+  purpleTeamEntries: z.array(PurpleTeamScenarioSummaryEntrySchema).default([]),
 });
 export type Layer3Output = z.infer<typeof Layer3OutputSchema>;
 

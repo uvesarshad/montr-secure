@@ -8,6 +8,17 @@
  * whether B3's generated detection rules would actually have caught the
  * red-team scenarios B5's purple-loop runs (packages/confirm/src/purple-loop.ts).
  *
+ * A10 (2026-09-12): `RedTeamStep` (packages/contracts/src/phase4.ts) gained an
+ * optional `body` field and `runScenario` (packages/confirm/src/scenarios.ts)
+ * now sends it and records it on the transcript exchange. The three
+ * catalogue templates below whose confirming payload lives in a POST body
+ * (`owasp-a03-command-injection`, `owasp-a08-software-data-integrity`,
+ * `owasp-a10-ssrf`) now carry that real payload on the relevant step's
+ * `body` field (packages/state-store/src/redteam-catalogue.ts), so the
+ * genuine structural miss documented below is RESOLVED for these three —
+ * they are relabelled `expectedFired: true` accordingly. See each case's
+ * `expectedReason` for the concrete marker/step that now fires.
+ *
  * SCOPE (honest, not exhaustive): `REDTEAM_SCENARIO_CATALOGUE`
  * (packages/state-store/src/redteam-catalogue.ts) has 13 templates. 9 of the
  * 13 (69%) are labelled here — the ones with a single, coherent target
@@ -50,14 +61,15 @@
  *      never hand-edited) are walked in order: does ANY step's concretized
  *      request (via `scenarios.ts`'s `concretePath` — `[id]`/`:id` segments
  *      become `1`) match path-prefix + method, AND (when markers are
- *      required) contain a marker substring in its query string? `runScenario`
- *      never sends a request body (`RedTeamStep` carries no body field —
- *      documented in confirmation.md's B5 AGENT NOTE), so a marker that only
- *      ever appears in a POST body in the scenario's real-world narrative
- *      (not literally encoded into `RedTeamStep.path`) can never be found —
- *      three of the nine labelled cases below (`A03_CMD_INJECTION`,
- *      `A08_INTEGRITY_FAILURES`, `A10_SSRF`) are genuine, structural MISSES
- *      for exactly this reason, not mislabelled.
+ *      required) contain a marker substring in its query string OR its
+ *      `RedTeamStep.body` (as of A10, 2026-09-12, `runScenario` sends the
+ *      step's `body` verbatim and records it on the transcript exchange, so a
+ *      marker living only in a POST body is now findable there)? Three of the
+ *      nine labelled cases below (`A03_CMD_INJECTION`, `A08_INTEGRITY_FAILURES`,
+ *      `A10_SSRF`) carry their confirming payload in a POST body per their
+ *      real-world narrative — before A10 this was a genuine structural MISS
+ *      (`RedTeamStep` had no body field at all); their catalogue steps now
+ *      carry the real body payload and all three fire.
  *
  * `runBlueTeamCorpus` below does not hand-compute the aggregate — it
  * ACTUALLY invokes the real `generateDetectionRules` (B3) and the real
@@ -154,13 +166,14 @@ export const BLUE_TEAM_GROUND_TRUTH: readonly BlueTeamGroundTruthCase[] = [
     findingCategory: "command_injection",
     targetRoute: { path: "/api/reports/export", method: "POST" },
     handlerFile: "app/api/reports/export/route.ts",
-    expectedFired: false,
+    expectedFired: true,
     expectedReason:
       'command_injection has CATEGORY_MARKERS (e.g. "&& id", "$(id)") — condition requires a marker in the ' +
       'query string or body. All 3 of this scenario\'s steps use the IDENTICAL literal path "/api/reports/export" ' +
-      "with no query string (the narrative describes the payload going into a POST body/form field, but " +
-      "RedTeamStep carries no body field and runScenario's transport.send call never sends one — the documented " +
-      "B5 structural gap). Route matches on every step; no marker is ever findable — does NOT fire.",
+      'with no query string, but step 1\'s body (`{"format":"pdf","filename":"quarterly-report$(id)"}`) ' +
+      "now carries the payload for real (A10, 2026-09-12: RedTeamStep.body + runScenario sending it) and " +
+      'literally contains the CATEGORY_MARKERS entry "$(id)" — route+method matches, and the body marker is ' +
+      "found — fires on step 1.",
   },
   {
     templateKey: "owasp-a03-xss",
@@ -200,26 +213,29 @@ export const BLUE_TEAM_GROUND_TRUTH: readonly BlueTeamGroundTruthCase[] = [
     findingCategory: "insecure_deserialization",
     targetRoute: { path: "/api/webhooks/receive", method: "POST" },
     handlerFile: "app/api/webhooks/receive/route.ts",
-    expectedFired: false,
+    expectedFired: true,
     expectedReason:
-      'insecure_deserialization has CATEGORY_MARKERS (e.g. "__proto__", "rO0AB") — condition requires a ' +
-      "marker in the query string or body. All 3 steps use the IDENTICAL literal path " +
-      '"/api/webhooks/receive" with no query string (the tampered/altered payload lives in the POST body per ' +
-      "the narrative, which runScenario never sends — same structural gap as command_injection above). Route " +
-      "matches every step; no marker is ever findable — does NOT fire.",
+      'insecure_deserialization has CATEGORY_MARKERS (e.g. "__proto__", "rO0AB", "\\"@type\\"") — condition ' +
+      "requires a marker in the query string or body. All 3 steps use the IDENTICAL literal path " +
+      '"/api/webhooks/receive" with no query string, but step 2\'s body ' +
+      '(`{"@type":"com.example.internal.AdminAction","event":"payment.completed"}`) now carries the ' +
+      "type/class-marker substitution payload for real (A10, 2026-09-12) and literally contains the " +
+      'CATEGORY_MARKERS entry `"@type"` — route+method matches, and the body marker is found — fires on step 2.',
   },
   {
     templateKey: "owasp-a10-ssrf",
     findingCategory: "ssrf",
     targetRoute: { path: "/api/integrations/webhook-url", method: "POST" },
     handlerFile: "app/api/integrations/webhook-url/route.ts",
-    expectedFired: false,
+    expectedFired: true,
     expectedReason:
-      'ssrf has CATEGORY_MARKERS (e.g. "169.254.169.254", "http://localhost") — condition requires a marker ' +
-      "in the query string or body. All 4 steps use the IDENTICAL literal path " +
-      '"/api/integrations/webhook-url" with no query string (the malicious target URL is the request BODY ' +
-      "parameter per the narrative, never sent by runScenario — same structural gap). Route matches every step; " +
-      "no marker is ever findable — does NOT fire.",
+      'ssrf has CATEGORY_MARKERS (e.g. "169.254.169.254", "http://localhost", "http://127.0.0.1") — condition ' +
+      "requires a marker in the query string or body. All 4 steps use the IDENTICAL literal path " +
+      '"/api/integrations/webhook-url" with no query string, but step 1\'s body ' +
+      '(`{"webhookUrl":"http://127.0.0.1/"}`) now carries the loopback-probe payload for real (A10, ' +
+      '2026-09-12) and literally contains the CATEGORY_MARKERS entry "http://127.0.0.1" — route+method ' +
+      "matches, and the body marker is found — fires on step 1 (step 2's body also contains " +
+      '"169.254.169.254" and would fire independently, but step 1 is evaluated first).',
   },
 ];
 

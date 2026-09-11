@@ -55,6 +55,7 @@ export {
   isLiveEligible,
   LIVE_CONFIRMABLE_CATEGORIES,
   defaultBrowserDriver,
+  defaultTransport,
 } from "./live.js";
 
 // ⛔ Red-team scenario library (Phase-4 / Wave 5, §16). A scenario PARAMETERIZES

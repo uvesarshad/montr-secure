@@ -121,6 +121,11 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
     ["fixGeneration", "agentLoop", "maxToolCalls"],
     parseNum,
   );
+  // A9 — semantic codebase index, built alongside the App Map in Layer 0. OFF
+  // by default — see SemanticIndexConfigSchema's doc comment (schema.ts) and
+  // apps/worker/src/runners.ts's Layer 0 wiring.
+  set("MONTR_SEMANTIC_INDEX_ENABLED", ["semanticIndex", "enabled"], parseBool);
+  set("MONTR_SEMANTIC_INDEX_EMBEDDING_MODEL", ["semanticIndex", "embeddingModel"]);
   // HashiCorp Vault connection (only consulted when MONTR_KEY_SOURCE=vault).
   set("VAULT_ADDR", ["security", "vault", "addr"]);
   set("VAULT_TOKEN", ["security", "vault", "token"]);

@@ -72,6 +72,44 @@ describe("runScenario — allowlisted staging target (authorized)", () => {
     }
   });
 
+  it("A10: sends a step's request body when set, and records it on the transcript exchange", async () => {
+    const { transport, send } = fakeEngine();
+    const deps: ScenarioRunDeps = { egressGuard: passEgress, transport };
+    const result = await runScenario(
+      {
+        scenario: scenarioOf({
+          steps: [
+            { order: 0, action: "baseline (no body)", method: "GET", path: "/api/users" },
+            {
+              order: 1,
+              action: "POST with a body payload",
+              method: "POST",
+              path: "/api/webhooks/receive",
+              body: '{"@type":"com.example.internal.AdminAction"}',
+            },
+          ],
+        }),
+        config: configWith({
+          scope: { ...getHardenedDefaults().dast.scope, maxMutatingRequests: 1 },
+        }),
+        allowLive: true,
+      },
+      deps,
+    );
+    expect(send).toHaveBeenCalledTimes(2);
+    // Step 0 defined no body — the transport call must carry no `body` key at all.
+    expect(send.mock.calls[0]?.[0]).not.toHaveProperty("body");
+    // Step 1's body is forwarded to the transport verbatim.
+    expect(send.mock.calls[1]?.[0]).toMatchObject({
+      body: '{"@type":"com.example.internal.AdminAction"}',
+    });
+    // ...and recorded on the transcript's matching exchange as request.bodySnippet.
+    expect(result.transcript[0]?.request.bodySnippet).toBeUndefined();
+    expect(result.transcript[1]?.request.bodySnippet).toBe(
+      '{"@type":"com.example.internal.AdminAction"}',
+    );
+  });
+
   it("gate-only mode (no transport) authorizes + checks every step but sends nothing", async () => {
     const result = await runScenario(
       { scenario: scenarioOf(), config: configWith(), allowLive: true },

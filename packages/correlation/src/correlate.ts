@@ -28,6 +28,7 @@ import {
   type Logger,
   type MontrMetrics,
 } from "@montr/telemetry";
+import type { SemanticMatch } from "@montr/semantic-index";
 import { AppMapIndex } from "./grounding.js";
 import { groupCandidates, type RootCauseGroup } from "./dedup.js";
 import { round3, scoreGrounding, type ScoreTriple } from "./scoring.js";
@@ -41,6 +42,9 @@ import {
   parseCorrelationResponse,
 } from "./llm.js";
 import type { FalsePositiveTuning } from "./tuning.js";
+
+/** A9 — semantic-code-search callback (`@montr/semantic-index`'s `querySemanticIndex`), injected structurally — see `CorrelateInput.semanticSearch`'s doc comment. */
+export type SemanticSearchFn = (queryText: string, topK?: number) => Promise<SemanticMatch[]>;
 
 const DEFAULT_LLM_TRUST = 0.5;
 const DEFAULT_LLM_MAX_DELTA = 0.2;
@@ -75,6 +79,68 @@ export interface CorrelateInput {
    * omit to run without corpus feedback. Never promotes; never relaxes a guardrail.
    */
   fpTuning?: FalsePositiveTuning;
+  /**
+   * A9 — optional semantic-code-search callback (`@montr/semantic-index`'s
+   * `querySemanticIndex`, injected structurally — this package never imports
+   * `@montr/llm-gateway`/`@montr/state-store`'s embeddings/pgvector
+   * machinery directly, mirroring `ConfirmDeps.semanticSearch`'s convention
+   * in `@montr/confirm`). When supplied, a promoted candidate's own evidence
+   * snippet is used to retrieve structurally/semantically similar code
+   * elsewhere in the repo; when that surfaces a genuinely different location,
+   * a plain-language, PURELY INFORMATIONAL sentence naming it is appended to
+   * the finding's reachability hypothesis — grounding a candidate against
+   * similar code, per the audit's own framing. Deliberately never feeds into
+   * `scoring.ts`'s numeric reachability/exposure/impact formula: that formula
+   * is calibrated against the golden corpus (see taxonomy.ts's AGENT NOTE on
+   * `CATEGORY_IMPACT_BASE`) and semantic similarity is not a corpus-validated
+   * scoring signal. Degrades SILENTLY on any error (no pgvector, no
+   * embeddings-capable provider key, timeout, zero matches) — an unavailable
+   * or failing index can never fail or slow down a scan's actual scoring, and
+   * never demotes/promotes a finding on its own.
+   */
+  semanticSearch?: SemanticSearchFn;
+}
+
+/** Cap on semantic-search matches surfaced per candidate — informational only, never a scoring input. */
+const SEMANTIC_GROUNDING_TOP_K = 3;
+/** Below this cosine similarity, a match is too weak to be worth citing in a hypothesis. */
+const SEMANTIC_GROUNDING_MIN_SIMILARITY = 0.75;
+
+/**
+ * A9 — best-effort semantic grounding: retrieve code elsewhere in the repo
+ * structurally/semantically similar to this candidate's own evidence, and
+ * render a short, factual sentence naming the strongest OTHER locations
+ * found (excluding the candidate's own file, which trivially "matches
+ * itself"). Returns `undefined` on any error or when nothing distinct and
+ * similar enough was found — the caller appends it only when present, so a
+ * disabled/unavailable/quiet index changes nothing about the hypothesis text.
+ */
+async function semanticGroundingNote(
+  semanticSearch: SemanticSearchFn,
+  rep: CandidateFinding,
+  logger: Logger,
+): Promise<string | undefined> {
+  const queryText = rep.evidenceSnippet?.trim() || `${rep.category} at ${rep.location.file}`;
+  let matches: SemanticMatch[];
+  try {
+    matches = await semanticSearch(queryText, SEMANTIC_GROUNDING_TOP_K);
+  } catch (err) {
+    logger.warn("correlation.semantic_search.failed", {
+      message: err instanceof Error ? err.message : "unknown",
+    });
+    return undefined;
+  }
+  const elsewhere = matches.filter(
+    (m) => m.similarity >= SEMANTIC_GROUNDING_MIN_SIMILARITY && m.file !== rep.location.file,
+  );
+  if (elsewhere.length === 0) return undefined;
+  const cites = elsewhere
+    .map((m) => `${m.file}:${m.startLine}${m.symbolName ? ` (${m.symbolName})` : ""}`)
+    .join(", ");
+  return (
+    ` A semantic search over the repository's code index found structurally similar code at ` +
+    `${cites} — worth checking whether the same pattern recurs there.`
+  );
 }
 
 interface PendingProbable {
@@ -184,6 +250,15 @@ export async function correlate(input: CorrelateInput): Promise<Layer2Output> {
       impact = enriched.impact;
       reachHypo = enriched.reachHypothesis;
       exploitHypo = enriched.exploitHypothesis;
+    }
+
+    // A9 — best-effort semantic grounding (informational only — see
+    // `CorrelateInput.semanticSearch`'s doc comment; never touches reach/
+    // impact/exposure). Runs after LLM enrichment so the note is appended to
+    // whichever hypothesis text is final for this candidate.
+    if (input.semanticSearch) {
+      const note = await semanticGroundingNote(input.semanticSearch, rep, logger);
+      if (note) reachHypo = `${reachHypo}${note}`;
     }
 
     const rootCauseId = makeRootCauseId(scanId, rep.category, group.key);

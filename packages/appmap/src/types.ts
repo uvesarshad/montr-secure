@@ -73,6 +73,31 @@ export interface BuildAppMapDeps {
   signal?: AbortSignal;
   /** Emit intra-layer progress (0..100). */
   onProgress?: (phase: string, pct: number, message?: string) => void;
+  /**
+   * A9 — best-effort hook to build the semantic codebase index
+   * (`@montr/semantic-index`'s `buildSemanticIndex`) alongside the App Map,
+   * while the sandboxed checkout at `workspace.dir` still exists (it is
+   * cleaned up the moment `buildAppMap` returns — see this file's header
+   * comment). STRUCTURAL, not `@montr/semantic-index`'s own types: that
+   * package already depends on `@montr/appmap` (it reuses this package's
+   * parser loaders — see `index.ts`'s re-exports), so this package importing
+   * it back would be a circular dependency. `apps/worker/src/runners.ts`
+   * closes over the real `buildSemanticIndex` call, gated on
+   * `config.semanticIndex.enabled`, an embeddings-capable provider, and a
+   * pgvector-backed `CodeChunkRepository` all being available (see
+   * docs/modules/semantic-index.md). Absent ⇒ no semantic index is built —
+   * today's behavior, unchanged. Skipped on the DECIDE-2 reuse path (a
+   * reused map's index was already built when that commit was first
+   * scanned). Any error this hook throws is caught and logged as a warning
+   * by `buildAppMap` — it can never fail or delay a scan's actual App Map.
+   */
+  semanticIndex?: (input: {
+    dir: string;
+    clientId: string;
+    appMapId: string;
+    repo: string;
+    commitSha: string;
+  }) => Promise<unknown>;
 }
 
 /** Result of resolving the intake target to an on-disk workspace. */

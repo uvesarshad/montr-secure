@@ -134,13 +134,14 @@ describe("evaluateSigmaRule — structural evaluation, not a coin flip", () => {
     expect(outcome.reason).toMatch(/none of this rule's payload markers/);
   });
 
-  it("flags the structural body-marker gap: scenario requests never carry a body", () => {
+  it("flags a per-request body-marker gap: this exchange's RedTeamStep defined no body", () => {
     const outcome = evaluateSigmaRule(parsed, {
       method: "GET",
       url: "https://staging.acme.test/api/users?id=1",
-      // no bodySnippet — mirrors what runScenario's transport.send actually sends
+      // no bodySnippet — mirrors a RedTeamStep with no `body` field set (runScenario
+      // sends step.body when a step defines one, as of A10 — see scenarios.ts)
     });
-    expect(outcome.reason).toMatch(/never sends a request body/);
+    expect(outcome.reason).toMatch(/RedTeamStep\.body was unset for this step/);
   });
 
   it("tolerates dynamic route segments ([id]/:id) the same way scenarios.ts's concretePath does", () => {
@@ -229,6 +230,33 @@ describe("runPurpleTeamScenario — real gated scenario run + real Sigma evaluat
     expect(result.overall.fired).toBe(true);
     expect(result.overall.scenarioId).toBe("scn_sqli_1");
     expect(result.overall.evidence).toMatch(/OR '1'='1/);
+  });
+
+  it("A10: detected: true when the confirming marker lives ONLY in the step's request body", async () => {
+    const { transport } = fakeEngine();
+    const rules = realSqlInjectionRules();
+    const result = await runPurpleTeamScenario(
+      {
+        scenario: scenarioOf({
+          steps: [
+            {
+              order: 0,
+              action: "sqli payload in the POST body, no query string",
+              method: "GET",
+              path: "/api/users",
+              body: "id=1' OR '1'='1",
+            },
+          ],
+        }),
+        finding: SQLI_FINDING,
+        config: configWith(),
+        allowLive: true,
+      },
+      { egressGuard: passEgress, transport, detectionRules: rules, now: () => FIXED_NOW },
+    );
+    expect(result.overall.fired).toBe(true);
+    expect(result.overall.evidence).toMatch(/request body/);
+    expect(result.ruleEvaluations[0]?.matchedFields).toContain("cs-body");
   });
 
   it("detected: false with a concrete, non-generic reason when the rule genuinely doesn't cover the request shape", async () => {

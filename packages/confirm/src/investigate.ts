@@ -108,7 +108,10 @@ function summarizeRoute(input: ConfirmInput, finding: ProbableFinding): string {
 const INVESTIGATION_SYSTEM_PROMPT = [
   "You are a security exploit-confirmation INVESTIGATOR for Montr Secure's Layer 3.",
   "You have READ-ONLY tools to inspect the target repository and its already-built App Map:",
-  "read_file, grep, find_definition, query_call_graph, list_routes, get_orm_model.",
+  "read_file, grep, find_definition, query_call_graph, list_routes, get_orm_model, semantic_search.",
+  "semantic_search retrieves code by MEANING (a description or a snippet) rather than literal text — use it",
+  "alongside grep to find other places the same vulnerable pattern occurs, or when you don't know the exact",
+  "symbol/string to grep for; it may be unavailable in this run, in which case fall back to grep.",
   "Use them to trace the actual data flow and check for an ownership/role/authorization check — do not guess.",
   "You can NEVER write, execute, or modify anything; your job is investigation only.",
   'Be conservative: only conclude "confirmed_candidate" when you found a concrete exploit path AND actively',
@@ -208,6 +211,10 @@ function describeToolCall(call: { name: string; input: Record<string, unknown> }
       const file = typeof input.file === "string" ? input.file : "the code";
       return `Checking the call graph for ${file}...`;
     }
+    case "semantic_search": {
+      const query = typeof input.query === "string" ? input.query : "similar code";
+      return `Searching the semantic code index for "${query}"...`;
+    }
     case "list_routes":
       return "Listing App Map routes...";
     case "get_orm_model": {
@@ -285,6 +292,10 @@ export async function runInvestigation(
   const toolCtx: InvestigationToolContext = {
     appMap: input.appMap,
     ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+    // A9 — real semantic-code-search capability, when the caller (apps/worker)
+    // wired one. Absent ⇒ the `semantic_search` tool degrades to an honest
+    // "not available" result (see investigate-tools.ts), never a crash.
+    ...(deps.semanticSearch ? { semanticSearch: deps.semanticSearch } : {}),
   };
 
   const messages: LLMMessage[] = [

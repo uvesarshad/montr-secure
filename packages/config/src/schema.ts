@@ -196,17 +196,21 @@ export type DiscoveryConfig = z.infer<typeof DiscoveryConfigSchema>;
  *
  * `maxIterations` bounds real proposal attempts (each is one additional model
  * round-trip — cost and latency scale directly with it); `maxToolCalls`
- * bounds `read_file` tool round-trips separately and defaults to 0 (no tool
- * exposed at all). Both are capped well below any plausible legitimate value
- * so a config typo (an extra zero) cannot turn into runaway spend.
+ * bounds `read_file` tool round-trips separately. Both default to a small
+ * non-zero value (A12) so an operator who flips `enabled` to true gets this
+ * feature's actual stated purpose — bounded retries WITH sandboxed
+ * multi-file context — rather than retries alone; an operator who wants
+ * retries-only can still set `maxToolCalls: 0` explicitly. Both are capped
+ * well below any plausible legitimate value so a config typo (an extra
+ * zero) cannot turn into runaway spend.
  */
 export const FixAgentLoopConfigSchema = z.object({
   /** ⛔ OFF by default (A5). */
   enabled: z.boolean().default(false),
   /** Real proposal attempts, NOT tool round-trips. 1–10; each is a model round-trip. */
   maxIterations: z.number().int().nonnegative().max(10).default(3),
-  /** `read_file` tool round-trips. 0 (default) exposes no tool at all. 0–20. */
-  maxToolCalls: z.number().int().nonnegative().max(20).default(0),
+  /** `read_file` tool round-trips. Defaults to 3 (A12) so enabling the loop exposes the tool; 0 disables it. 0–20. */
+  maxToolCalls: z.number().int().nonnegative().max(20).default(3),
 });
 export type FixAgentLoopConfig = z.infer<typeof FixAgentLoopConfigSchema>;
 
@@ -215,6 +219,30 @@ export const FixGenerationConfigSchema = z.object({
   agentLoop: FixAgentLoopConfigSchema.default({}),
 });
 export type FixGenerationConfig = z.infer<typeof FixGenerationConfigSchema>;
+
+/**
+ * A9 — the semantic codebase index (`@montr/semantic-index`'s
+ * `buildSemanticIndex`), built as an additional Layer 0 step alongside the
+ * App Map (`packages/appmap/src/build.ts`, `apps/worker/src/runners.ts`).
+ * ⛔ OFF by default, mirroring `FixAgentLoopConfigSchema`'s constructor-opt-in
+ * convention: an unconfigured deployment gets today's exact Layer 0 behavior
+ * unchanged — no embedding calls, no pgvector writes, no extra latency.
+ *
+ * Enabling this alone is not sufficient for the index to actually build —
+ * the worker only builds it when, IN ADDITION, the configured `llm.provider`
+ * has a real embeddings adapter (`azure` or, as of A9, `openai` — see
+ * `packages/llm-gateway/src/embeddings.ts`) AND a pgvector-backed
+ * `CodeChunkRepository` was constructed (requires the `pgvector` Postgres
+ * extension — see docs/modules/semantic-index.md's AGENT NOTE). Any other
+ * combination degrades to a skip with a logged reason, never a failed scan.
+ */
+export const SemanticIndexConfigSchema = z.object({
+  /** ⛔ OFF by default (A9). */
+  enabled: z.boolean().default(false),
+  /** Embedding model / deployment name passed to the embeddings adapter. */
+  embeddingModel: z.string().min(1).default("text-embedding-3-small"),
+});
+export type SemanticIndexConfig = z.infer<typeof SemanticIndexConfigSchema>;
 
 /**
  * Per-tenant BullMQ queue isolation (A27). `perTenantIsolation` is OFF by
@@ -274,6 +302,7 @@ export const MontrConfigSchema = z.object({
   discovery: DiscoveryConfigSchema.default({}),
   queue: QueueConfigSchema.default({}),
   fixGeneration: FixGenerationConfigSchema.default({}),
+  semanticIndex: SemanticIndexConfigSchema.default({}),
 });
 export type MontrConfig = z.infer<typeof MontrConfigSchema>;
 

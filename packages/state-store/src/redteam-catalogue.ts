@@ -105,7 +105,12 @@ export interface RedTeamScenarioTemplate {
 const step = (
   order: number,
   action: string,
-  opts: { method?: RedTeamStep["method"]; path?: string; expectation?: string } = {},
+  opts: {
+    method?: RedTeamStep["method"];
+    path?: string;
+    body?: string;
+    expectation?: string;
+  } = {},
 ): RedTeamStep => ({ order, action, ...opts });
 
 /* ========================================================================
@@ -323,6 +328,7 @@ const A03_CMD_INJECTION: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/reports/export",
+        body: '{"format":"pdf","filename":"quarterly-report"}',
         expectation:
           "Baseline 200/202 with the expected export artifact — reference point for later diffs.",
       },
@@ -333,6 +339,7 @@ const A03_CMD_INJECTION: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/reports/export",
+        body: '{"format":"pdf","filename":"quarterly-report$(id)"}',
         expectation:
           "Command output (e.g. a uid/gid string or username) appearing in the response is direct proof of command injection.",
       },
@@ -343,6 +350,7 @@ const A03_CMD_INJECTION: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/reports/export",
+        body: '{"format":"pdf","filename":"quarterly-report; sleep 5"}',
         expectation:
           "~5s added latency (repeated to rule out jitter) confirms the injected command executed server-side even with no visible output.",
       },
@@ -616,6 +624,7 @@ const A08_INTEGRITY_FAILURES: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/webhooks/receive",
+        body: '{"event":"payment.completed","amount":100,"signature":"a1b2c3d4e5f6"}',
         expectation:
           "Baseline accepted payload — establishes the expected structure and any signature/HMAC header present.",
       },
@@ -626,6 +635,7 @@ const A08_INTEGRITY_FAILURES: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/webhooks/receive",
+        body: '{"event":"payment.completed","amount":100,"signature":"a1b2c3d4e5f7"}',
         expectation:
           "Server must reject a payload with an invalid/missing signature — silent acceptance means the integrity control is decorative.",
       },
@@ -636,6 +646,7 @@ const A08_INTEGRITY_FAILURES: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/webhooks/receive",
+        body: '{"@type":"com.example.internal.AdminAction","event":"payment.completed"}',
         expectation:
           "Deserialization must be restricted to an explicit allowlist of expected types — accepting arbitrary type markers is the precondition for a gadget-chain RCE and must be reported even without a full exploit chain.",
       },
@@ -705,6 +716,7 @@ const A10_SSRF: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/integrations/webhook-url",
+        body: '{"webhookUrl":"https://example.com/callback"}',
         expectation:
           "Baseline 200 confirming the server does fetch the supplied URL and returns a fetch-dependent result.",
       },
@@ -715,6 +727,7 @@ const A10_SSRF: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/integrations/webhook-url",
+        body: '{"webhookUrl":"http://127.0.0.1/"}',
         expectation:
           "Server should refuse to fetch non-public/loopback destinations — a differing response (vs. an unreachable-external-host error) indicates the fetch reached an internal service.",
       },
@@ -725,6 +738,7 @@ const A10_SSRF: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/integrations/webhook-url",
+        body: '{"webhookUrl":"http://169.254.169.254/latest/meta-data/"}',
         expectation:
           "Any content reflected back from the metadata service (instance role, IAM credential material) is a critical, immediately-actionable finding — must be reported with the highest urgency and the credential treated as compromised.",
       },
@@ -735,6 +749,7 @@ const A10_SSRF: RedTeamScenarioTemplate = {
       {
         method: "POST",
         path: "/api/integrations/webhook-url",
+        body: '{"webhookUrl":"http://collaborator.oob-test.example/callback"}',
         expectation:
           "An inbound request to the tester-controlled collaborator endpoint, timed to this step, is proof of blind SSRF even when the application never surfaces the fetch result.",
       },

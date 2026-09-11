@@ -377,3 +377,110 @@ describe("@montr/correlation — Layer 2 correlate (the moat)", () => {
     expect(a).toEqual(b);
   });
 });
+
+describe("A9 — semantic grounding (informational only, never a scoring input)", () => {
+  it("appends a semantic-search note to the reachability hypothesis without touching scores", async () => {
+    const calls: Array<{ queryText: string; topK?: number }> = [];
+    const withoutSemantic = await correlate({
+      ...base,
+      appMap: mockAppMap,
+      candidates: mockCandidateFindings,
+    });
+    const withSemantic = await correlate({
+      ...base,
+      appMap: mockAppMap,
+      candidates: mockCandidateFindings,
+      semanticSearch: async (queryText, topK) => {
+        calls.push({ queryText, topK });
+        return [
+          {
+            id: "chunk_similar",
+            file: "app/api/admin/route.ts",
+            startLine: 20,
+            endLine: 28,
+            language: "typescript",
+            kind: "function",
+            symbolName: "GET",
+            content: "prisma.$queryRawUnsafe(...)",
+            similarity: 0.91,
+          },
+          // A low-similarity match must be filtered out.
+          {
+            id: "chunk_weak",
+            file: "app/api/other/route.ts",
+            startLine: 1,
+            endLine: 5,
+            language: "typescript",
+            kind: "function",
+            symbolName: "POST",
+            content: "unrelated",
+            similarity: 0.2,
+          },
+          // A match in the candidate's OWN file must be filtered out (it
+          // trivially "matches itself").
+          {
+            id: "chunk_self",
+            file: "app/api/users/route.ts",
+            startLine: 9,
+            endLine: 9,
+            language: "typescript",
+            kind: "function",
+            symbolName: "GET",
+            content: "self",
+            similarity: 0.99,
+          },
+        ];
+      },
+    });
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0]?.queryText).toContain("prisma.$queryRawUnsafe");
+
+    const before = withoutSemantic.probable.find((p) => p.category === "sql_injection")!;
+    const after = withSemantic.probable.find((p) => p.category === "sql_injection")!;
+
+    // Scores are byte-identical — semantic search never feeds scoring.
+    expect(after.reachabilityScore).toBe(before.reachabilityScore);
+    expect(after.exposureScore).toBe(before.exposureScore);
+    expect(after.impactScore).toBe(before.impactScore);
+    expect(after.rank).toBe(before.rank);
+    expect(after.exploitHypothesis).toBe(before.exploitHypothesis);
+
+    // Only the reachability hypothesis gains the additive, factual note —
+    // citing the strong cross-file match but not the weak or self match.
+    expect(after.reachabilityHypothesis).toContain(before.reachabilityHypothesis);
+    expect(after.reachabilityHypothesis).toContain("app/api/admin/route.ts:20");
+    expect(after.reachabilityHypothesis).not.toContain("app/api/other/route.ts");
+    expect(after.reachabilityHypothesis).not.toContain("app/api/users/route.ts:9 (");
+  });
+
+  it("degrades silently when semanticSearch throws (never fails correlation)", async () => {
+    const out = await correlate({
+      ...base,
+      appMap: mockAppMap,
+      candidates: mockCandidateFindings,
+      semanticSearch: async () => {
+        throw new Error("pgvector extension not installed");
+      },
+    });
+    expect(() => Layer2OutputSchema.parse(out)).not.toThrow();
+    expect(out.probable.length).toBeGreaterThan(0);
+  });
+
+  it("is a no-op when omitted (default byte-identical behavior)", async () => {
+    const withDefault = await correlate({
+      ...base,
+      appMap: mockAppMap,
+      candidates: mockCandidateFindings,
+    });
+    const withUndefinedResults = await correlate({
+      ...base,
+      appMap: mockAppMap,
+      candidates: mockCandidateFindings,
+      semanticSearch: async () => [],
+    });
+    const sqli1 = withDefault.probable.find((p) => p.category === "sql_injection")!;
+    const sqli2 = withUndefinedResults.probable.find((p) => p.category === "sql_injection")!;
+    expect(sqli2.reachabilityHypothesis).toBe(sqli1.reachabilityHypothesis);
+  });
+});

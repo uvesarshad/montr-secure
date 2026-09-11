@@ -136,15 +136,17 @@ export {
 
 // Embeddings capability (E5, semantic codebase index) — a separate
 // request/response shape + adapter interface from the chat gateway above; see
-// embeddings.ts's doc comment for the provider-choice rationale (Azure only,
-// today).
+// embeddings.ts's doc comment for the provider-choice rationale (Azure and,
+// as of A9, direct OpenAI today).
 export {
   createEmbeddingAdapter,
   AzureEmbeddingAdapter,
+  OpenAiEmbeddingAdapter,
   type EmbeddingProviderAdapter,
   type EmbeddingRequest,
   type EmbeddingResult,
   type EmbeddingCallMetadata,
   type CreateEmbeddingAdapterOptions,
   type AzureEmbeddingClientLike,
+  type OpenAiEmbeddingClientLike,
 } from "./embeddings.js";

@@ -7,12 +7,10 @@
  * actually calls `StateStore.detectionRules.create` for each generated rule
  * (the B1 repository, packages/state-store/src/blue-team.ts).
  *
- * STANDALONE, NOT WIRED into any pipeline layer's automatic execution —
- * mirrors A10's "built but unwired, honestly documented" precedent (see this
- * task's report). Nothing in report-builder.ts calls this yet; wiring a
- * detection-engineering section into the assembled Layer 5 report is B10's
- * job in a later wave (see docs/modules/reporting-vcs.md's forward
- * reference).
+ * WIRED: `report-builder.ts`'s `buildBlueTeamReport` calls this unconditionally
+ * (once per confirmed finding, via `.flatMap`) to populate the assembled
+ * Layer 5 report's detection-engineering section — see that file's B3/B4
+ * comment block.
  *
  * `mitreTechniques` defaults to B2's real mapping
  * (`mitreTechniqueIdsForCategory`, packages/contracts/src/mitre.ts — landed

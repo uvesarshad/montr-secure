@@ -6,12 +6,11 @@
  * `Record<Category, readonly string[]>`, mirroring this file's SOC 2/ISO 27001
  * sibling `./controls.ts`). This module is purely the REPORT-SURFACING layer on
  * top of it — the ATT&CK analog of `./evidence.ts`'s per-finding control
- * mapping, but standalone: it does not import from or mutate `./evidence.ts`,
- * `./controls.ts`, `./index.ts`'s export registry, or `../report-builder.ts`
- * (the main report-assembly file), so it carries zero merge risk against the
- * other blue-team work landing in this same wave. A later wave (B10, per the
- * wave plan) is responsible for wiring this into the final report shape /
- * export registry alongside the other standalone blue-team capabilities.
+ * mapping. This module does not itself import from or mutate `./evidence.ts`,
+ * `./controls.ts`, or `./index.ts`'s export registry — but it IS WIRED into
+ * the final report shape: `../report-builder.ts`'s `buildBlueTeamReport`
+ * calls `buildMitreAttackSection(report, generatedAt)` directly to populate
+ * the assembled Layer 5 report's MITRE section.
  *
  * Two views over the same underlying per-finding mapping, same shape as
  * `./evidence.ts`'s `EvidenceRecord` + `ControlCoverage` pair:

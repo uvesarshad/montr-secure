@@ -18,6 +18,7 @@ import type { AppMapRepository } from "@montr/state-store";
 import type { AuditLogClient } from "@montr/telemetry";
 import type { Logger } from "@montr/telemetry";
 import { buildAppMap } from "./build.js";
+import type { BuildAppMapDeps } from "./types.js";
 
 /**
  * The subset of the orchestrator's `LayerContext<"layer0">` Layer 0 uses. The
@@ -45,6 +46,13 @@ export interface Layer0RunnerOptions {
   persist?: boolean;
   /** Workspace root for sandboxed clones of remote repos. */
   workspaceRoot?: string;
+  /**
+   * A9 — best-effort semantic-codebase-index build hook, threaded straight
+   * through to `buildAppMap`'s `BuildAppMapDeps.semanticIndex` (see that
+   * type's doc comment in types.ts for why it is structural rather than an
+   * `@montr/semantic-index` import). Absent ⇒ no index is built.
+   */
+  semanticIndex?: BuildAppMapDeps["semanticIndex"];
 }
 
 /** Build a Layer 0 runner compatible with the orchestrator's `LayerRunner`. */
@@ -75,6 +83,9 @@ export function createLayer0Runner(
         // Persist only when explicitly asked (avoids double-create with the
         // orchestrator). DECIDE-2 stale invalidation is still applied below.
         ...(persist ? { appMaps: ctx.store.appMaps, audit: ctx.store.audit } : {}),
+        // A9 — best-effort semantic-index build hook (see BuildAppMapDeps's
+        // doc comment). Absent unless the caller (apps/worker) constructed one.
+        ...(opts.semanticIndex ? { semanticIndex: opts.semanticIndex } : {}),
       },
     );
 

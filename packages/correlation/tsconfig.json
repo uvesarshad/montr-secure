@@ -11,6 +11,9 @@
       "path": "../contracts"
     },
     {
+      "path": "../semantic-index"
+    },
+    {
       "path": "../state-store"
     },
     {

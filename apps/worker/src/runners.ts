@@ -21,31 +21,49 @@ import {
   MontrError,
   type AppMap,
   type CandidateFinding,
+  type ConfirmedFinding,
   type CostEstimate,
+  type HardeningRecommendation,
   type LLMGateway,
   type LLMPurpose,
+  type PurpleTeamScenarioSummaryEntryShape,
+  type RedTeamScenario,
 } from "@montr/contracts";
 import type { CostMeter } from "@montr/cost-meter";
 import { buildCostRollup } from "@montr/cost-meter";
 import type { LayerContext, LayerRunners } from "@montr/orchestrator";
 import type { FalsePositiveMarkSignal, LearnedFact } from "@montr/state-store";
 
-import { createLayer0Runner } from "@montr/appmap";
+import { createLayer0Runner, persistDetectionCoverageForScan } from "@montr/appmap";
 import {
+  fsFileProvider,
   runDiscovery,
   type DiscoveryDeps,
   type GitleaksRunner,
   type SemgrepRunner,
 } from "@montr/discovery";
 import { correlate } from "@montr/correlation";
-import { confirmFindings, type ConfirmDeps, type ConfirmInput } from "@montr/confirm";
+import {
+  confirmFindings,
+  defaultTransport,
+  REDTEAM_CATEGORY_TO_FINDING_CATEGORIES,
+  summarizePurpleTeamRun,
+  verifyScenarioDetection,
+  type ConfirmDeps,
+  type ConfirmInput,
+  type PurpleTeamRunEntry,
+} from "@montr/confirm";
 import {
   createFsSourceReader,
   createMapSourceReader,
   generateFixes,
   type SourceReader,
 } from "@montr/fix";
-import { buildReport, type PullRequestOpener } from "@montr/report";
+import { generateHardeningRecommendations } from "@montr/hardening";
+import { buildReport, generateDetectionRules, type PullRequestOpener } from "@montr/report";
+import type { EmbeddingProviderAdapter } from "@montr/llm-gateway";
+import type { CodeChunkRepository } from "@montr/state-store";
+import { buildSemanticIndex, querySemanticIndex } from "@montr/semantic-index";
 
 /* ------------------------------- options ------------------------------- */
 
@@ -76,6 +94,25 @@ export interface LayerRunnerOptions {
   gitleaks?: GitleaksRunner;
   /** Deterministic ISO clock (tests). Default: layer wall-clock. */
   now?: () => string;
+  /**
+   * A9 — semantic codebase index (`@montr/semantic-index`). Absent (default)
+   * ⇒ no index is built in Layer 0 and Layer 3's investigation loop gets no
+   * `semanticSearch` capability — today's behavior, unchanged. Present ⇒
+   * Layer 0 builds the index alongside the App Map (best-effort, see
+   * `packages/appmap/src/build.ts`'s `semanticIndex` hook — any failure, e.g.
+   * a missing `pgvector` extension, is logged and swallowed, never fails the
+   * scan) and Layer 3 gets a real `semanticSearch` callback wired into
+   * `ConfirmDeps`. Constructed in `apps/worker/src/main.ts`, gated on
+   * `config.semanticIndex.enabled` AND the configured `llm.provider` having a
+   * real embeddings adapter (`azure`/`openai` today).
+   */
+  semanticIndex?: {
+    embeddingAdapter: EmbeddingProviderAdapter;
+    embeddingModel: string;
+    codeChunkRepository: CodeChunkRepository;
+    /** Passed through to `buildSemanticIndex`'s `batchSize`. Optional. */
+    batchSize?: number;
+  };
 }
 
 /* ------------------------------- helpers ------------------------------- */
@@ -343,6 +380,111 @@ function withLearnedFactsContext(gateway: LLMGateway, ctx: LayerContext, repo: s
   return wrapped;
 }
 
+/* --------------------- A8 purple-team verification loop --------------------- */
+
+/**
+ * Category-based scenario selection (A8) — mirrors
+ * `packages/qa/src/blue-team-corpus.ts`'s own hand-traced "which scenario
+ * verifies which finding category" pattern, generalized into a runtime rule:
+ * the first ENABLED scenario in the client's real catalogue whose coarse
+ * `RedTeamCategory` maps (via `@montr/confirm`'s
+ * `REDTEAM_CATEGORY_TO_FINDING_CATEGORIES`) to the finding's category. No
+ * match ⇒ `undefined` — a finding with no corresponding scenario is simply
+ * skipped, never assigned an arbitrary one.
+ */
+function selectScenarioForFinding(
+  scenarios: readonly RedTeamScenario[],
+  finding: ConfirmedFinding,
+): RedTeamScenario | undefined {
+  return scenarios.find((s) =>
+    REDTEAM_CATEGORY_TO_FINDING_CATEGORIES[s.category]?.includes(finding.category),
+  );
+}
+
+/**
+ * A8 — wires `packages/confirm/src/purple-loop.ts`'s purple-team verification
+ * loop into the pipeline. Runs at Layer 3 (not Layer 5) because it needs the
+ * SAME approver-gated live-DAST authorization (`ctx.job.allowLive` /
+ * `ctx.job.stagingUrl`) that this layer's own live confirmation path already
+ * uses — `Layer5JobData` carries no such field, so Layer 5 has no legitimate
+ * authorization signal to run a live scenario against. Reuses the identical
+ * gated call shape `purple-loop.ts` demonstrates (`assertScenarioAuthorized`
+ * + `ScopeGuard`, via `runScenario`) and the SAME real transport Layer 3's
+ * own live-DAST probing uses (`@montr/confirm`'s exported `defaultTransport`)
+ * — no new egress path.
+ *
+ * Skipped entirely when `allowLive` is false: a scenario run with no
+ * transport-worthy authorization only ever produces an empty transcript,
+ * which would score every candidate rule "undetected" and misleadingly read
+ * as a real detection gap rather than "never actually run". Best-effort per
+ * (finding, scenario) pair — a guardrail refusal or store hiccup for one pair
+ * is logged and skipped, never aborts confirmation for the rest of the scan.
+ */
+async function runPurpleTeamVerification(
+  ctx: LayerContext<"layer3">,
+  opts: LayerRunnerOptions,
+  appMap: AppMap,
+  confirmed: readonly ConfirmedFinding[],
+): Promise<PurpleTeamScenarioSummaryEntryShape[]> {
+  if (!ctx.job.allowLive || confirmed.length === 0) return [];
+
+  let scenarios: RedTeamScenario[] = [];
+  try {
+    scenarios = (await ctx.store.redTeamScenarios.list(ctx.clientId)).filter((s) => s.enabled);
+  } catch (err) {
+    ctx.logger?.warn?.("worker.purple_team.scenario_list_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+  if (scenarios.length === 0) return [];
+
+  const transport = await defaultTransport();
+  const entries: PurpleTeamRunEntry[] = [];
+
+  for (const finding of confirmed) {
+    const scenario = selectScenarioForFinding(scenarios, finding);
+    if (!scenario) continue;
+    try {
+      // Rules generated in-memory here (pure) purely to give the loop
+      // candidate `DetectionRule`s to evaluate the transcript against —
+      // mirrors the SAME generation `buildBlueTeamReport` performs at Layer
+      // 5 (packages/report/src/report-builder.ts), never persisted here.
+      const rules = generateDetectionRules(finding, {
+        appMap,
+        ...(opts.now ? { now: opts.now } : {}),
+      });
+      const verified = await verifyScenarioDetection(
+        ctx.store,
+        ctx.clientId,
+        {
+          scenario,
+          finding,
+          config: ctx.config,
+          allowLive: ctx.job.allowLive,
+          ...(ctx.job.stagingUrl !== undefined ? { targetOverride: ctx.job.stagingUrl } : {}),
+        },
+        {
+          transport,
+          detectionRules: rules,
+          signal: ctx.signal,
+          logger: ctx.logger,
+          ...(opts.now ? { now: opts.now } : {}),
+        },
+      );
+      entries.push({ scenario, finding, result: verified.scenarioResult });
+    } catch (err) {
+      ctx.logger?.warn?.("worker.purple_team.verification_failed", {
+        scenarioId: scenario.id,
+        findingId: finding.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return summarizePurpleTeamRun(ctx.scanId, entries).entries;
+}
+
 /* ------------------------------- runners ------------------------------- */
 
 /**
@@ -351,10 +493,38 @@ function withLearnedFactsContext(gateway: LLMGateway, ctx: LayerContext, repo: s
  * their outputs. Every runner is pure w.r.t. store writes (see the file header).
  */
 export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
+  const semanticIndexOpts = opts.semanticIndex;
   const layer0Runner = createLayer0Runner({
     gateway: opts.gateway,
     ...(opts.workspaceRoot ? { workspaceRoot: opts.workspaceRoot } : {}),
     // persist:false (default) — the orchestrator owns store.appMaps.create.
+    // A9 — best-effort semantic-index build hook, threaded straight through
+    // to packages/appmap/src/build.ts's `semanticIndex` dep (structural, see
+    // that file's doc comment for why @montr/appmap cannot import
+    // @montr/semantic-index directly). Absent unless `opts.semanticIndex` was
+    // constructed in apps/worker/src/main.ts (config-gated, off by default).
+    ...(semanticIndexOpts
+      ? {
+          semanticIndex: (input: {
+            dir: string;
+            clientId: string;
+            appMapId: string;
+            repo: string;
+            commitSha: string;
+          }) =>
+            buildSemanticIndex({
+              dir: input.dir,
+              clientId: input.clientId,
+              appMapId: input.appMapId,
+              repo: input.repo,
+              commitSha: input.commitSha,
+              embeddingAdapter: semanticIndexOpts.embeddingAdapter,
+              embeddingModel: semanticIndexOpts.embeddingModel,
+              repository: semanticIndexOpts.codeChunkRepository,
+              ...(semanticIndexOpts.batchSize ? { batchSize: semanticIndexOpts.batchSize } : {}),
+            }),
+        }
+      : {}),
   });
 
   return {
@@ -407,6 +577,25 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         audit: ctx.store.audit,
         logger: ctx.logger,
         fpTuning,
+        // A9 — best-effort semantic grounding (informational hypothesis text
+        // only — see CorrelateInput.semanticSearch's doc comment). Absent
+        // unless `opts.semanticIndex` was constructed (config-gated, off by
+        // default).
+        ...(semanticIndexOpts
+          ? {
+              semanticSearch: (queryText: string, topK?: number) =>
+                querySemanticIndex({
+                  queryText,
+                  clientId: ctx.clientId,
+                  repo: appMap.repo,
+                  commitSha: appMap.commitSha,
+                  ...(topK ? { topK } : {}),
+                  embeddingAdapter: semanticIndexOpts.embeddingAdapter,
+                  embeddingModel: semanticIndexOpts.embeddingModel,
+                  repository: semanticIndexOpts.codeChunkRepository,
+                }),
+            }
+          : {}),
         ...(opts.now ? { now: opts.now() } : {}),
       });
     },
@@ -444,9 +633,68 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         // LayerProgress) into the E1 investigation loop's per-turn narrative,
         // identically to how signal/logger are passed straight through above.
         emitProgress: ctx.emitProgress,
+        // A9 — real `semantic_search` capability for the E1 investigation
+        // loop's tool set (investigate-tools.ts), scoped to this scan's own
+        // client/repo/commit. Absent unless `opts.semanticIndex` was
+        // constructed (config-gated, off by default) — the loop's
+        // `semantic_search` tool then degrades to an honest "not available"
+        // result (see investigate-tools.ts), never a crash.
+        ...(semanticIndexOpts
+          ? {
+              semanticSearch: (queryText: string, topK?: number) =>
+                querySemanticIndex({
+                  queryText,
+                  clientId: ctx.clientId,
+                  repo: appMap.repo,
+                  commitSha: appMap.commitSha,
+                  ...(topK ? { topK } : {}),
+                  embeddingAdapter: semanticIndexOpts.embeddingAdapter,
+                  embeddingModel: semanticIndexOpts.embeddingModel,
+                  repository: semanticIndexOpts.codeChunkRepository,
+                }),
+            }
+          : {}),
         ...(opts.now ? { now: opts.now } : {}),
       };
-      return confirmFindings(input, deps);
+      const result = await confirmFindings(input, deps);
+
+      // A7 — persist the tri-state detection-coverage gap-analysis verdict
+      // (B6, packages/appmap/src/coverage-analysis.ts) for every confirmed
+      // finding now that both the App Map and confirmed findings exist.
+      // Best-effort: a store hiccup here must never fail exploit confirmation
+      // itself (mirrors loadFpTuning's fail-safe discipline above).
+      if (result.confirmed.length > 0) {
+        try {
+          await persistDetectionCoverageForScan(
+            appMap,
+            result.confirmed,
+            {
+              detectionCoverage: ctx.store.detectionCoverage,
+              detectionRules: ctx.store.detectionRules,
+            },
+            opts.now ? { now: () => new Date(opts.now!()) } : {},
+          );
+        } catch (err) {
+          ctx.logger?.warn?.("worker.detection_coverage.persist_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      // A8 — purple-team verification loop (B5, packages/confirm/src/purple-loop.ts).
+      // See runPurpleTeamVerification's own doc comment for why this runs
+      // here (Layer 3) rather than Layer 5, and why it's gated on allowLive.
+      // Any coverage row A7 just created above is found-and-updated in place
+      // (verifyScenarioDetection's findOrCreateDetectionCoverage), so the two
+      // features compose into one coherent DetectionCoverage row per finding.
+      const purpleTeamEntries = await runPurpleTeamVerification(
+        ctx,
+        opts,
+        appMap,
+        result.confirmed,
+      );
+
+      return { ...result, purpleTeamEntries };
     },
 
     // L4 — Fix Generation. Input: confirmed findings. Emits proposed fixes.
@@ -463,6 +711,18 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
       // `generateOne` always ran (see generate.ts's `ctx.agentLoop?.enabled`
       // branch — byte-for-byte unchanged default request shape).
       const agentLoopConfig = ctx.config.fixGeneration.agentLoop;
+      // A12: maxToolCalls now defaults to a small non-zero value (@montr/config's
+      // FixAgentLoopConfigSchema), so this only fires when an operator has
+      // explicitly overridden MONTR_FIX_AGENT_LOOP_MAX_TOOL_CALLS back to 0 —
+      // flag it plainly, since the loop then retries but the model can never
+      // read sibling files, which is easy to mistake for the feature's full
+      // behavior.
+      if (agentLoopConfig.enabled && agentLoopConfig.maxToolCalls === 0) {
+        ctx.logger?.warn?.("worker.fix_agent_loop.no_tool_calls", {
+          message:
+            "MONTR_FIX_AGENT_LOOP_ENABLED is true but MONTR_FIX_AGENT_LOOP_MAX_TOOL_CALLS is 0: the fix agent loop will retry failed proposals but the model cannot read sibling/imported files (no read_file tool exposed).",
+        });
+      }
       return generateFixes({
         clientId: ctx.clientId,
         scanId: ctx.scanId,
@@ -487,6 +747,12 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
 
     // L5 — Human Gate & Output. Input: confirmed + unconfirmed + fixes. Emits report + PRs.
     layer5: async (ctx) => {
+      // A2 — resolve the App Map exactly like Layers 1-3 already do. Without
+      // this, buildReport's appMap input was always undefined and
+      // buildBlueTeamReport's detection-coverage/attack-path/threat-model
+      // sections rendered permanently empty (see packages/report/src/
+      // report-builder.ts's buildBlueTeamReport).
+      const appMap = await resolveAppMap(ctx);
       const confirmed =
         ctx.priorOutputs.layer3?.confirmed ??
         (await ctx.store.confirmed.listByScan(ctx.clientId, ctx.scanId));
@@ -508,6 +774,38 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         ? dedupeCandidates([...candidates, ...demoted])
         : candidates;
 
+      // A8 — purple-team entries computed at Layer 3 (see
+      // runPurpleTeamVerification) travel through the in-process priorOutputs
+      // cache only (Layer3Output.purpleTeamEntries is deliberately not
+      // persisted — see that schema field's doc comment in
+      // packages/contracts/src/layers.ts); `[]` on a resumed/distributed run,
+      // mirroring `demoted` immediately above — never fabricated.
+      const purpleTeamEntries = ctx.priorOutputs.layer3?.purpleTeamEntries ?? [];
+
+      // A13 — advisory hardening recommendations (B9, packages/hardening).
+      // `generateHardeningRecommendations` needs a real `FileProvider` over
+      // the repo checkout, which is why buildReport takes this precomputed
+      // rather than generating it internally — see BuildReportInput
+      // .hardeningRecommendations's doc comment. Same repoRoot resolution
+      // Layer 1/4 already use; no local checkout (a remote repo Layer 0
+      // already cleaned up) degrades to an honest empty list, never a guess.
+      const repoRoot = (opts.resolveRepoRoot ?? defaultRepoRoot)(ctx);
+      let hardeningRecommendations: HardeningRecommendation[] = [];
+      if (repoRoot) {
+        try {
+          hardeningRecommendations = await generateHardeningRecommendations({
+            appMap,
+            files: fsFileProvider(repoRoot),
+            confirmedFindings: confirmed,
+            ...(opts.now ? { now: opts.now } : {}),
+          });
+        } catch (err) {
+          ctx.logger?.warn?.("worker.hardening.generate_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       const costRollup = buildCostRollup(
         ctx.scanId,
         resolveEstimate(ctx),
@@ -527,6 +825,9 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         candidates: candidatePile,
         audit: ctx.store.audit,
         logger: ctx.logger,
+        appMap,
+        hardeningRecommendations,
+        purpleTeamEntries,
         ...(opts.opener ? { opener: opts.opener } : {}),
         ...(opts.baseBranch ? { baseBranch: opts.baseBranch } : {}),
         ...(opts.now ? { generatedAt: opts.now() } : {}),

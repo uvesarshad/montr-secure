@@ -7,18 +7,23 @@ import { getHardenedDefaults, FixAgentLoopConfigSchema } from "./schema.js";
  * `FixAgentLoopConfigSchema`'s doc comment (packages/config/src/schema.ts) and
  * packages/fix/src/generate.ts's `FixGenerationContext.agentLoop`, which this
  * config is wired into by apps/worker/src/runners.ts's Layer-4 adapter.
+ *
+ * A12 — `maxToolCalls` defaults to 3, not 0: an operator who only sets
+ * MONTR_FIX_AGENT_LOOP_ENABLED=true now gets the sandboxed read_file tool by
+ * default too, matching this feature's stated multi-file-reading purpose,
+ * instead of silently getting retries-only.
  */
 
-describe("FixAgentLoopConfigSchema defaults (A5)", () => {
-  it("defaults to disabled with maxIterations 3 and maxToolCalls 0", () => {
+describe("FixAgentLoopConfigSchema defaults (A5, A12)", () => {
+  it("defaults to disabled with maxIterations 3 and maxToolCalls 3", () => {
     const parsed = FixAgentLoopConfigSchema.parse({});
-    expect(parsed).toEqual({ enabled: false, maxIterations: 3, maxToolCalls: 0 });
+    expect(parsed).toEqual({ enabled: false, maxIterations: 3, maxToolCalls: 3 });
   });
 
   it("the hardened baseline config carries the same off-by-default agent-loop config", () => {
     const defaults = getHardenedDefaults();
     expect(defaults.fixGeneration).toEqual({
-      agentLoop: { enabled: false, maxIterations: 3, maxToolCalls: 0 },
+      agentLoop: { enabled: false, maxIterations: 3, maxToolCalls: 3 },
     });
   });
 
@@ -51,13 +56,18 @@ describe("FixAgentLoopConfigSchema defaults (A5)", () => {
     });
     expect(parsed).toEqual({ enabled: true, maxIterations: 5, maxToolCalls: 2 });
   });
+
+  it("an operator can still opt out of tool calls explicitly (retries-only)", () => {
+    const parsed = FixAgentLoopConfigSchema.parse({ enabled: true, maxToolCalls: 0 });
+    expect(parsed).toEqual({ enabled: true, maxIterations: 3, maxToolCalls: 0 });
+  });
 });
 
 describe("loadConfig — MONTR_FIX_AGENT_LOOP_* env overlay (A5)", () => {
   it("leaves the agent-loop config at its off-by-default values when unset (regression safety)", () => {
     const config = parseConfig({});
     expect(config.fixGeneration).toEqual({
-      agentLoop: { enabled: false, maxIterations: 3, maxToolCalls: 0 },
+      agentLoop: { enabled: false, maxIterations: 3, maxToolCalls: 3 },
     });
   });
 
@@ -89,7 +99,7 @@ describe("loadConfig — MONTR_FIX_AGENT_LOOP_* env overlay (A5)", () => {
     const config = loadConfig({ env: { MONTR_CLIENT_ID: "acme" } });
     expect(config.clientId).toBe("acme");
     expect(config.fixGeneration).toEqual({
-      agentLoop: { enabled: false, maxIterations: 3, maxToolCalls: 0 },
+      agentLoop: { enabled: false, maxIterations: 3, maxToolCalls: 3 },
     });
   });
 });

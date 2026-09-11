@@ -9,13 +9,16 @@
  * consuming new jobs, let in-flight layer work finish, then close the
  * Postgres/Redis connections before exiting.
  */
-import { loadConfig, resolveFieldEncryptionKey } from "@montr/config";
-import { createLogger } from "@montr/telemetry";
-import { createLlmGateway } from "@montr/llm-gateway";
+import { loadConfig, resolveFieldEncryptionKey, type MontrConfig } from "@montr/config";
+import { createLogger, type Logger } from "@montr/telemetry";
+import { createLlmGateway, createEmbeddingAdapter } from "@montr/llm-gateway";
+import { createEgressGuard } from "@montr/security";
 import { createBudgetRegistry } from "@montr/cost-meter";
 import {
   createPrismaClient,
   createStateStoreFromClient,
+  createCodeChunkRepository,
+  type MontrPrismaClient,
   type StateStore,
 } from "@montr/state-store";
 
@@ -24,7 +27,45 @@ import {
   reconcileStuckScans,
   DEFAULT_STUCK_SCAN_THRESHOLD_MS,
   type WorkerRuntimeDeps,
+  type LayerRunnerOptions,
 } from "./index.js";
+
+/**
+ * A9 — best-effort semantic-codebase-index wiring. Returns `undefined`
+ * (Layer 0 builds no index, Layer 3 gets no `semanticSearch` tool — today's
+ * behavior, unchanged) unless the operator both enabled it
+ * (`config.semanticIndex.enabled`, OFF by default) AND the configured
+ * `llm.provider` has a real embeddings adapter today (`azure`/`openai` — see
+ * packages/llm-gateway/src/embeddings.ts). The `CodeChunkRepository` itself
+ * is always safely constructible here (it's a thin Prisma wrapper with no
+ * connection-time validation); an actually-missing `pgvector` Postgres
+ * extension only fails at QUERY time, which
+ * packages/appmap/src/build.ts's `semanticIndex` hook and
+ * `querySemanticIndex`'s callers already catch and log — never a fatal boot
+ * error, matching every other optional LLM-enrichment step in Layer 0/3.
+ */
+function resolveSemanticIndexOptions(
+  config: MontrConfig,
+  prisma: MontrPrismaClient,
+  logger: Logger,
+): LayerRunnerOptions["semanticIndex"] | undefined {
+  if (!config.semanticIndex?.enabled) return undefined;
+  if (config.llm.provider !== "azure" && config.llm.provider !== "openai") {
+    logger.warn("worker.semantic_index.unsupported_provider", {
+      provider: config.llm.provider,
+      hint: "MONTR_SEMANTIC_INDEX_ENABLED requires llm.provider 'azure' or 'openai' — the only providers with a real embeddings adapter today.",
+    });
+    return undefined;
+  }
+  const egress = createEgressGuard(config, {
+    onWarning: (message) => logger.warn("worker.semantic_index.egress.warning", { message }),
+  });
+  return {
+    embeddingAdapter: createEmbeddingAdapter(config.llm.provider, config, egress),
+    embeddingModel: config.semanticIndex.embeddingModel,
+    codeChunkRepository: createCodeChunkRepository(prisma),
+  };
+}
 
 /** Max time to wait for the in-flight job (if any) to finish on shutdown. */
 const SHUTDOWN_TIMEOUT_MS = Number(process.env["SHUTDOWN_TIMEOUT_MS"] ?? 30_000);
@@ -85,15 +126,23 @@ async function main(): Promise<void> {
     budgetRegistry,
   });
 
+  // A9 — semantic codebase index (OFF by default; see MONTR_SEMANTIC_INDEX_*
+  // in docs/infra/environment.md). Built alongside the App Map in Layer 0 and
+  // queried by Layer 3's investigation loop when present.
+  const semanticIndex = resolveSemanticIndexOptions(config, prisma, logger);
+  const runnerOptions: WorkerRuntimeDeps["runnerOptions"] = {
+    ...(process.env["MONTR_WORKSPACE_DIR"]
+      ? { workspaceRoot: process.env["MONTR_WORKSPACE_DIR"] }
+      : {}),
+    ...(semanticIndex ? { semanticIndex } : {}),
+  };
   const runtimeDeps: WorkerRuntimeDeps = {
     store,
     gateway,
     redis: redisUrl,
     logger,
     budgetRegistry,
-    ...(process.env["MONTR_WORKSPACE_DIR"]
-      ? { runnerOptions: { workspaceRoot: process.env["MONTR_WORKSPACE_DIR"] } }
-      : {}),
+    ...(Object.keys(runnerOptions).length > 0 ? { runnerOptions } : {}),
   };
 
   // Constructing the worker asserts the ⛔ egress boot guard (golden rule #1)

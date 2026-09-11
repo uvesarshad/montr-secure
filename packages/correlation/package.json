@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@montr/contracts": "workspace:*",
+    "@montr/semantic-index": "workspace:*",
     "@montr/state-store": "workspace:*",
     "@montr/telemetry": "workspace:*"
   }

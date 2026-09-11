@@ -216,10 +216,15 @@ function toExchange(
   url: string,
   note: string,
   response: LiveHttpResponse,
+  body?: string,
 ): HttpExchange {
   const resHeaders = safeHeaders(response.headers);
   return {
-    request: { method, url },
+    request: {
+      method,
+      url,
+      ...(body !== undefined ? { bodySnippet: truncate(body) } : {}),
+    },
     response: {
       status: response.status,
       ...(resHeaders ? { headers: resHeaders } : {}),
@@ -305,6 +310,7 @@ export async function runScenario(
       response = await deps.transport.send({
         method,
         url,
+        ...(step.body !== undefined ? { body: step.body } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
     } catch (err) {
@@ -330,7 +336,7 @@ export async function runScenario(
 
     guard.record(method);
     probedAny = true;
-    transcript.push(toExchange(method, url, step.action, response));
+    transcript.push(toExchange(method, url, step.action, response, step.body));
     results.push({
       order: step.order,
       action: step.action,

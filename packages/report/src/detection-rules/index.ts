@@ -2,8 +2,9 @@
  * @montr/report/detection-rules — B3 (Sigma/OTel/SIEM detection-rule
  * generation) + B4 (the "what this looks like in your logs" narrative) for
  * confirmed findings. See generate.ts's header for the full picture: pure
- * generation vs. the `StateStore`-backed persistence wrapper, and why this is
- * standalone/unwired for now.
+ * generation vs. the `StateStore`-backed persistence wrapper, and how
+ * `generateDetectionRules` is wired into report-builder.ts's
+ * buildBlueTeamReport.
  */
 export {
   generateDetectionRules,

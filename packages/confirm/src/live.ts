@@ -1427,8 +1427,15 @@ function toExchange(probe: Probe, response: LiveHttpResponse): HttpExchange {
   };
 }
 
-/** Default outbound transport (undici). Loaded lazily — never in offline tests. */
-async function defaultTransport(): Promise<LiveHttpTransport> {
+/**
+ * Default outbound transport (undici). Loaded lazily — never in offline
+ * tests. Exported (A8) so `packages/confirm/src/purple-loop.ts`'s
+ * `runScenario`-based purple-team loop can reuse the EXACT SAME real HTTP
+ * transport this file's own live-DAST probing already uses — no new egress
+ * path/implementation, just the identical undici client shared by a second
+ * caller.
+ */
+export async function defaultTransport(): Promise<LiveHttpTransport> {
   const { request } = await import("undici");
   return {
     async send(req) {

@@ -70,6 +70,21 @@ const SEAMS = [
     pattern: "falsePositiveMarks",
     definedIn: "packages/state-store",
   },
+  {
+    name: "packages/llm-gateway: createEmbeddingAdapter() — embeddings capability for the semantic codebase index (A9)",
+    pattern: "createEmbeddingAdapter(",
+    definedIn: "packages/llm-gateway",
+  },
+  {
+    name: "packages/semantic-index: buildSemanticIndex() — AST-chunked pgvector code index, built alongside Layer 0's App Map (A9)",
+    pattern: "buildSemanticIndex(",
+    definedIn: "packages/semantic-index",
+  },
+  {
+    name: "packages/semantic-index: querySemanticIndex() — semantic retrieval consumed by Layer 2 correlation + Layer 3 confirmation (A9)",
+    pattern: "querySemanticIndex(",
+    definedIn: "packages/semantic-index",
+  },
 ];
 
 /**
@@ -86,24 +101,6 @@ const KNOWN_UNWIRED = [
       "Every current layer call is a small, single-shot metadata request with no UI/console to " +
       "stream tokens to; verified working end-to-end instead via " +
       "packages/llm-gateway/src/streaming.integration.test.ts (real adapter, fake transport).",
-  },
-  {
-    name: "packages/llm-gateway: createEmbeddingAdapter() / EmbeddingProviderAdapter.embed() — E5 semantic index",
-    reason:
-      "Real, tested Azure OpenAI-compatible embeddings adapter (embeddings.ts), but no pipeline " +
-      "layer calls it yet — this task ships the indexing library, not a wired consumer (see " +
-      "docs/plan/26-08-22-audit-ai-depth.md E5). Consumed by packages/semantic-index, itself " +
-      "listed below.",
-  },
-  {
-    name: "packages/semantic-index: buildSemanticIndex() / querySemanticIndex() — AST-chunked pgvector code index (E5)",
-    reason:
-      "Real, tested AST chunker + embedder + pgvector-backed store/query path, built to be called " +
-      "once per commit alongside the App Map and consumed by correlation/confirmation for cross-" +
-      "file context — but not wired into either layer in this change by deliberate scope decision " +
-      "(packages/correlation and packages/confirm were off-limits to avoid colliding with other " +
-      "concurrent work on those packages). See docs/modules/semantic-index.md's 'Intended " +
-      "consumption (not yet wired)' section for the exact integration this leaves for a follow-up.",
   },
 ];
 

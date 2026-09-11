@@ -201,6 +201,9 @@ importers:
       '@montr/fix':
         specifier: workspace:*
         version: link:../../packages/fix
+      '@montr/hardening':
+        specifier: workspace:*
+        version: link:../../packages/hardening
       '@montr/llm-gateway':
         specifier: workspace:*
         version: link:../../packages/llm-gateway
@@ -213,6 +216,9 @@ importers:
       '@montr/security':
         specifier: workspace:*
         version: link:../../packages/security
+      '@montr/semantic-index':
+        specifier: workspace:*
+        version: link:../../packages/semantic-index
       '@montr/state-store':
         specifier: workspace:*
         version: link:../../packages/state-store
@@ -286,6 +292,9 @@ importers:
       '@montr/security':
         specifier: workspace:*
         version: link:../security
+      '@montr/semantic-index':
+        specifier: workspace:*
+        version: link:../semantic-index
       '@montr/state-store':
         specifier: workspace:*
         version: link:../state-store
@@ -310,6 +319,9 @@ importers:
       '@montr/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@montr/semantic-index':
+        specifier: workspace:*
+        version: link:../semantic-index
       '@montr/state-store':
         specifier: workspace:*
         version: link:../state-store

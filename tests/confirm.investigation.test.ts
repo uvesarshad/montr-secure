@@ -301,6 +301,91 @@ describe("E1 — agentic investigation loop actually reads files and calls tools
   });
 });
 
+describe("A9 — semantic_search tool", () => {
+  it("without an injected semanticSearch, degrades gracefully instead of throwing", async () => {
+    const gateway = new ScriptedGateway(
+      [
+        toolResponse("t1", [
+          { id: "c1", name: "semantic_search", input: { query: "unauthorized order access" } },
+        ]),
+        toolResponse("t2", [
+          {
+            id: "c2",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: { verdict: "inconclusive", rationale: "no semantic index available" },
+          },
+        ]),
+      ],
+      allConfirmVerifier(),
+    );
+    const input = baseInput(); // no semanticSearch wired
+    const deps: ConfirmDeps = { now: NOW, llm: gateway, investigation: { enabled: true } };
+    const outcome = await runInvestigation(idorProbableFinding(), input, deps);
+
+    expect(outcome.verdict).toBe("inconclusive");
+    const result = outcome.turns[0]?.toolCalls[0]?.result ?? "";
+    expect(result).toContain("no semantic code index available");
+  });
+
+  it("calls the injected semanticSearch with the model's query and topK, and returns real matches", async () => {
+    const calls: Array<{ query: string; topK?: number }> = [];
+    const semanticSearch: ConfirmDeps["semanticSearch"] = async (queryText, topK) => {
+      calls.push({ query: queryText, topK });
+      return [
+        {
+          id: "chunk_1",
+          file: "app/api/invoices/[id]/route.ts",
+          startLine: 10,
+          endLine: 18,
+          language: "typescript",
+          kind: "function",
+          symbolName: "GET",
+          content: "const invoice = await prisma.invoice.findUnique({ where: { id: params.id } });",
+          similarity: 0.912345,
+        },
+      ];
+    };
+
+    const gateway = new ScriptedGateway(
+      [
+        toolResponse("t1", [
+          {
+            id: "c1",
+            name: "semantic_search",
+            input: { query: "unowned lookup by id parameter", topK: 5 },
+          },
+        ]),
+        toolResponse("t2", [
+          {
+            id: "c2",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: {
+              verdict: "confirmed_candidate",
+              rationale: "the same unowned-lookup pattern also appears in the invoices route.",
+            },
+          },
+        ]),
+      ],
+      allConfirmVerifier(),
+    );
+
+    const input = baseInput();
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: gateway,
+      investigation: { enabled: true },
+      semanticSearch,
+    };
+    const outcome = await runInvestigation(idorProbableFinding(), input, deps);
+
+    expect(calls).toEqual([{ query: "unowned lookup by id parameter", topK: 5 }]);
+    const result = outcome.turns[0]?.toolCalls[0]?.result ?? "";
+    expect(result).toContain("app/api/invoices/[id]/route.ts");
+    expect(result).toContain("0.9123"); // similarity rounded to 4 decimals
+    expect(outcome.verdict).toBe("confirmed_candidate");
+  });
+});
+
 describe("E1 — hard structural turn-budget cap halts a runaway loop", () => {
   it("never exceeds 8 investigation turns even when the model never submits a conclusion", async () => {
     // Only ONE scripted response, repeated forever by ScriptedGateway — proves
