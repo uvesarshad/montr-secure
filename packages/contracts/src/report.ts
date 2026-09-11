@@ -213,6 +213,85 @@ export const ReportSchema = z.object({
 export type Report = z.infer<typeof ReportSchema>;
 
 /* ------------------------------------------------------------------ *
+ * A5 (red/blue agentic-posture audit) — cross-scan blue-team aggregate.
+ * Backs GET /analytics/blue-team (apps/api/src/routes/analytics.ts): an
+ * org-wide, real-data rollup over every one of a client's scans, built from
+ * the SAME per-scan sources the B11 scan-level Blue Team tab already renders
+ * — `Report.blueTeam.mitreAttack` for ATT&CK coverage, and the real,
+ * persisted (A7) `DetectionRule`/`DetectionCoverage` repositories
+ * (packages/state-store/src/blue-team.ts) for the rule inventory and the
+ * coverage trend. This is a READ-ONLY rollup layer — no new persistence.
+ * ------------------------------------------------------------------ */
+
+/** One point in the org-wide ATT&CK coverage timeline — one per scan that
+ * has a generated report, chronological by `Scan.finishedAt` (falling back
+ * to `createdAt` for a scan still in flight). */
+export const BlueTeamAttackCoveragePointSchema = z.object({
+  scanId: IdSchema,
+  repo: z.string(),
+  at: IsoDateTimeSchema,
+  /** Distinct MITRE techniques covered by confirmed findings in this scan alone. */
+  techniqueCount: z.number().int().nonnegative(),
+  /** Distinct techniques covered cumulatively up to and including this scan. */
+  cumulativeTechniqueCount: z.number().int().nonnegative(),
+});
+export type BlueTeamAttackCoveragePoint = z.infer<typeof BlueTeamAttackCoveragePointSchema>;
+
+/** One point in the org-wide detection-coverage trend — one per scan with
+ * persisted `DetectionCoverage` rows (A7), chronological. Real
+ * detected/undetected/unknown tri-state counts, never mock data. */
+export const BlueTeamCoverageTrendPointSchema = z.object({
+  scanId: IdSchema,
+  repo: z.string(),
+  at: IsoDateTimeSchema,
+  detected: z.number().int().nonnegative(),
+  undetected: z.number().int().nonnegative(),
+  unknown: z.number().int().nonnegative(),
+});
+export type BlueTeamCoverageTrendPoint = z.infer<typeof BlueTeamCoverageTrendPointSchema>;
+
+/** A generated detection rule, deduped across scans by (format, content) —
+ * the same rule text generated repeatedly for a recurring vulnerability
+ * pattern collapses to one inventory entry; `scanIds`/`findingIds` record
+ * every occurrence it was generated for. */
+export const DedupedDetectionRuleSchema = z.object({
+  /** The most-recently-generated occurrence, used as the representative row. */
+  rule: DetectionRuleSchema,
+  occurrences: z.number().int().positive(),
+  scanIds: z.array(IdSchema).default([]),
+  findingIds: z.array(IdSchema).default([]),
+});
+export type DedupedDetectionRule = z.infer<typeof DedupedDetectionRuleSchema>;
+
+export const BlueTeamOrgSummarySchema = z.object({
+  clientId: IdSchema,
+  at: IsoDateTimeSchema,
+  /** Number of the client's scans that had a generated report to aggregate. */
+  scansConsidered: z.number().int().nonnegative(),
+  attackCoverage: z.object({
+    /** Aggregated across every scan's `blueTeam.mitreAttack.coverage` — the
+     * SAME shape `AttackHeatMap` (apps/web/src/components/attack-heatmap.tsx)
+     * already renders per-scan, reused as-is for the org-wide view. */
+    coverage: z.array(MitreTechniqueCoverageSchema).default([]),
+    overTime: z.array(BlueTeamAttackCoveragePointSchema).default([]),
+  }),
+  detectionRules: z.object({
+    rules: z.array(DedupedDetectionRuleSchema).default([]),
+    /** Total rows generated before dedup (>= `rules.length`). */
+    totalGenerated: z.number().int().nonnegative(),
+  }),
+  detectionCoverageTrend: z.object({
+    points: z.array(BlueTeamCoverageTrendPointSchema).default([]),
+    totals: z.object({
+      detected: z.number().int().nonnegative(),
+      undetected: z.number().int().nonnegative(),
+      unknown: z.number().int().nonnegative(),
+    }),
+  }),
+});
+export type BlueTeamOrgSummary = z.infer<typeof BlueTeamOrgSummarySchema>;
+
+/* ------------------------------------------------------------------ *
  * Export descriptors (§13, DECIDE-5 order: SARIF + OWASP, then SOC2, then ISO)
  * ------------------------------------------------------------------ */
 

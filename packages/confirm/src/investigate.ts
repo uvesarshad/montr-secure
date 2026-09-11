@@ -39,8 +39,13 @@ import {
 } from "./investigate-tools.js";
 import type { ConfirmDeps, ConfirmInput } from "./types.js";
 
-/** Soft default — overridable per call via `ConfirmDeps.investigation.maxTurns`. */
-const DEFAULT_MAX_TURNS = 6;
+/**
+ * Soft default — overridable per call via `ConfirmDeps.investigation.maxTurns`.
+ * Exported so `investigation-pipeline.ts`'s A11 per-finding effort scaling has
+ * a single source of truth for "the configured budget" instead of duplicating
+ * the constant.
+ */
+export const DEFAULT_MAX_TURNS = 6;
 /**
  * Hard structural ceiling on tool-call turns, enforced UNCONDITIONALLY
  * regardless of any override. This is independent of, and additive to, the

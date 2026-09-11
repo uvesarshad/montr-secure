@@ -633,6 +633,21 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         // LayerProgress) into the E1 investigation loop's per-turn narrative,
         // identically to how signal/logger are passed straight through above.
         emitProgress: ctx.emitProgress,
+        // A3 (2026-09-12) — production wiring for the E1/E2/E4 agentic
+        // investigation loop + adversarial verifier panel, populated from
+        // `@montr/config`'s `confirmation.investigation` (mirrors A5's
+        // `fixGeneration.agentLoop` wiring convention exactly). ON by
+        // default (owner decision — see ConfirmationInvestigationConfigSchema's
+        // doc comment, packages/config/src/schema.ts), scoped to unconfirmed
+        // high/critical findings only via `severities` — confirm.ts's
+        // isEligibleForInvestigation gate skips the loop entirely (zero extra
+        // LLM spend) for anything outside that list.
+        investigation: {
+          enabled: ctx.config.confirmation.investigation.enabled,
+          maxTurns: ctx.config.confirmation.investigation.maxTurns,
+          verifierCount: ctx.config.confirmation.investigation.verifierCount,
+          severities: ctx.config.confirmation.investigation.severities,
+        },
         // A9 — real `semantic_search` capability for the E1 investigation
         // loop's tool set (investigate-tools.ts), scoped to this scan's own
         // client/repo/commit. Absent unless `opts.semanticIndex` was

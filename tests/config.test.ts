@@ -39,6 +39,20 @@ describe("@montr/config hardened defaults (§11)", () => {
   it("discovery.rulesetsDir is unset by default", () => {
     expect(cfg.discovery.rulesetsDir).toBeUndefined();
   });
+
+  // A3 (2026-09-12, P0) — DELIBERATE EXCEPTION to this describe block's own
+  // "hardened, safe-by-default" premise. Every other agentic-loop toggle in
+  // this file's sibling config sections defaults OFF (autoFix, dast,
+  // fixGeneration.agentLoop, semanticIndex); this one is an explicit owner
+  // decision to default ON, scoped to unconfirmed high/critical findings
+  // only, because `idor`/`broken_access_control` have zero static data-flow
+  // proof and this is the only static-scan path that can ever confirm them.
+  // See ConfirmationInvestigationConfigSchema's doc comment
+  // (packages/config/src/schema.ts) and docs/infra/environment.md.
+  it("confirmation.investigation is ON by default, scoped to high/critical (owner decision, A3)", () => {
+    expect(cfg.confirmation.investigation.enabled).toBe(true);
+    expect(cfg.confirmation.investigation.severities).toEqual(["high", "critical"]);
+  });
 });
 
 describe("@montr/config loader", () => {

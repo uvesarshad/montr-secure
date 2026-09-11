@@ -126,6 +126,32 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
   // apps/worker/src/runners.ts's Layer 0 wiring.
   set("MONTR_SEMANTIC_INDEX_ENABLED", ["semanticIndex", "enabled"], parseBool);
   set("MONTR_SEMANTIC_INDEX_EMBEDDING_MODEL", ["semanticIndex", "embeddingModel"]);
+  // A3 (2026-09-12) — E1/E2/E4 agentic investigation loop + adversarial
+  // verifier panel, surfaced as config for the first time. ON by default —
+  // see ConfirmationInvestigationConfigSchema's doc comment (schema.ts) for
+  // why this deliberately deviates from every other agentic-loop toggle's
+  // off-by-default precedent, and apps/worker/src/runners.ts's Layer 3
+  // wiring.
+  set(
+    "MONTR_CONFIRMATION_INVESTIGATION_ENABLED",
+    ["confirmation", "investigation", "enabled"],
+    parseBool,
+  );
+  set(
+    "MONTR_CONFIRMATION_INVESTIGATION_MAX_TURNS",
+    ["confirmation", "investigation", "maxTurns"],
+    parseNum,
+  );
+  set(
+    "MONTR_CONFIRMATION_INVESTIGATION_VERIFIER_COUNT",
+    ["confirmation", "investigation", "verifierCount"],
+    parseNum,
+  );
+  set(
+    "MONTR_CONFIRMATION_INVESTIGATION_SEVERITIES",
+    ["confirmation", "investigation", "severities"],
+    parseList,
+  );
   // HashiCorp Vault connection (only consulted when MONTR_KEY_SOURCE=vault).
   set("VAULT_ADDR", ["security", "vault", "addr"]);
   set("VAULT_TOKEN", ["security", "vault", "token"]);

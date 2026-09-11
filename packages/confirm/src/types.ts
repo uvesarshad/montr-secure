@@ -12,6 +12,7 @@ import type {
   Effort,
   LLMGateway,
   ProbableFinding,
+  Severity,
 } from "@montr/contracts";
 import type { MontrConfig } from "@montr/config";
 import type { SemanticMatch } from "@montr/semantic-index";
@@ -60,6 +61,18 @@ export interface ConfirmInput {
  * read by `apps/worker/src/runners.ts`) is a natural follow-up outside this
  * change's file scope (packages/confirm/src/**, packages/appmap/src/** and
  * packages/llm-gateway/src/** read-only).
+ *
+ * A3 (2026-09-12) update: that production default now exists —
+ * `@montr/config`'s `ConfirmationInvestigationConfigSchema`
+ * (`packages/config/src/schema.ts`), populated by
+ * `apps/worker/src/runners.ts`'s Layer 3 runner — and, per the owner's
+ * explicit decision, defaults `enabled` to TRUE (a deliberate deviation from
+ * every other agentic-loop toggle in this codebase, all of which default
+ * OFF; see that schema's doc comment for the full rationale). This interface
+ * itself is UNCHANGED in that regard: `enabled` here still defaults to
+ * `undefined`/falsy when a caller builds `ConfirmDeps` directly (every
+ * existing offline test is unaffected) — only the worker's production
+ * wiring picks a different default.
  */
 export interface InvestigationConfig {
   /** OFF by default — see the interface doc comment above. */
@@ -74,6 +87,32 @@ export interface InvestigationConfig {
   effort?: Effort;
   /** Number of E4 adversarial verifiers to run (default + hard cap: 4, one per defined lens). */
   verifierCount?: number;
+  /**
+   * A3 scoping (2026-09-12): when set, `confirm.ts` only offers a not-yet-
+   * confirmed finding to this loop when its CATEGORY's base severity —
+   * `baseSeverityForCategory(finding.category)` in `taxonomy.ts` — is one of
+   * these values. Absent/undefined ⇒ no severity restriction (every existing
+   * test that doesn't set this is unaffected). The worker's production
+   * wiring defaults this to `["high", "critical"]` (owner decision) so the
+   * loop's real cost only lands on the categories it exists to help — `idor`
+   * and `broken_access_control` have zero static data-flow proof at all
+   * (`taxonomy.ts`'s `DATAFLOW_SINK_KINDS`) and are only reachable this way
+   * absent live DAST.
+   *
+   * Deliberately NOT `deriveSeverity(finding.category, finding.exposure)`
+   * (the exposure-discounted function that assigns a *confirmed* finding's
+   * final severity): idor/broken_access_control are both base "high", but
+   * deriveSeverity downgrades a non-public-exposure instance one tier to
+   * "medium" — and the overwhelmingly common real-world case for both
+   * categories is authenticated-only, not anonymous-public. Gating
+   * eligibility on the exposure-discounted value would silently exclude that
+   * common case from the default scope, defeating the reason this loop
+   * exists. Category base severity is a cost-gate signal ("is this class of
+   * finding inherently worth the spend"), not a claim about this specific
+   * finding's final severity — that's still computed correctly at
+   * confirmation time via `deriveSeverity`, unaffected by this gate.
+   */
+  severities?: Severity[];
 }
 
 /** Structural audit sink. @montr/telemetry's AuditLogClient / state-store's AuditLog satisfy it. */

@@ -19,6 +19,8 @@ import {
   type AuditEventInput,
   type ConfirmedFinding,
   type CustomRule,
+  type DetectionCoverage,
+  type DetectionRule,
   type PostureSnapshot,
   type PullRequest,
   type RedTeamScenario,
@@ -86,6 +88,9 @@ export interface StateStoreLike {
   // §15 cross-scan memory (E8). Real StateStore's `LearnedFactRepository` is
   // structurally assignable to `LearnedFactStore` below.
   learnedFacts: LearnedFactStore;
+  // A5 — cross-scan blue-team aggregate reads (see DetectionRuleStore doc comment).
+  detectionRules: DetectionRuleStore;
+  detectionCoverage: DetectionCoverageStore;
 }
 
 /** A client-authorized live-DAST target (mirrors the Prisma `DastTarget` model). */
@@ -155,6 +160,25 @@ export interface PostureStore {
   latestForRepo(clientId: string, repo: string): Promise<PostureSnapshot | null>;
 }
 
+/**
+ * A5 (red/blue agentic-posture audit) — cross-scan blue-team aggregate reads.
+ * Mirrors @montr/state-store's `DetectionRuleRepository`/`DetectionCoverageRepository`
+ * (packages/state-store/src/blue-team.ts), scoped to only the `list` read path the
+ * org-wide aggregate route (apps/api/src/routes/analytics.ts, GET /analytics/blue-team)
+ * needs — the real repositories also have `create`/`get`/`listByFinding`/
+ * `updateVerification`; those extra methods don't break structural assignment.
+ * These rows are real and persisted per-scan by `persistDetectionCoverageForScan`
+ * (packages/appmap/src/coverage-analysis.ts, called from Layer 3) — never mock data.
+ */
+export interface DetectionRuleStore {
+  list(clientId: string, filter?: Record<string, unknown>): Promise<DetectionRule[]>;
+}
+
+/** See {@link DetectionRuleStore} doc comment. */
+export interface DetectionCoverageStore {
+  list(clientId: string, filter?: Record<string, unknown>): Promise<DetectionCoverage[]>;
+}
+
 /* --------------------------------------------------------------------------- *
  * §15 cross-scan memory (E8). Mirrors @montr/state-store's `LearnedFact` /
  * `LearnedFactInput` / `LearnedFactRepository` (declared locally per this
@@ -219,6 +243,9 @@ export interface ApiStore {
   posture: PostureStore;
   /** §15 cross-scan memory (E8) — durable per-repo learned facts. */
   learnedFacts: LearnedFactStore;
+  // A5 — cross-scan blue-team aggregate reads (see DetectionRuleStore doc comment).
+  detectionRules: DetectionRuleStore;
+  detectionCoverage: DetectionCoverageStore;
 }
 
 export interface Clock {
@@ -519,6 +546,11 @@ export function createInMemoryApiStore(opts: InMemoryApiStoreOptions = {}): ApiS
     scanSchedules: new InMemoryCrudStore<ScanSchedule>(),
     posture: new InMemoryPostureStore(),
     learnedFacts: new InMemoryLearnedFactStore(),
+    // A5 — both `DetectionRule` and `DetectionCoverage` already have
+    // `id`/`clientId`/`createdAt`, so the same generic CRUD fake used for
+    // customRules/redTeamScenarios/scanSchedules above applies unchanged.
+    detectionRules: new InMemoryCrudStore<DetectionRule>(),
+    detectionCoverage: new InMemoryCrudStore<DetectionCoverage>(),
   };
 }
 
@@ -548,6 +580,9 @@ export function apiStoreFromStateStore(
     scanSchedules: state.scanSchedules,
     posture: state.posture,
     learnedFacts: state.learnedFacts,
+    // A5 — sourced from the shared StateStore's real, persisted (A7) repos.
+    detectionRules: state.detectionRules,
+    detectionCoverage: state.detectionCoverage,
   };
 }
 

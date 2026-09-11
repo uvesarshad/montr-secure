@@ -42,7 +42,9 @@ export type IconKey =
   | "dashboards"
   | "rules"
   | "scenarios"
-  | "schedules";
+  | "schedules"
+  // A5 (red/blue agentic-posture audit) — org-wide blue-team aggregate.
+  | "blue-team";
 
 export interface NavItem {
   id: string;
@@ -80,6 +82,19 @@ export const NAV_SECTIONS: readonly NavItem[] = [
     label: "Dashboards",
     href: "/dashboards",
     icon: "dashboards",
+    roles: ["operator", "approver", "viewer"],
+  },
+  // A5 (red/blue agentic-posture audit) — the per-scan Blue Team tab
+  // (scans/[scanId]/blue-team) was previously reachable only by opening a
+  // specific scan; this is the org-wide, cross-scan aggregate: ATT&CK
+  // coverage over time, the deduped detection-rule inventory, and the
+  // detection-coverage trend. Viewer-visible, matching `view_reports_and_audit`
+  // (docs/auth/authorization.md) — read-only, same as the tab it aggregates.
+  {
+    id: "blue-team",
+    label: "Blue Team",
+    href: "/blue-team",
+    icon: "blue-team",
     roles: ["operator", "approver", "viewer"],
   },
   {

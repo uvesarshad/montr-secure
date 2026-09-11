@@ -4,6 +4,7 @@ import {
   BudgetEnforcementSchema,
   RiskClassSchema,
   CategorySchema,
+  SeveritySchema,
   RECOMMENDED_MODEL_MATRIX,
 } from "@montr/contracts";
 
@@ -245,6 +246,74 @@ export const SemanticIndexConfigSchema = z.object({
 export type SemanticIndexConfig = z.infer<typeof SemanticIndexConfigSchema>;
 
 /**
+ * A3 (2026-09-12 red/blue agentic-posture audit) — the E1/E2/E4 agentic
+ * investigation loop (`packages/confirm/src/investigate.ts`'s `runInvestigation`,
+ * gated in `packages/confirm/src/confirm.ts`) plus its E4 adversarial verifier
+ * panel (`packages/confirm/src/adversarial.ts`), surfaced here as a config
+ * section for the first time — this loop was previously reachable only by a
+ * test/caller manually constructing `ConfirmDeps.investigation` (see that
+ * interface's doc comment in `packages/confirm/src/types.ts`).
+ *
+ * ⛔ DELIBERATE DEVIATION from `FixAgentLoopConfigSchema`'s off-by-default
+ * precedent: `enabled` defaults to TRUE here (owner decision, 2026-09-12).
+ * Rationale: `idor` and `broken_access_control` have ZERO static data-flow
+ * proof at all (`packages/confirm/src/taxonomy.ts`'s `DATAFLOW_SINK_KINDS`)
+ * and are absent from live DAST unless an operator has separately enabled
+ * `dast.enabled` — this is the only path in the whole pipeline that can ever
+ * confirm those two categories from a static-only scan, so leaving it off by
+ * default would leave the audit's two 0%-recall categories at 0% recall
+ * forever on every fresh install. The blast radius is bounded severely
+ * enough to justify the default flip: `severities` scopes it to only
+ * high/critical UNCONFIRMED findings (never touches anything static/live
+ * already confirmed), the loop's own hard turn ceiling
+ * (`ABSOLUTE_MAX_INVESTIGATION_TURNS = 8` in `investigate.ts`) cannot be
+ * raised by this config regardless of `maxTurns` below, budget exhaustion
+ * always resolves to `inconclusive` (never a false confirmation, see
+ * `investigate.ts`'s header comment), and every one of its LLM calls carries
+ * the scan's real `metadata.scanId` so it flows through the EXACT SAME A2
+ * pre-call budget hard-halt guard (`packages/llm-gateway/src/gateway.ts`'s
+ * `assertPreCallBudget`) as every other Layer 3 call — MONTR_BUDGET_MAX_USD /
+ * MONTR_BUDGET_MAX_TOKENS / MONTR_BUDGET_ENFORCEMENT=hard_halt apply
+ * unchanged. This IS a real cost/latency increase for every operator
+ * upgrading into this default (see docs/infra/environment.md and the
+ * docs/overview.md Recent Changes entry) — an operator who wants the
+ * pre-A3 behavior back sets `MONTR_CONFIRMATION_INVESTIGATION_ENABLED=false`.
+ *
+ * `maxTurns`/`verifierCount` mirror `FixAgentLoopConfigSchema`'s
+ * bounded-numeric-cap convention: both are capped at the exact hard
+ * ceiling the code itself already enforces unconditionally
+ * (`ABSOLUTE_MAX_INVESTIGATION_TURNS = 8` and the 4-lens verifier panel in
+ * `adversarial.ts`), so a config typo cannot exceed what the loop structurally
+ * allows — it can only ask for LESS than the ceiling, never more.
+ */
+export const ConfirmationInvestigationConfigSchema = z.object({
+  /** ON by default (owner decision, 2026-09-12) — see the section doc comment above. */
+  enabled: z.boolean().default(true),
+  /** Soft per-finding turn cap. 1–8; `investigate.ts`'s hard ceiling of 8 cannot be raised past regardless. */
+  maxTurns: z.number().int().positive().max(8).default(6),
+  /** E4 adversarial verifier count. 1–4 (one per defined lens; `adversarial.ts` hard-caps at 4 regardless). */
+  verifierCount: z.number().int().positive().max(4).default(4),
+  /**
+   * Scoping (owner decision): only UNCONFIRMED findings at one of these
+   * severities are offered to the investigation loop — every other
+   * unconfirmed finding falls through to the pre-existing Unconfirmed
+   * appendix untouched, exactly as if this loop didn't exist. Severity for a
+   * not-yet-confirmed finding is computed the same deterministic way a
+   * confirmed finding's severity would be (`deriveSeverity(category,
+   * exposure)` in `packages/confirm/src/taxonomy.ts`) since `ProbableFinding`
+   * itself carries no severity field (severity is assigned at confirmation).
+   */
+  severities: z.array(SeveritySchema).min(1).default(["high", "critical"]),
+});
+export type ConfirmationInvestigationConfig = z.infer<typeof ConfirmationInvestigationConfigSchema>;
+
+/** Layer 3 (exploit confirmation) configuration. */
+export const ConfirmationConfigSchema = z.object({
+  investigation: ConfirmationInvestigationConfigSchema.default({}),
+});
+export type ConfirmationConfig = z.infer<typeof ConfirmationConfigSchema>;
+
+/**
  * Per-tenant BullMQ queue isolation (A27). `perTenantIsolation` is OFF by
  * default: today's six shared per-layer queues (`montr.layer0`…`montr.layer5`,
  * packages/contracts/src/queue.ts's QUEUE_NAMES) are unchanged — correct for
@@ -303,6 +372,7 @@ export const MontrConfigSchema = z.object({
   queue: QueueConfigSchema.default({}),
   fixGeneration: FixGenerationConfigSchema.default({}),
   semanticIndex: SemanticIndexConfigSchema.default({}),
+  confirmation: ConfirmationConfigSchema.default({}),
 });
 export type MontrConfig = z.infer<typeof MontrConfigSchema>;
 

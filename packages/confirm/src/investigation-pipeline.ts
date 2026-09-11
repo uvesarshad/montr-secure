@@ -33,7 +33,7 @@ import type {
 import { assembleConfirmed } from "./static.js";
 import { gatherExecutableEvidence, type ExecutableEvidence } from "./evidence.js";
 import { runAdversarialVerification, type AdversarialOutcome } from "./adversarial.js";
-import { runInvestigation, type InvestigationOutcome } from "./investigate.js";
+import { runInvestigation, DEFAULT_MAX_TURNS, type InvestigationOutcome } from "./investigate.js";
 import type { ConfirmDeps, ConfirmInput } from "./types.js";
 
 export interface InvestigationPathResult {
@@ -41,6 +41,46 @@ export interface InvestigationPathResult {
   investigation: InvestigationOutcome;
   evidence: ExecutableEvidence;
   adversarial: AdversarialOutcome;
+}
+
+/**
+ * A11 — the SAME reachability × exposure × impact product Layer 2 already
+ * ranks findings by (`ProbableFinding.reachabilityScore` /
+ * `exposureScore` / `impactScore` — see `packages/correlation/src/scoring.ts`'s
+ * `combinedScore`, the same formula, recomputed here rather than importing
+ * `@montr/correlation` for one multiplication). No new scoring signal is
+ * invented; this only reads scores Layer 2 already computed and persisted on
+ * the finding.
+ */
+function combinedScoreOf(finding: ProbableFinding): number {
+  return finding.reachabilityScore * finding.exposureScore * finding.impactScore;
+}
+
+/** High-value findings get the full configured turn budget. */
+const HIGH_VALUE_SCORE = 0.5;
+/** Marginal findings get a reduced budget — still a real shot, never zero. */
+const MARGINAL_SCORE = 0.15;
+/** Never fewer than this many turns — one turn can't both call a tool and conclude. */
+const MIN_INVESTIGATION_TURNS = 2;
+
+/**
+ * A11 — proportional effort allocation for the investigation loop (E1),
+ * scaled by `combinedScoreOf` above. A high-scoring finding (score >=
+ * `HIGH_VALUE_SCORE`) gets the caller's full configured `maxTurns` (or the
+ * loop's own soft default when unset). A marginal finding (score <
+ * `MARGINAL_SCORE`) gets roughly half that budget. Everything in between
+ * gets three-quarters. This can only SCALE the configured budget DOWN — it
+ * never exceeds what the caller configured (or the documented soft default),
+ * and the result is still subject to `investigate.ts`'s unconditional hard
+ * ceiling (`ABSOLUTE_MAX_INVESTIGATION_TURNS`) regardless of what this
+ * function returns, so it can never be used to raise the real spend cap.
+ */
+function effortScaledMaxTurns(finding: ProbableFinding, deps: ConfirmDeps): number {
+  const configured = deps.investigation?.maxTurns ?? DEFAULT_MAX_TURNS;
+  const score = combinedScoreOf(finding);
+  if (score >= HIGH_VALUE_SCORE) return configured;
+  if (score < MARGINAL_SCORE) return Math.max(MIN_INVESTIGATION_TURNS, Math.round(configured / 2));
+  return Math.max(MIN_INVESTIGATION_TURNS, Math.round(configured * 0.75));
 }
 
 function findRouteForInvestigation(
@@ -100,7 +140,16 @@ export async function attemptInvestigationConfirmation(
 ): Promise<InvestigationPathResult | undefined> {
   if (!deps.llm || !deps.investigation?.enabled) return undefined;
 
-  const investigation = await runInvestigation(finding, input, deps, priorStaticReason);
+  // A11: scale the turn budget to this finding's own reachability × exposure
+  // × impact score before running the loop — see `effortScaledMaxTurns` above.
+  // Only the turn cap is overridden; every other dep (llm, signal, audit,
+  // logger, semanticSearch, etc.) passes through unchanged.
+  const scopedDeps: ConfirmDeps = {
+    ...deps,
+    investigation: { ...deps.investigation, maxTurns: effortScaledMaxTurns(finding, deps) },
+  };
+
+  const investigation = await runInvestigation(finding, input, scopedDeps, priorStaticReason);
   if (investigation.verdict !== "confirmed_candidate") return undefined;
 
   const evidence = await gatherExecutableEvidence({

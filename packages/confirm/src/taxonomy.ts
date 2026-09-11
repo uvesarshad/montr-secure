@@ -210,6 +210,22 @@ const BASE_SEVERITY: Record<Category, Severity> = {
 };
 
 /**
+ * A category's severity class before any exposure discount — used to gate
+ * expensive per-category work (e.g. A3's investigation-loop eligibility)
+ * where the decision should track "is this category inherently high-value"
+ * rather than "is this specific finding's exposure narrow enough to earn a
+ * discount." Using the exposure-discounted `deriveSeverity` for that gate
+ * would silently exclude the common authenticated-only idor/broken_access_control
+ * case (both "high" base, downgraded to "medium" once exposure != "public")
+ * from a default `severities: ["high", "critical"]` scope — defeating the
+ * whole point of a feature built specifically to raise recall on those two
+ * categories, which otherwise have zero static data-flow proof at all.
+ */
+export function baseSeverityForCategory(category: Category): Severity {
+  return BASE_SEVERITY[category];
+}
+
+/**
  * Final severity for a confirmed finding. Proven-exploitable public findings keep
  * their class base; an authed exploit is downgraded one notch (harder to reach)
  * unless the class is already critical.

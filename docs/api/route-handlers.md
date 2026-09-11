@@ -58,6 +58,7 @@ GET and POST /api/v1/rules: Lists and creates custom Semgrep and secret detectio
 GET and POST /api/v1/scenarios: Lists and creates versioned red-team DAST attack scenarios with encrypted step sequences.
 GET and POST /api/v1/schedules: Manages cron scan schedules with mandatory per-run budget ceiling policies.
 GET /api/v1/analytics/posture: Returns historical posture snapshots and vulnerability trends over time.
+GET /api/v1/analytics/blue-team (A5): Org-wide blue-team aggregate, available to every role (viewer included). Reads only real, already-persisted per-scan data, never new persistence: each of the client's scans' already-built `Report.blueTeam.mitreAttack.coverage` (merged across scans by technique id, plus a chronological cumulative-technique-count timeline), and the real, persisted (A7) `DetectionRule`/`DetectionCoverage` repositories for a cross-scan detection-rule inventory (deduped by format+content, with occurrence/scan/finding counts) and a per-scan detected/undetected/unknown coverage trend.
 
 Update Triggers
 Update this file when Fastify route handlers are added, removed, or modified in apps/api/src/routes, when URL parameters change, or when role permission requirements are adjusted.

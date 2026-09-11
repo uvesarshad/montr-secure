@@ -205,4 +205,7 @@ export const NAV_ICONS: Record<IconKey, (p: IconProps) => React.JSX.Element> = {
   rules: RuleIcon,
   scenarios: TargetIcon,
   schedules: CalendarIcon,
+  // A5 — org-wide blue-team aggregate; same icon the per-scan Blue Team tab's
+  // empty/error states already use (ShieldAlertIcon), not a new glyph.
+  "blue-team": ShieldAlertIcon,
 };

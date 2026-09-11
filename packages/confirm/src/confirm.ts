@@ -21,6 +21,7 @@ import {
   Layer3OutputSchema,
   type ConfirmedFinding,
   type Layer3Output,
+  type ProbableFinding,
   type UnconfirmedFinding,
 } from "@montr/contracts";
 import { confirmStatic, toUnconfirmed } from "./static.js";
@@ -28,7 +29,33 @@ import { confirmLive, isLiveEligible } from "./live.js";
 import { ScopeGuard, assertLiveAuthorized, buildDefaultEgressGuard } from "./guard.js";
 import { agentAudit, msg, safeAppend } from "./audit.js";
 import { attemptInvestigationConfirmation } from "./investigation-pipeline.js";
+import { baseSeverityForCategory } from "./taxonomy.js";
+import { structuralConfirmationGate } from "./structural-gate.js";
 import type { ConfirmDeps, ConfirmInput, EgressGuardLike } from "./types.js";
+
+/**
+ * A3 scoping gate: is this not-yet-confirmed finding eligible for the E1/E2/E4
+ * agentic investigation loop? `ConfirmDeps.investigation.severities`
+ * (populated in production from `config.confirmation.investigation.severities`,
+ * owner default `["high", "critical"]`) restricts the loop to the findings it
+ * exists to help — see `types.ts`'s `InvestigationConfig.severities` doc
+ * comment. Deliberately uses `baseSeverityForCategory` (the category's class
+ * severity), not the exposure-discounted `deriveSeverity` a *confirmed*
+ * finding gets: idor/broken_access_control are both base "high" but have
+ * zero static data-flow proof at all (this loop is the only static-scan path
+ * that can ever confirm them), and the overwhelmingly common real-world
+ * instance of either is authenticated-only, not anonymous-public. Gating
+ * eligibility on the exposure-discounted severity would downgrade that
+ * common case to "medium" and silently exclude it from the default
+ * high/critical scope — defeating the reason this loop was built. Absent
+ * `severities` ⇒ no restriction (every existing caller that doesn't set it
+ * is unaffected).
+ */
+function isEligibleForInvestigation(finding: ProbableFinding, deps: ConfirmDeps): boolean {
+  const severities = deps.investigation?.severities;
+  if (!severities || severities.length === 0) return true;
+  return severities.includes(baseSeverityForCategory(finding.category));
+}
 
 function throwIfKilled(deps: ConfirmDeps): void {
   const sig = deps.signal;
@@ -138,6 +165,35 @@ export async function confirmFindings(
       continue;
     }
 
+    // A11: bounded, deterministic pre-confirmation structural gate — see
+    // structural-gate.ts's header comment. Fires ONLY when the App Map being
+    // confirmed against no longer registers the exact route this finding was
+    // grounded to at correlation time (a hard existence check, never a score
+    // or threshold judgment) — so no static proof, live DAST, or agentic
+    // investigation effort is spent on a location that has provably
+    // disappeared from the app being scanned.
+    const structuralGate = structuralConfirmationGate(finding, input.appMap);
+    if (structuralGate.ruledOut) {
+      unconfirmed.push(toUnconfirmed(finding, structuralGate.reason as string));
+      await safeAppend(
+        deps,
+        agentAudit(
+          input,
+          "finding.demoted",
+          `Structurally ruled out before confirmation: ${finding.category}`,
+          {
+            category: finding.category,
+            exposure: finding.exposure,
+            reason: "structurally_ruled_out",
+            detail: structuralGate.reason,
+            routeId: finding.routeId,
+          },
+          finding.id,
+        ),
+      );
+      continue;
+    }
+
     const staticOutcome = await confirmStatic(finding, input, deps);
 
     let live: Awaited<ReturnType<typeof confirmLive>> | undefined;
@@ -181,19 +237,23 @@ export async function confirmFindings(
       );
     } else {
       // E1 + E2 + E4: neither the deterministic taint-proof path nor live
-      // DAST confirmed this finding. When explicitly enabled (OFF by
-      // default — see ConfirmDeps.investigation), give the agentic
-      // investigation loop a shot — but it can ONLY promote this finding
-      // when its candidate verdict clears BOTH E2's executable-evidence gate
-      // AND E4's adversarial majority (see investigation-pipeline.ts's header
-      // comment for the full invariant). Any miss falls through unchanged to
-      // the exact same unconfirmed-appendix path this code always took.
-      const investigated = await attemptInvestigationConfirmation(
-        finding,
-        input,
-        deps,
-        staticOutcome.reason,
-      );
+      // DAST confirmed this finding. When explicitly enabled (see
+      // ConfirmDeps.investigation — production defaults this ON, scoped by
+      // severity, as of A3), give the agentic investigation loop a shot —
+      // but it can ONLY promote this finding when its candidate verdict
+      // clears BOTH E2's executable-evidence gate AND E4's adversarial
+      // majority (see investigation-pipeline.ts's header comment for the
+      // full invariant). Any miss falls through unchanged to the exact same
+      // unconfirmed-appendix path this code always took.
+      //
+      // A3 scoping: a finding outside `deps.investigation.severities` (e.g.
+      // low/medium under the production default) never even reaches
+      // attemptInvestigationConfirmation — this is a cost gate, not just a
+      // confirmation-outcome gate, so ineligible findings spend zero extra
+      // LLM budget.
+      const investigated = isEligibleForInvestigation(finding, deps)
+        ? await attemptInvestigationConfirmation(finding, input, deps, staticOutcome.reason)
+        : undefined;
       if (investigated) {
         confirmed.push(investigated.finding);
         await safeAppend(

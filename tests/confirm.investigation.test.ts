@@ -609,6 +609,119 @@ describe("E1/E2/E4 wired into confirmFindings — additive, opt-in, and only con
   });
 });
 
+describe("A3 (2026-09-12) — severity scoping is a COST gate, keyed on category BASE severity (not exposure-discounted)", () => {
+  it("investigates an authed-exposure IDOR too — the eligibility gate uses idor's base 'high' severity, not the exposure-discounted 'medium' a *confirmed* finding would derive to, so the common authenticated-only case stays in the default high/critical scope", async () => {
+    const repoRoot = await writeVulnerableRepo();
+    cleanupDirs.push(repoRoot);
+    // A gateway that WOULD happily confirm anything if ever asked — proves the
+    // loop genuinely attempts (the eligibility gate let it through), even
+    // though this scripted response lacks E2 executable evidence so it still
+    // ends up unconfirmed. The point of this test is the ATTEMPT, not the
+    // final verdict (see the next test for a full confirm flow).
+    const gateway = new ScriptedGateway(
+      [
+        toolResponse("unused", [
+          {
+            id: "c1",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: { verdict: "confirmed_candidate", rationale: "x" },
+          },
+        ]),
+      ],
+      allConfirmVerifier(),
+    );
+    // idorProbableFinding() has exposure "authed". idor's BASE_SEVERITY is
+    // "high" — deriveSeverity would downgrade an authed-exposure CONFIRMED
+    // finding to "medium", but isEligibleForInvestigation deliberately uses
+    // baseSeverityForCategory instead, so this finding is still in scope for
+    // the default ["high", "critical"] production severities.
+    const input = baseInput({ repoRoot });
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: gateway,
+      investigation: { enabled: true, severities: ["high", "critical"] },
+    };
+    await confirmFindings(input, deps);
+
+    expect(gateway.calls.length).toBeGreaterThan(0); // genuinely attempted — not skipped by the cost gate
+  });
+
+  it("still investigates a PUBLIC-exposure IDOR (base category severity 'high') under the exact same severities scope", async () => {
+    const repoRoot = await writeVulnerableRepo();
+    cleanupDirs.push(repoRoot);
+    const gateway = new ScriptedGateway(
+      [
+        toolResponse("t1", [{ id: "c1", name: "list_routes", input: {} }]),
+        toolResponse("t2", [{ id: "c2", name: "read_file", input: { path: HANDLER_PATH } }]),
+        toolResponse("t3", [
+          {
+            id: "c3",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: {
+              verdict: "confirmed_candidate",
+              rationale: "no ownership check — publicly reachable order id enumeration.",
+              ownershipCheckFound: false,
+              existingTestFile: "app/api/orders/ownership.existing.test.ts",
+              targetRouteId: ROUTE_ID,
+            },
+          },
+        ]),
+      ],
+      allConfirmVerifier(),
+    );
+    const testRunner: TestRunner = {
+      run: (_repoRoot, testFile) =>
+        Promise.resolve({
+          ran: true,
+          passed: false,
+          summary: `existing test ${testFile} FAILED — no ownership check`,
+        }),
+    };
+    const publicFinding: ProbableFinding = { ...idorProbableFinding(), exposure: "public" };
+    const input = baseInput({ repoRoot, probable: [publicFinding] });
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: gateway,
+      testRunner,
+      investigation: { enabled: true, severities: ["high", "critical"] },
+    };
+    const out = await confirmFindings(input, deps);
+
+    expect(out.unconfirmed).toHaveLength(0);
+    expect(out.confirmed).toHaveLength(1);
+    expect(out.confirmed[0]?.category).toBe("idor");
+    expect(gateway.calls.length).toBeGreaterThan(0); // the loop genuinely ran this time
+  });
+
+  it("an explicit empty-overlap severities list (e.g. only 'critical') skips a 'high'-base-severity category too", async () => {
+    const repoRoot = await writeVulnerableRepo();
+    cleanupDirs.push(repoRoot);
+    const gateway = new ScriptedGateway(
+      [
+        toolResponse("unused", [
+          {
+            id: "c1",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: { verdict: "confirmed_candidate", rationale: "x" },
+          },
+        ]),
+      ],
+      allConfirmVerifier(),
+    );
+    const publicFinding: ProbableFinding = { ...idorProbableFinding(), exposure: "public" }; // derives to "high"
+    const input = baseInput({ repoRoot, probable: [publicFinding] });
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: gateway,
+      investigation: { enabled: true, severities: ["critical"] }, // "high" is not in scope
+    };
+    const out = await confirmFindings(input, deps);
+
+    expect(out.confirmed).toHaveLength(0);
+    expect(gateway.calls).toHaveLength(0);
+  });
+});
+
 describe("E2 — unproven proposals never reach confirmed (executable-evidence gate)", () => {
   it("a confirmed_candidate verdict with NO existing test file stays unconfirmed", async () => {
     // No `existingTestFile` supplied — mirrors an investigation outcome that

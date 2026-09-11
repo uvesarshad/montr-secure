@@ -30,7 +30,11 @@ import type {
   ModelDescriptor,
   StopReason,
 } from "@montr/contracts";
-import { RedTeamScenarioSchema } from "@montr/contracts";
+import {
+  ProbableFindingSchema,
+  RedTeamScenarioSchema,
+  type ProbableFinding,
+} from "@montr/contracts";
 import type { SemgrepJson } from "@montr/discovery";
 import { createMapSourceReader } from "@montr/fix";
 import { createLayerRunners } from "./runners.js";
@@ -411,6 +415,114 @@ describe("layer runner adapters — Layer 3 (confirmation)", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 15_000);
+
+  /**
+   * A3 (2026-09-12) — production wiring for the E1/E2/E4 agentic investigation
+   * loop. These tests prove the RUNNER (not just packages/confirm's own unit
+   * suite) actually threads `config.confirmation.investigation` into
+   * `ConfirmDeps.investigation`, and that the severity scoping is real end to
+   * end. They don't re-prove the full E1/E2/E4 gate chain (already covered by
+   * tests/confirm.investigation.test.ts) — they prove the loop is REACHED (or
+   * correctly NOT reached) purely from config, via whether the gateway ever
+   * receives a tool-calling ("confirmation" purpose + non-empty `tools`)
+   * request, which only the investigation loop ever sends.
+   */
+  function idorFinding(overrides: Partial<ProbableFinding> = {}): ProbableFinding {
+    return ProbableFindingSchema.parse({
+      id: "prob_idor_wiring_0001",
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      rootCauseId: "rc_idor_wiring_0001",
+      category: "idor",
+      mergedCandidateIds: [],
+      reachabilityHypothesis: "any authenticated user can reach GET /api/orders/:id",
+      exploitHypothesis: "incrementing the id parameter discloses other users' orders",
+      exposure: "public", // idor's base severity is "high"; "public" exposure keeps it at "high" (no downgrade)
+      location: { file: "app/api/orders/[id]/route.ts", line: 4 },
+      reachabilityScore: 0.7,
+      exposureScore: 0.8,
+      impactScore: 0.6,
+      rank: 1,
+      createdAt: FIXED_NOW,
+      ...overrides,
+    });
+  }
+
+  function investigationToolCalls(requests: LLMRequest[]): LLMRequest[] {
+    return requests.filter(
+      (r) => r.metadata.purpose === "confirmation" && (r.tools?.length ?? 0) > 0,
+    );
+  }
+
+  it("production default: an unconfirmed, high-severity IDOR reaches the investigation loop (config.confirmation.investigation is threaded into ConfirmDeps)", async () => {
+    const { store } = makeInMemoryStore();
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer3">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer3", { allowLive: false }) as never,
+      store,
+      // hardenedConfig() default: confirmation.investigation.enabled === true,
+      // severities === ["high", "critical"] — the production default, not an override.
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer2: { probable: [idorFinding()], demoted: [] },
+      },
+    });
+
+    await runners.layer3(ctx);
+
+    expect(investigationToolCalls(spy.requests).length).toBeGreaterThan(0);
+  });
+
+  it("an operator who explicitly disables confirmation.investigation gets byte-identical pre-A3 behavior (no tool-calling requests at all)", async () => {
+    const { store } = makeInMemoryStore();
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const config = hardenedConfig({ confirmation: { investigation: { enabled: false } } });
+    const ctx = makeLayerContext<"layer3">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer3", { allowLive: false }) as never,
+      store,
+      config,
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        layer2: { probable: [idorFinding()], demoted: [] },
+      },
+    });
+
+    const out = await runners.layer3(ctx);
+
+    expect(investigationToolCalls(spy.requests)).toHaveLength(0);
+    expect(out.unconfirmed.some((u) => u.category === "idor")).toBe(true);
+  });
+
+  it("severity scoping (owner decision): an authenticated-only IDOR (derives to 'medium', below the default high/critical scope) never reaches the loop even though investigation is enabled", async () => {
+    const { store } = makeInMemoryStore();
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer3">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer3", { allowLive: false }) as never,
+      store,
+      // hardenedConfig() default again — proves the scoping, not just the toggle.
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        // exposure "authed" downgrades idor's "high" base severity to "medium".
+        layer2: { probable: [idorFinding({ exposure: "authed" })], demoted: [] },
+      },
+    });
+
+    await runners.layer3(ctx);
+
+    expect(investigationToolCalls(spy.requests)).toHaveLength(0);
+  });
 });
 
 describe("layer runner adapters — Layer 4 (fix generation)", () => {
