@@ -205,18 +205,30 @@ function baseInput(
 }
 
 describe("@montr/fix — proposeFixWithAgent (A5 bounded agent loop)", () => {
-  it("is OFF by default: a single-shot response that fails validation is never retried", async () => {
-    const gateway = new QueueGateway([textResponse(stillVulnerableEditsJson())]);
-    const out = await generateFixes(baseInput("app/agent-loop/off-by-default.tsx", gateway));
+  // This candidate still goes through the real vitest-subprocess validatePatch
+  // once (by design — see the file header). That alone is a multi-second cost
+  // on a fast machine; on GitHub's windows-latest runner it crossed the default
+  // 5000ms and failed as a timeout, not a logic error (confirmed: this exact
+  // test passed on a real Windows run once retried manually). Generous,
+  // explicit timeout rather than a flaky default.
+  const REAL_VALIDATION_TIMEOUT_MS = 20_000;
 
-    expect(gateway.requests).toHaveLength(1);
-    const fix = out.fixes[0]!;
-    // The model's (rejected) proposal falls back to the deterministic transform —
-    // exactly the pre-existing single-shot behavior, completely unchanged.
-    expect(fix.riskClass).toBe("auto-eligible");
-    expect(fix.rationale).not.toContain("Model-proposed");
-    expect(fix.rationale).toContain("Deterministic patch");
-  });
+  it(
+    "is OFF by default: a single-shot response that fails validation is never retried",
+    async () => {
+      const gateway = new QueueGateway([textResponse(stillVulnerableEditsJson())]);
+      const out = await generateFixes(baseInput("app/agent-loop/off-by-default.tsx", gateway));
+
+      expect(gateway.requests).toHaveLength(1);
+      const fix = out.fixes[0]!;
+      // The model's (rejected) proposal falls back to the deterministic transform —
+      // exactly the pre-existing single-shot behavior, completely unchanged.
+      expect(fix.riskClass).toBe("auto-eligible");
+      expect(fix.rationale).not.toContain("Model-proposed");
+      expect(fix.rationale).toContain("Deterministic patch");
+    },
+    REAL_VALIDATION_TIMEOUT_MS,
+  );
 
   it("retries after a structurally invalid edit list and succeeds on the next attempt", async () => {
     const metrics = new MontrMetrics();
@@ -274,29 +286,37 @@ describe("@montr/fix — proposeFixWithAgent (A5 bounded agent loop)", () => {
     expect(String(feedback.content)).toMatch(/did NOT remove the vulnerability/);
   });
 
-  it("respects maxIterations: never calls the gateway more times than the bound allows", async () => {
-    const gateway = new QueueGateway([
-      textResponse(stillVulnerableEditsJson()),
-      textResponse(stillVulnerableEditsJson()),
-      textResponse(stillVulnerableEditsJson()),
-    ]);
+  // Same rationale as REAL_VALIDATION_TIMEOUT_MS above: the final candidate's
+  // real vitest-subprocess validatePatch run is a genuine multi-second cost,
+  // and this test timed out at the vitest default on GitHub's windows-latest
+  // runner. Explicit, generous timeout rather than a flaky default.
+  it(
+    "respects maxIterations: never calls the gateway more times than the bound allows",
+    async () => {
+      const gateway = new QueueGateway([
+        textResponse(stillVulnerableEditsJson()),
+        textResponse(stillVulnerableEditsJson()),
+        textResponse(stillVulnerableEditsJson()),
+      ]);
 
-    const out = await generateFixes(
-      baseInput("app/agent-loop/max-iterations.tsx", gateway, {
-        agentLoop: { enabled: true, maxIterations: 3 },
-      }),
-    );
+      const out = await generateFixes(
+        baseInput("app/agent-loop/max-iterations.tsx", gateway, {
+          agentLoop: { enabled: true, maxIterations: 3 },
+        }),
+      );
 
-    // Exactly 3 — never a 4th call (which would have thrown inside QueueGateway
-    // and been silently swallowed by the loop's own catch, masking a real bug).
-    expect(gateway.requests).toHaveLength(3);
+      // Exactly 3 — never a 4th call (which would have thrown inside QueueGateway
+      // and been silently swallowed by the loop's own catch, masking a real bug).
+      expect(gateway.requests).toHaveLength(3);
 
-    // The model never produced a validated proposal within the bound, so the
-    // pipeline still degrades safely to the deterministic transform.
-    const fix = out.fixes[0]!;
-    expect(fix.riskClass).toBe("auto-eligible");
-    expect(fix.rationale).not.toContain("Model-proposed");
-  });
+      // The model never produced a validated proposal within the bound, so the
+      // pipeline still degrades safely to the deterministic transform.
+      const fix = out.fixes[0]!;
+      expect(fix.riskClass).toBe("auto-eligible");
+      expect(fix.rationale).not.toContain("Model-proposed");
+    },
+    REAL_VALIDATION_TIMEOUT_MS,
+  );
 
   it("exposes a sandboxed read_file tool whose results come from ctx.source, never raw fs", async () => {
     const filePath = "app/agent-loop/with-tool.tsx";

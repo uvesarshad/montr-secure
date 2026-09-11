@@ -110,7 +110,13 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
       - name: Unit tests
-        run: pnpm run test
+        # `--exclude` here, NOT in vitest.config.ts or the shared `test` script —
+        # this must stay a Windows-only carve-out. fix.container-replay.test.ts
+        # needs real Docker networking (a bridge network + iptables masquerade),
+        # which GitHub's windows-latest runners don't support (confirmed:
+        # "could not find plugin bridge in v1 plugin registry" on a real run,
+        # 2026-09-11). It still runs for real on every other platform's CI job.
+        run: pnpm exec vitest run --exclude "**/node_modules/**" --exclude "**/dist/**" --exclude "packages/fixtures/sample-repos/**" --exclude "tests/fix.container-replay.test.ts"
       - name: E2E scan (offline, in-process — exercises the A2 Windows fix directly)
         run: pnpm run e2e
 
