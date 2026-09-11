@@ -27,6 +27,10 @@ import {
   downloadDetectionRuleBundle,
   detectionRuleFilename,
 } from "../../lib/exports.js";
+import {
+  PushAllToSplunkButton,
+  PushToSplunkButton,
+} from "../../components/detection-rules-panel.js";
 import { useBlueTeamOrgSummary } from "./hooks.js";
 
 /**
@@ -198,19 +202,22 @@ function DetectionRuleInventorySection({ summary }: { summary: BlueTeamOrgSummar
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Detection-rule inventory</CardTitle>
         {rules.length > 0 ? (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              downloadDetectionRuleBundle(
-                "org-wide",
-                rules.map((r) => r.rule),
-                findingTitleFor,
-              )
-            }
-          >
-            <DownloadIcon className="h-4 w-4" /> Export all rules
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <PushAllToSplunkButton rules={rules.map((r) => r.rule)} />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                downloadDetectionRuleBundle(
+                  "org-wide",
+                  rules.map((r) => r.rule),
+                  findingTitleFor,
+                )
+              }
+            >
+              <DownloadIcon className="h-4 w-4" /> Export all rules
+            </Button>
+          </div>
         ) : null}
       </CardHeader>
       <CardContent className="space-y-4">
@@ -255,9 +262,12 @@ function DetectionRuleInventorySection({ summary }: { summary: BlueTeamOrgSummar
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       Rule content
                     </p>
-                    <Button variant="ghost" size="sm" onClick={() => downloadDetectionRule(rule)}>
-                      <DownloadIcon className="h-3.5 w-3.5" /> {detectionRuleFilename(rule)}
-                    </Button>
+                    <div className="flex items-center gap-1.5">
+                      <PushToSplunkButton rule={rule} />
+                      <Button variant="ghost" size="sm" onClick={() => downloadDetectionRule(rule)}>
+                        <DownloadIcon className="h-3.5 w-3.5" /> {detectionRuleFilename(rule)}
+                      </Button>
+                    </div>
                   </div>
                   <pre className="max-h-72 overflow-auto rounded-md border border-border bg-background/70 p-3 font-mono text-xs leading-relaxed">
                     {rule.content}

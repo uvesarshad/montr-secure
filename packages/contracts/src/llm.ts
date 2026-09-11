@@ -224,6 +224,22 @@ export type LLMResponse = z.infer<typeof LLMResponseSchema>;
 /** Streaming event union. */
 export const LLMStreamEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text_delta"), text: z.string() }),
+  /**
+   * A14 — a fully-resolved tool call, emitted once its arguments are complete
+   * (Anthropic/Bedrock: on the owning `content_block_stop`; the OpenAI wire
+   * family: once its `delta.tool_calls` fragments are fully accumulated at
+   * stream end). Additive: a stream from an adapter that doesn't yet
+   * accumulate tool calls in its streaming path (see
+   * docs/modules/llm-gateway.md's Streaming entry) simply never emits this
+   * variant, exactly like today. Same shape as {@link LLMToolCallSchema} so a
+   * caller can treat it identically to a `complete()` response's `toolCalls`.
+   */
+  z.object({
+    type: z.literal("tool_use"),
+    id: z.string(),
+    name: z.string(),
+    input: z.record(z.string(), z.unknown()),
+  }),
   z.object({
     type: z.literal("message_done"),
     usage: TokenUsageSchema,

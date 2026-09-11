@@ -37,9 +37,14 @@ export * from "./blue-team-corpus.js";
 export * from "./blue-team-baseline.js";
 export * from "./blue-team-findings-io.js";
 export * from "./blue-team-report.js";
+export * from "./detection-coverage-scorer.js";
+export * from "./detection-coverage-baseline.js";
+export * from "./detection-coverage-findings-io.js";
+export * from "./detection-coverage-report.js";
 export { run } from "./cli.js";
 export { run as runOwaspBenchmarkCli } from "./owasp-benchmark-cli.js";
 export { run as runBlueTeamCorpusCli } from "./blue-team-cli.js";
+export { run as runDetectionCoverageCli } from "./detection-coverage-cli.js";
 
 import {
   DEFAULT_BASELINE,

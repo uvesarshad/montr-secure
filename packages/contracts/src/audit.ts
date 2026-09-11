@@ -78,6 +78,17 @@ export const AuditActionSchema = z.enum([
   // E8 — cross-scan memory: an operator or the pipeline recorded a durable,
   // per-repo learned fact (see @montr/state-store's LearnedFactRepository).
   "learned_fact.recorded",
+  // Suggested enhancement (2026-09-12 red/blue agentic-posture audit) — real
+  // push integration for generated detection rules (packages/report/src/
+  // detection-rules/push). "config" actions mirror `dast.authorized`'s
+  // approver-only sensitivity (an outbound credential is stored); "pushed"/
+  // "push_failed" audit every actual delivery attempt, success or failure —
+  // a push failure is NEVER silently swallowed (apps/api/src/routes/
+  // detection-rules.ts).
+  "detection_rule.push_target_configured",
+  "detection_rule.push_target_deleted",
+  "detection_rule.pushed",
+  "detection_rule.push_failed",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 

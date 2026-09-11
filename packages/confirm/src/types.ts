@@ -17,6 +17,7 @@ import type {
 import type { MontrConfig } from "@montr/config";
 import type { SemanticMatch } from "@montr/semantic-index";
 import type { FalsePositiveTuning } from "./tuning.js";
+import type { PriorConfirmedShapes } from "./prior-shapes.js";
 import type { TestRunner } from "./evidence.js";
 
 /**
@@ -259,6 +260,40 @@ export interface ConfirmDeps {
    * docs/modules/semantic-index.md's Consumption Status.
    */
   semanticSearch?: (queryText: string, topK?: number) => Promise<SemanticMatch[]>;
+  /**
+   * E8 extension — repo-scoped confirmed-exploit-shape priors (learned-facts
+   * mechanism, `packages/state-store/src/learned-facts.ts`'s
+   * `confirmed_exploit_shape` type, recorded automatically by
+   * `apps/worker/src/runners.ts`'s `recordConfirmedExploitShapes` whenever
+   * Layer 3 genuinely confirms a finding). Consulted in exactly ONE place,
+   * `confirm.ts`'s `isEligibleForInvestigation`: may WIDEN which not-yet-
+   * confirmed findings get a shot at the E1/E2/E4 agentic investigation loop
+   * when the finding's category falls outside `investigation.severities`'
+   * configured scope but this repo has previously confirmed a structurally
+   * similar finding. It can NEVER itself confirm a finding, skip E2's real
+   * executable-evidence gate, or skip E4's adversarial majority — see
+   * `./prior-shapes.ts`'s header comment for the full contract. Absent
+   * (every existing caller/test) ⇒ byte-identical to before this feature.
+   */
+  priorConfirmedShapes?: PriorConfirmedShapes;
+  /**
+   * E8 extension — this client+repo's operator-confirmed custom sanitizer
+   * names (learned-facts mechanism, `LearnedFactType` `"custom_sanitizer"`,
+   * `content.sanitizerName`), merged into `static.ts`'s per-language
+   * `safeMarkers` heuristics (`heuristics/registry.ts`'s `resolveHeuristics`)
+   * — the SAME additive-only "extras only ADD precision, never bypass the
+   * deterministic proof" contract every per-language `ConfirmationHeuristics`
+   * plugin already honors (see `heuristics/types.ts`'s header comment). A
+   * marker here can only make a sink assessment MORE likely to read as
+   * sanitized (`dangerous: false`); it never makes one read as dangerous and
+   * never overrides a raw/base marker match. This is what actually makes the
+   * previously-inert `custom_sanitizer` fact type structurally consequential
+   * — not just additive LLM prompt context, but a real, bounded reduction in
+   * both false positives AND wasted confirmation-tier LLM spend (a sink the
+   * heuristic now resolves as sanitized never reaches `runLlmReview` at all).
+   * Absent/empty (every existing caller/test) ⇒ byte-identical to before.
+   */
+  learnedSanitizers?: readonly string[];
 }
 
 /* --------------------------------- outcomes -------------------------------- */

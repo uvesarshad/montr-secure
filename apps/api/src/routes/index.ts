@@ -21,6 +21,9 @@ import { registerAnalyticsRoutes } from "./analytics.js";
 import { registerRuleRoutes } from "./rules.js";
 import { registerScenarioRoutes } from "./scenarios.js";
 import { registerScheduleRoutes } from "./schedules.js";
+// Suggested enhancement (2026-09-12 red/blue agentic-posture audit) — real
+// push integration for generated detection rules (Splunk HEC).
+import { registerDetectionRulePushRoutes } from "./detection-rules.js";
 
 export function registerRoutes(app: FastifyInstance, deps: ResolvedDeps): void {
   // Unprefixed liveness probe — k8s/docker-compose/Dockerfile HEALTHCHECK all
@@ -51,6 +54,7 @@ export function registerRoutes(app: FastifyInstance, deps: ResolvedDeps): void {
       registerRuleRoutes(api, deps);
       registerScenarioRoutes(api, deps);
       registerScheduleRoutes(api, deps);
+      registerDetectionRulePushRoutes(api, deps);
     },
     { prefix: "/api/v1" },
   );

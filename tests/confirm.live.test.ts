@@ -143,6 +143,55 @@ class VariantPickerGateway implements LLMGateway {
   }
 }
 
+/**
+ * Fake gateway for A16 composed-payload tests. `respond` is handed the list
+ * of currently-allowed variant ids (mirroring the real `responseSchema`
+ * enum) and returns an OPTIONAL `variantId` fallback plus an OPTIONAL
+ * `composedPayload` proposal — letting each test steer both the fallback and
+ * composition paths deterministically without depending on any real model.
+ */
+class ComposedPayloadGateway implements LLMGateway {
+  calls: LLMRequest[] = [];
+  constructor(
+    private readonly respond: (
+      allowedIds: string[],
+      callNumber: number,
+    ) => { variantId?: string; composedPayload?: string },
+  ) {}
+
+  complete(request: LLMRequest): Promise<LLMResponse> {
+    this.calls.push(request);
+    const first = request.messages[0];
+    const raw = typeof first?.content === "string" ? first.content : "";
+    const parsed = JSON.parse(raw) as { allowedVariants?: { id: string }[] };
+    const ids = (parsed.allowedVariants ?? []).map((v) => v.id);
+    const { variantId, composedPayload } = this.respond(ids, this.calls.length);
+    const content = JSON.stringify({ variantId, composedPayload, reasoning: "test" });
+    const response: LLMResponse = {
+      id: `fake_composed_${this.calls.length}`,
+      provider: "anthropic",
+      model: "claude-opus-5",
+      content,
+      stopReason: "end_turn",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      latencyMs: 1,
+    };
+    return Promise.resolve(response);
+  }
+
+  stream(): AsyncIterable<LLMStreamEvent> {
+    throw new Error("ComposedPayloadGateway.stream() is not used by the adaptive loop");
+  }
+
+  listModels(): ModelDescriptor[] {
+    return [];
+  }
+
+  resolveModel(): ModelDescriptor {
+    throw new Error("ComposedPayloadGateway.resolveModel() is not used by the adaptive loop");
+  }
+}
+
 describe("confirmFindings — live DAST confirmation", () => {
   it("confirms SQLi live and captures the request/response transcript as proof", async () => {
     const transport: LiveHttpTransport = {
@@ -858,5 +907,194 @@ describe("confirmLive — E3: adaptive exploit agent", () => {
 
     expect(sends).toBe(2); // baseline + fixed payload only — the adaptive probe never fired
     expect(gateway.calls).toHaveLength(1); // consulted once, then the kill was detected
+  });
+});
+
+describe("confirmLive — A16: model-COMPOSED adaptive payloads within guardrails", () => {
+  it("engages the composed-payload path for a composable category and confirms via a safety-validated payload", async () => {
+    // Passes payload-safety.ts's sql_injection predicate cleanly: quote-shaped,
+    // no semicolon, no destructive keyword, no unbounded SLEEP.
+    const COMPOSED = "montr' OR '1'='1' -- -";
+    const encodedComposed = encodeURIComponent(COMPOSED);
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        if (req.url.includes(encodedComposed)) {
+          return Promise.resolve({
+            status: 500,
+            headers: {},
+            body: "you have an error in your sql syntax near '-- -'",
+          });
+        }
+        // The FIXED payload alone is ambiguous (a raw 500 with no recognized marker).
+        return Promise.resolve({ status: 500, headers: {}, body: "internal server error" });
+      },
+    };
+    const gateway = new ComposedPayloadGateway(() => ({
+      variantId: "comment_dash",
+      composedPayload: COMPOSED,
+    }));
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({ transport, llm: gateway }),
+    );
+
+    expect(out.confirmed).toBe(true);
+    expect(out.exchanges).toHaveLength(3); // baseline + fixed payload + one composed adaptive round
+    expect(gateway.calls).toHaveLength(1); // exactly one round was needed
+  });
+
+  it("falls back to the pre-written PAYLOAD_VARIANTS selection when the composed proposal fails the safety predicate — never sending the unsafe text", async () => {
+    const DESTRUCTIVE = "montr'; DROP TABLE users-- -"; // real, destructive-shaped SQLi proposal
+    const COMMENT_DASH_MARKER = encodeURIComponent("-- -");
+    let sawDropKeyword = false;
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        if (req.url.toLowerCase().includes("drop")) sawDropKeyword = true;
+        if (req.url.includes(COMMENT_DASH_MARKER)) {
+          return Promise.resolve({
+            status: 500,
+            headers: {},
+            body: "you have an error in your sql syntax near '-- -'",
+          });
+        }
+        return Promise.resolve({ status: 500, headers: {}, body: "internal server error" });
+      },
+    };
+    const warns: string[] = [];
+    // The model always ALSO supplies a valid fallback variantId alongside the
+    // (rejected) composed proposal — the documented contract: composition
+    // never drops a round, it falls back instead.
+    const gateway = new ComposedPayloadGateway(() => ({
+      variantId: "comment_dash",
+      composedPayload: DESTRUCTIVE,
+    }));
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({
+        transport,
+        llm: gateway,
+        logger: {
+          info() {},
+          warn: (m: string) => {
+            warns.push(m);
+          },
+          error() {},
+        },
+      }),
+    );
+
+    expect(sawDropKeyword).toBe(false); // ⛔ the destructive proposal was NEVER sent
+    expect(out.confirmed).toBe(true); // confirmed via the pre-written fallback variant instead
+    expect(out.exchanges).toHaveLength(3);
+    expect(
+      warns.some((w) => /composed adaptive payload rejected by safety predicate/.test(w)),
+    ).toBe(true);
+  });
+
+  it("never sends an unvalidated payload — a rejected composed proposal with no fallback variantId ends the round without probing", async () => {
+    let adaptiveSends = 0;
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        adaptiveSends += 1;
+        return Promise.resolve({ status: 500, headers: {}, body: "internal server error" });
+      },
+    };
+    // Unsafe proposal, and the model offers NO fallback variantId this time.
+    const gateway = new ComposedPayloadGateway(() => ({
+      composedPayload: "montr'; DROP TABLE users-- -",
+    }));
+    const sqli = structuredClone(SQLI);
+    const config = liveConfig();
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({ transport, llm: gateway }),
+    );
+
+    expect(out.confirmed).toBe(false);
+    expect(adaptiveSends).toBe(1); // only the FIXED payload attempt — the adaptive round fired nothing
+    expect(gateway.calls).toHaveLength(1); // consulted once, then the loop stopped (no action)
+  });
+
+  it("DEFENSE IN DEPTH: guard.ts still blocks a composed payload that PASSES the safety predicate once the blast-radius cap is reached", async () => {
+    let adaptiveSends = 0;
+    const transport: LiveHttpTransport = {
+      send(req) {
+        if (req.url.includes("montr_baseline")) {
+          return Promise.resolve({ status: 200, headers: {}, body: "[]" });
+        }
+        adaptiveSends += 1;
+        return Promise.resolve({ status: 500, headers: {}, body: "internal server error" });
+      },
+    };
+    // Cleanly passes payload-safety.ts — this is NOT a rejection-by-predicate
+    // test. The point is that `guard.ts`'s OWN, independent per-scan
+    // blast-radius cap must still refuse the request regardless of the
+    // safety predicate's verdict — defense in depth, not a substitute gate.
+    const SAFE_COMPOSED = "montr' OR '1'='1' -- -";
+    const gateway = new ComposedPayloadGateway(() => ({
+      variantId: "comment_dash",
+      composedPayload: SAFE_COMPOSED,
+    }));
+    const sqli = structuredClone(SQLI);
+    // Baseline (1) + fixed payload (2) already exhaust a 2-request cap —
+    // the composed adaptive probe must never leave the process.
+    const config = liveConfig({ scope: { maxRequestsPerScan: 2 } });
+    const guard = buildGuard(config);
+    const input = liveInput({ probable: [sqli], config });
+    const warns: string[] = [];
+
+    const out = await confirmLive(
+      sqli,
+      input,
+      STAGING,
+      guard,
+      offlineDeps({
+        transport,
+        llm: gateway,
+        logger: {
+          info() {},
+          warn: (m: string) => {
+            warns.push(m);
+          },
+          error() {},
+        },
+      }),
+    );
+
+    expect(out.confirmed).toBe(false);
+    expect(adaptiveSends).toBe(1); // only the fixed payload — guard.ts refused the composed probe
+    expect(gateway.calls).toHaveLength(1); // the model WAS consulted and DID propose a safe payload
+    expect(warns.some((w) => /blocked by guardrail/i.test(w))).toBe(true);
   });
 });

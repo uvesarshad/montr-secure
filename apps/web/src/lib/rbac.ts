@@ -195,4 +195,16 @@ export function canRunRedTeam(role: Role): boolean {
   return role === "approver";
 }
 
+/**
+ * Suggested enhancement (2026-09-12 red/blue agentic-posture audit) — push a
+ * generated detection rule to the configured SOC target. Operational action
+ * once a target is configured — mirrors `canAuthorRules`/`canMarkFalsePositive`
+ * (operator or approver); configuring the push target itself (a live
+ * credential) is a separate, approver-only server-side action (see
+ * apps/api/src/routes/detection-rules.ts), not gated in the console today.
+ */
+export function canPushDetectionRule(role: Role): boolean {
+  return role === "operator" || role === "approver";
+}
+
 export const ALL_ROLES: readonly Role[] = ["operator", "approver", "viewer"];

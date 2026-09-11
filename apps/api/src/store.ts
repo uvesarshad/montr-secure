@@ -91,6 +91,9 @@ export interface StateStoreLike {
   // A5 — cross-scan blue-team aggregate reads (see DetectionRuleStore doc comment).
   detectionRules: DetectionRuleStore;
   detectionCoverage: DetectionCoverageStore;
+  // Suggested enhancement — real StateStore's `DetectionRulePushTargetRepository`
+  // is structurally assignable to `DetectionRulePushTargetStore` below.
+  detectionRulePushTargets: DetectionRulePushTargetStore;
 }
 
 /** A client-authorized live-DAST target (mirrors the Prisma `DastTarget` model). */
@@ -117,6 +120,55 @@ export interface DastTargetStore {
 export interface ReportStore {
   getByScan(clientId: string, scanId: string): Promise<Report | null>;
   save(report: Report): Promise<Report>;
+}
+
+/* --------------------------------------------------------------------------- *
+ * Detection-rule push target (suggested enhancement, 2026-09-12 red/blue
+ * agentic-posture audit — "ship detection rules as a real push integration
+ * rather than only a download"; see packages/report/src/detection-rules/push
+ * for the Splunk HEC adapter this config/credential feeds). Declared locally
+ * here — mirroring this file's `LearnedFact*` precedent above it — rather
+ * than importing @montr/state-store's structurally-identical
+ * `DetectionRulePushTarget*` types, so the API build stays decoupled the same
+ * way. The real @montr/state-store `DetectionRulePushTargetRepository` is
+ * structurally assignable to the `DetectionRulePushTargetStore` interface
+ * below (see `apiStoreFromStateStore`).
+ * --------------------------------------------------------------------------- */
+
+/** One client's configured push target. Mirrors LlmCredential's clientId-unique, one-per-client shape. */
+export interface DetectionRulePushTargetInput {
+  type: string;
+  endpointUrl: string;
+  /** Plaintext on the way in; the real repository stores it AES-256-GCM encrypted. */
+  hecToken: string;
+  index?: string;
+  sourcetype?: string;
+}
+
+/** A decrypted push target. `hecToken` is plaintext — NEVER log this object. */
+export interface DetectionRulePushTargetRecord {
+  clientId: string;
+  type: string;
+  endpointUrl: string;
+  hecToken: string;
+  index?: string;
+  sourcetype?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DetectionRulePushTargetStore {
+  upsert(
+    clientId: string,
+    target: DetectionRulePushTargetInput,
+  ): Promise<DetectionRulePushTargetRecord>;
+  /** Returns the DECRYPTED target (secret in plaintext) or null. */
+  get(clientId: string): Promise<DetectionRulePushTargetRecord | null>;
+  /** Metadata only — never the secret. */
+  getMetadata(
+    clientId: string,
+  ): Promise<Omit<DetectionRulePushTargetRecord, "hecToken" | "clientId"> | null>;
+  delete(clientId: string): Promise<void>;
 }
 
 /* --------------------------------------------------------------------------- *
@@ -193,7 +245,15 @@ export interface DetectionCoverageStore {
  * LearnedFactType's schema.prisma doc comment).
  * --------------------------------------------------------------------------- */
 
-export type LearnedFactType = "custom_sanitizer" | "framework_idiom" | "operator_decision";
+/**
+ * `confirmed_exploit_shape` is a SYSTEM-recorded-only member (added
+ * migration `14_learned_fact_confirmed_exploit_shape`) — deliberately NOT
+ * part of `RecordLearnedFactBodySchema`'s operator-writable enum below, so
+ * only `apps/worker/src/runners.ts`'s `recordConfirmedExploitShapes` (real,
+ * gate-passed Layer 3 confirmations only) can ever write one.
+ */
+export type LearnedFactType =
+  "custom_sanitizer" | "framework_idiom" | "operator_decision" | "confirmed_exploit_shape";
 
 export interface LearnedFactProvenance {
   source: "operator" | "scan_derived";
@@ -246,6 +306,9 @@ export interface ApiStore {
   // A5 — cross-scan blue-team aggregate reads (see DetectionRuleStore doc comment).
   detectionRules: DetectionRuleStore;
   detectionCoverage: DetectionCoverageStore;
+  // Suggested enhancement (2026-09-12 red/blue agentic-posture audit) —
+  // detection-rule push target config + encrypted credential.
+  detectionRulePushTargets: DetectionRulePushTargetStore;
 }
 
 export interface Clock {
@@ -383,6 +446,55 @@ class InMemoryDastTargetStore implements DastTargetStore {
   async update(clientId: string, target: DastTarget): Promise<DastTarget> {
     this.rows.set(this.key(clientId, target.id), { ...target });
     return { ...target };
+  }
+}
+
+/**
+ * In-memory `DetectionRulePushTargetStore` for local dev and tests. Does NOT
+ * exercise real AES-256-GCM encryption (that lives entirely in the real
+ * `DetectionRulePushTargetRepositoryImpl`, packages/state-store/src/
+ * detection-rule-push-target.ts, tested directly there) — mirrors this file's
+ * existing precedent of a plain in-memory fake for the interface shape only.
+ */
+class InMemoryDetectionRulePushTargetStore implements DetectionRulePushTargetStore {
+  private readonly rows = new Map<string, DetectionRulePushTargetRecord>();
+
+  async upsert(
+    clientId: string,
+    target: DetectionRulePushTargetInput,
+  ): Promise<DetectionRulePushTargetRecord> {
+    const now = new Date().toISOString();
+    const existing = this.rows.get(clientId);
+    const record: DetectionRulePushTargetRecord = {
+      clientId,
+      type: target.type,
+      endpointUrl: target.endpointUrl,
+      hecToken: target.hecToken,
+      ...(target.index !== undefined ? { index: target.index } : {}),
+      ...(target.sourcetype !== undefined ? { sourcetype: target.sourcetype } : {}),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.rows.set(clientId, record);
+    return { ...record };
+  }
+
+  async get(clientId: string): Promise<DetectionRulePushTargetRecord | null> {
+    const r = this.rows.get(clientId);
+    return r ? { ...r } : null;
+  }
+
+  async getMetadata(
+    clientId: string,
+  ): Promise<Omit<DetectionRulePushTargetRecord, "hecToken" | "clientId"> | null> {
+    const r = this.rows.get(clientId);
+    if (!r) return null;
+    const { hecToken: _hecToken, clientId: _clientId, ...meta } = r;
+    return meta;
+  }
+
+  async delete(clientId: string): Promise<void> {
+    this.rows.delete(clientId);
   }
 }
 
@@ -551,6 +663,7 @@ export function createInMemoryApiStore(opts: InMemoryApiStoreOptions = {}): ApiS
     // customRules/redTeamScenarios/scanSchedules above applies unchanged.
     detectionRules: new InMemoryCrudStore<DetectionRule>(),
     detectionCoverage: new InMemoryCrudStore<DetectionCoverage>(),
+    detectionRulePushTargets: new InMemoryDetectionRulePushTargetStore(),
   };
 }
 
@@ -583,6 +696,8 @@ export function apiStoreFromStateStore(
     // A5 — sourced from the shared StateStore's real, persisted (A7) repos.
     detectionRules: state.detectionRules,
     detectionCoverage: state.detectionCoverage,
+    // Suggested enhancement — real, encrypted push-target config/credential.
+    detectionRulePushTargets: state.detectionRulePushTargets,
   };
 }
 

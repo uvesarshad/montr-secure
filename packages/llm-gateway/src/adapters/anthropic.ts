@@ -70,9 +70,24 @@ export type AnthropicStreamEventLike =
         };
       };
     }
-  | { type: "content_block_start" }
-  | { type: "content_block_delta"; delta?: { type?: string; text?: string } }
-  | { type: "content_block_stop" }
+  | {
+      type: "content_block_start";
+      /** Content-block index (A14) — Anthropic interleaves text/tool_use blocks by index. */
+      index?: number;
+      /** Present when this block is a `tool_use` block (A8/A14). */
+      content_block?: { type?: string; id?: string; name?: string };
+    }
+  | {
+      type: "content_block_delta";
+      index?: number;
+      /**
+       * `type: "text_delta"` carries `text`; `type: "input_json_delta"` (A14)
+       * carries a fragment of a tool_use block's JSON arguments in
+       * `partial_json`, accumulated across deltas for the same `index`.
+       */
+      delta?: { type?: string; text?: string; partial_json?: string };
+    }
+  | { type: "content_block_stop"; index?: number }
   | {
       type: "message_delta";
       delta?: { stop_reason?: string | null };
@@ -191,6 +206,11 @@ export async function* mapAnthropicStream(
   let cacheRead = 0;
   let cacheWrite = 0;
   let stopReason: string | null = null;
+  // A14 — tool_use content-block accumulation, keyed by Anthropic's per-block
+  // `index` (blocks — text and tool_use — can interleave). A tool_use block's
+  // JSON arguments arrive fragmented across `input_json_delta` events and are
+  // only complete once its `content_block_stop` fires.
+  const toolBlocks = new Map<number, { id: string; name: string; partialJson: string }>();
 
   for await (const ev of events) {
     if (ev.type === "message_start") {
@@ -198,9 +218,41 @@ export async function* mapAnthropicStream(
       inputTokens = u?.input_tokens ?? inputTokens;
       cacheRead = u?.cache_read_input_tokens ?? cacheRead;
       cacheWrite = u?.cache_creation_input_tokens ?? cacheWrite;
+    } else if (ev.type === "content_block_start") {
+      const block = ev.content_block;
+      if (
+        block?.type === "tool_use" &&
+        typeof block.id === "string" &&
+        typeof block.name === "string"
+      ) {
+        toolBlocks.set(ev.index ?? 0, { id: block.id, name: block.name, partialJson: "" });
+      }
     } else if (ev.type === "content_block_delta") {
       if (ev.delta?.type === "text_delta" && typeof ev.delta.text === "string") {
         yield { type: "text_delta", text: ev.delta.text };
+      } else if (
+        ev.delta?.type === "input_json_delta" &&
+        typeof ev.delta.partial_json === "string"
+      ) {
+        const block = toolBlocks.get(ev.index ?? 0);
+        if (block) block.partialJson += ev.delta.partial_json;
+      }
+    } else if (ev.type === "content_block_stop") {
+      const idx = ev.index ?? 0;
+      const block = toolBlocks.get(idx);
+      if (block) {
+        toolBlocks.delete(idx);
+        let input: Record<string, unknown> = {};
+        try {
+          const parsed: unknown =
+            block.partialJson.trim().length > 0 ? JSON.parse(block.partialJson) : {};
+          if (parsed && typeof parsed === "object") input = parsed as Record<string, unknown>;
+        } catch {
+          // Malformed tool-call argument JSON mid-stream — yield the call with
+          // empty input rather than dropping it silently (mirrors
+          // openAiToolCalls' identical fail-safe in azure.ts).
+        }
+        yield { type: "tool_use", id: block.id, name: block.name, input };
       }
     } else if (ev.type === "message_delta") {
       stopReason = ev.delta?.stop_reason ?? stopReason;

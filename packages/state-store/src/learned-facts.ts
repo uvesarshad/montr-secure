@@ -15,6 +15,19 @@
  * `loadLearnedFactsContext`, alongside this repository's `listByRepo`), so a
  * single mutation never has two authoritative homes.
  *
+ * E8 extension (2026-09-12, red/blue agentic-posture audit): cross-scan
+ * learning now covers two MORE structurally-consequential fact classes, not
+ * just free-text prompt context. `confirmed_exploit_shape` (system-recorded
+ * only, see `LearnedFactType`'s doc comment) lets Layer 2 correlation and
+ * Layer 3's investigation-eligibility gate prioritize a structurally similar
+ * future candidate WITHOUT bypassing any proof gate — see
+ * `packages/correlation/src/prior-shapes.ts` and
+ * `packages/confirm/src/prior-shapes.ts`. `custom_sanitizer` (already
+ * existed as inert prompt context) is now ALSO merged into Layer 3's static
+ * confirmation heuristics (`packages/confirm/src/static.ts`'s
+ * `ConfirmDeps.learnedSanitizers`), the same additive-only extension seam
+ * every per-language `ConfirmationHeuristics` plugin already uses.
+ *
  * Row-scoping: every method takes `clientId` explicitly and the Prisma query
  * always filters on it (plus `repo` for reads) — matches this package's
  * row-scoped multitenancy discipline (see repositories.ts's file header).

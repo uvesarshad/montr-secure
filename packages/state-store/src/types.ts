@@ -155,6 +155,50 @@ export interface CredentialRepository {
   delete(clientId: string): Promise<void>;
 }
 
+/**
+ * Detection-rule push target (suggested enhancement, 2026-09-12 red/blue
+ * agentic-posture audit — see packages/report/src/detection-rules/push).
+ * One target per client today; `type` mirrors `DetectionRule.format`'s
+ * plain-string precedent so a real Elastic/Sentinel adapter needs no schema
+ * change. Structurally the same shape as {@link LlmCredentialInput}/
+ * {@link CredentialRepository} above — a second, independently-encrypted
+ * outbound-integration secret, not a variant of the LLM credential.
+ */
+export interface DetectionRulePushTargetInput {
+  type: string;
+  endpointUrl: string;
+  /** Plaintext on the way in; stored AES-256-GCM encrypted. */
+  hecToken: string;
+  index?: string;
+  sourcetype?: string;
+}
+
+/** A decrypted push target. `hecToken` is plaintext — NEVER log this object. */
+export interface DetectionRulePushTargetRecord {
+  clientId: string;
+  type: string;
+  endpointUrl: string;
+  hecToken: string;
+  index?: string;
+  sourcetype?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DetectionRulePushTargetRepository {
+  upsert(
+    clientId: string,
+    target: DetectionRulePushTargetInput,
+  ): Promise<DetectionRulePushTargetRecord>;
+  /** Returns the DECRYPTED target (secret in plaintext) or null. */
+  get(clientId: string): Promise<DetectionRulePushTargetRecord | null>;
+  /** Metadata only (type/endpointUrl/index/sourcetype) — never touches the secret. */
+  getMetadata(
+    clientId: string,
+  ): Promise<Omit<DetectionRulePushTargetRecord, "hecToken" | "clientId"> | null>;
+  delete(clientId: string): Promise<void>;
+}
+
 /* --------------------------------------------------------------------------- *
  * Phase-4 (Wave 5) repositories — scale & intelligence (§16). Per-client scoped.
  * --------------------------------------------------------------------------- */
@@ -282,8 +326,21 @@ export interface FalsePositiveMarkRepository {
  * `confirmed_false_positive` is intentionally excluded — that fact class
  * already lives in the audit log (see {@link FalsePositiveMarkRepository}
  * above) and is merged in at read time by callers instead of duplicated here.
+ *
+ * `custom_sanitizer` / `framework_idiom` / `operator_decision` are
+ * OPERATOR-writable (`POST /learned-facts`, `apps/api/src/schemas.ts`'s
+ * `RecordLearnedFactBodySchema`). `confirmed_exploit_shape` is deliberately
+ * NOT in that operator-writable set — it is SYSTEM-recorded only, written
+ * exclusively by `apps/worker/src/runners.ts`'s `recordConfirmedExploitShapes`
+ * for a finding Layer 3 genuinely CONFIRMED (static/live/investigation
+ * proof), never from an unverified claim — so this signal can only ever
+ * originate from real, gate-passed pipeline output. See that function's doc
+ * comment and `packages/correlation/src/prior-shapes.ts` /
+ * `packages/confirm/src/prior-shapes.ts` for how it is read back and used
+ * (informational + prioritization only, never a confirmation shortcut).
  */
-export type LearnedFactType = "custom_sanitizer" | "framework_idiom" | "operator_decision";
+export type LearnedFactType =
+  "custom_sanitizer" | "framework_idiom" | "operator_decision" | "confirmed_exploit_shape";
 
 /** Where a fact came from — an explicit operator input, or derived from a scan. */
 export interface LearnedFactProvenance {
@@ -298,9 +355,12 @@ export interface LearnedFactProvenance {
 
 /** One persisted learned fact. `content`'s shape depends on `type` — free-form
  * structured data (e.g. `{ sanitizerName, importPath }` for `custom_sanitizer`,
- * `{ decision, findingCategory, note }` for `operator_decision`); never a code
- * body or secret (golden rule #1) — callers are responsible for keeping
- * `content` metadata-only, mirroring the FP-mark audit-metadata convention. */
+ * `{ decision, findingCategory, note }` for `operator_decision`,
+ * `{ category, filePattern, proofType, confirmedVia, routeMethod?, routePath? }`
+ * for `confirmed_exploit_shape` — see `packages/correlation/src/prior-shapes.ts`
+ * / `packages/confirm/src/prior-shapes.ts`); never a code body or secret
+ * (golden rule #1) — callers are responsible for keeping `content`
+ * metadata-only, mirroring the FP-mark audit-metadata convention. */
 export interface LearnedFact {
   id: string;
   clientId: string;
@@ -385,6 +445,8 @@ export interface StateStore {
   reports: ReportRepository;
   resume: ResumeRepository;
   credentials: CredentialRepository;
+  /** Detection-rule push target config + encrypted credential (suggested enhancement, see packages/report/src/detection-rules/push). */
+  detectionRulePushTargets: DetectionRulePushTargetRepository;
   audit: AuditLog;
   retention: RetentionEnforcer;
   // Phase-4 (Wave 5) — scale & intelligence.

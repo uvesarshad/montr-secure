@@ -14,7 +14,8 @@
   "bin": {
     "montr-qa": "./dist/cli.js",
     "montr-qa-owasp-benchmark": "./dist/owasp-benchmark-cli.js",
-    "montr-qa-blue-team": "./dist/blue-team-cli.js"
+    "montr-qa-blue-team": "./dist/blue-team-cli.js",
+    "montr-qa-detection-coverage": "./dist/detection-coverage-cli.js"
   },
   "files": [
     "dist"
@@ -31,6 +32,8 @@
     "qa:owasp-benchmark": "tsc -b && node dist/owasp-benchmark-cli.js",
     "qa:blue-team-corpus": "tsc -b && node dist/blue-team-cli.js",
     "qa:blue-team-corpus:selfcheck": "tsc -b && node dist/blue-team-cli.js",
+    "qa:detection-coverage": "tsc -b && node dist/detection-coverage-cli.js",
+    "qa:detection-coverage:selfcheck": "tsc -b && node dist/detection-coverage-cli.js",
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {

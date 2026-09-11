@@ -1,6 +1,11 @@
 import * as React from "react";
-import type { ProgressEvent, Scan } from "@montr/contracts";
-import { deriveLayerProgress, overallPct, type LayerStatus } from "../lib/progress.js";
+import type { LayerId, ProgressEvent, Scan } from "@montr/contracts";
+import {
+  deriveLayerProgress,
+  layerNarrativeTrace,
+  overallPct,
+  type LayerStatus,
+} from "../lib/progress.js";
 import { CheckIcon, ClockIcon, DotIcon, BanIcon } from "./icons.js";
 import { cn } from "../lib/utils.js";
 
@@ -31,6 +36,29 @@ function StatusDot({ status }: { status: LayerStatus }) {
         </span>
       );
   }
+}
+
+/**
+ * A14 — a simple, honest live "agent trace": the ordered narrative messages
+ * for one layer, e.g. Layer 3's agentic investigation loop (E1) narrating its
+ * reasoning turn by turn as `gateway.stream()` tokens arrive (see
+ * docs/modules/confirmation.md's Live Progress Narration entry). Reuses the
+ * SAME polled `ProgressEvent[]` the pipeline overview already fetches —
+ * no new transport. Renders nothing when there's no more history than the
+ * single "phase · pct%" line already shown above it.
+ */
+function AgentTrace({ events, layer }: { events: ProgressEvent[]; layer: LayerId }) {
+  const trace = layerNarrativeTrace(events, layer);
+  if (trace.length < 2) return null;
+  return (
+    <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto rounded border border-border/60 bg-muted/30 p-1.5 font-mono text-[10px] leading-snug text-muted-foreground">
+      {trace.map((ev, i) => (
+        <li key={`${ev.at}_${i}`} className="truncate" title={ev.message}>
+          {ev.message}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export function LayerProgress({ events, scan }: { events: ProgressEvent[]; scan?: Scan }) {
@@ -87,6 +115,7 @@ export function LayerProgress({ events, scan }: { events: ProgressEvent[]; scan?
                       {layer.phase} · {layer.pct}%
                     </p>
                   ) : null}
+                  <AgentTrace events={events} layer={layer.layer} />
                 </div>
               ) : null}
             </div>

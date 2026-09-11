@@ -189,6 +189,15 @@ export const CalendarIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** Suggested enhancement (2026-09-12 audit) — "push to Splunk" action, mirrors DownloadIcon with the arrow flipped upward into a cloud. */
+export const UploadCloudIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M7 18a4 4 0 0 1-1-7.87A5.5 5.5 0 0 1 16.5 8H17a4.5 4.5 0 0 1 1 8.88" />
+    <path d="M12 17V9" />
+    <path d="M9 12l3-3 3 3" />
+  </Svg>
+);
+
 /** Nav-key → icon component. */
 export const NAV_ICONS: Record<IconKey, (p: IconProps) => React.JSX.Element> = {
   dashboard: GaugeIcon,

@@ -912,3 +912,205 @@ describe("E4 — adversarial majority (disagreement correctly does NOT confirm)"
     expect(out.unconfirmed).toHaveLength(1);
   });
 });
+
+describe("A14 — the investigation loop's tool-calling turns run off gateway.stream(), not complete()", () => {
+  interface ScriptedTurn {
+    text?: string;
+    toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+  }
+
+  /**
+   * A stream-capable fake gateway: each investigation turn streams
+   * `text_delta` chunks (when scripted) followed by `tool_use` events for its
+   * scripted tool calls, then `message_done` — proving the loop can drive its
+   * tool-call decisions entirely off `gateway.stream()` (real narrative
+   * benefit) without ever needing the `complete()` fallback. `complete()` is
+   * still implemented (required by the `LLMGateway` interface) but records
+   * every call it receives, so a test can assert it was NEVER used.
+   */
+  class StreamingScriptedGateway implements LLMGateway {
+    readonly completeCalls: LLMRequest[] = [];
+    private turnIndex = 0;
+    constructor(private readonly turns: ScriptedTurn[]) {}
+
+    complete(request: LLMRequest): Promise<LLMResponse> {
+      this.completeCalls.push(request);
+      return Promise.resolve({
+        id: "unexpected_fallback",
+        provider: "anthropic",
+        model: "claude-opus-5",
+        content: "",
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        latencyMs: 1,
+      });
+    }
+
+    async *stream(request: LLMRequest): AsyncGenerator<LLMStreamEvent, void, unknown> {
+      if (!request.tools || request.tools.length === 0) {
+        // Not exercised by this suite (no E4 verifier calls here) — present
+        // only so this fake fully satisfies LLMGateway.
+        yield {
+          type: "message_done",
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          stopReason: "end_turn",
+        };
+        return;
+      }
+      const turn = this.turns[Math.min(this.turnIndex, this.turns.length - 1)] as ScriptedTurn;
+      this.turnIndex++;
+      if (turn.text) {
+        for (const chunk of turn.text.match(/[\s\S]{1,6}/g) ?? [turn.text]) {
+          yield { type: "text_delta", text: chunk };
+        }
+      }
+      for (const call of turn.toolCalls) {
+        yield { type: "tool_use", id: call.id, name: call.name, input: call.input };
+      }
+      yield {
+        type: "message_done",
+        usage: { inputTokens: 50, outputTokens: 20, totalTokens: 70 },
+        stopReason: "tool_use",
+      };
+    }
+
+    listModels(): ModelDescriptor[] {
+      return [DESCRIPTOR];
+    }
+    resolveModel(_t: ModelTier | string): ModelDescriptor {
+      return DESCRIPTOR;
+    }
+  }
+
+  it("confirms the SAME IDOR finding as the complete()-only path, using ONLY stream() for every investigation turn", async () => {
+    const repoRoot = await writeVulnerableRepo();
+    cleanupDirs.push(repoRoot);
+    const gateway = new StreamingScriptedGateway([
+      {
+        text: "Let me check the routes first.",
+        toolCalls: [{ id: "c1", name: "list_routes", input: {} }],
+      },
+      {
+        text: "Now reading the handler.",
+        toolCalls: [{ id: "c2", name: "read_file", input: { path: HANDLER_PATH } }],
+      },
+      {
+        toolCalls: [
+          {
+            id: "c3",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: {
+              verdict: "confirmed_candidate",
+              rationale: "no ownership check on the Order lookup.",
+              ownershipCheckFound: false,
+              existingTestFile: "app/api/orders/ownership.existing.test.ts",
+              targetRouteId: ROUTE_ID,
+            },
+          },
+        ],
+      },
+    ]);
+    const narration: Array<{ pct: number; message?: string }> = [];
+    const input = baseInput({ repoRoot });
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: gateway,
+      investigation: { enabled: true },
+      emitProgress: (_phase, pct, message) => narration.push({ pct, message }),
+    };
+
+    const outcome = await runInvestigation(idorProbableFinding(), input, deps);
+
+    expect(outcome.verdict).toBe("confirmed_candidate");
+    expect(outcome.turnsUsed).toBe(3);
+    expect(outcome.existingTestFile).toBe("app/api/orders/ownership.existing.test.ts");
+    // The decisive proof: not one fallback complete() call happened — every
+    // tool-call decision in this run came from gateway.stream().
+    expect(gateway.completeCalls).toHaveLength(0);
+
+    // The streamed narrative text reached emitProgress LIVE — additive on top
+    // of the pre-existing per-turn "which tool was called" message.
+    const messages = narration.map((n) => n.message);
+    expect(messages).toContain("Let me check the routes first.");
+    expect(messages).toContain("Now reading the handler.");
+    expect(messages).toContain("Listing App Map routes...");
+    expect(messages).toContain(`Reading ${HANDLER_PATH}...`);
+  });
+
+  it("a turn whose stream errors mid-flight still completes correctly via the complete() fallback", async () => {
+    const erroringGateway: LLMGateway = {
+      complete: (request) => {
+        expect(request.tools?.length).toBeGreaterThan(0);
+        return Promise.resolve({
+          id: "fallback_ok",
+          provider: "anthropic",
+          model: "claude-opus-5",
+          content: "",
+          stopReason: "tool_use",
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          latencyMs: 1,
+          toolCalls: [
+            {
+              id: "c1",
+              name: SUBMIT_CONCLUSION_TOOL,
+              input: { verdict: "inconclusive", rationale: "resolved via complete() fallback" },
+            },
+          ],
+        });
+      },
+
+      stream: async function* (): AsyncGenerator<LLMStreamEvent, void, unknown> {
+        yield { type: "error", message: "simulated mid-stream network reset" };
+      },
+      listModels: () => [DESCRIPTOR],
+      resolveModel: () => DESCRIPTOR,
+    };
+    const input = baseInput();
+    const deps: ConfirmDeps = { now: NOW, llm: erroringGateway, investigation: { enabled: true } };
+
+    const outcome = await runInvestigation(idorProbableFinding(), input, deps);
+
+    // The investigation loop completed correctly (never crashed, never
+    // silently confirmed) despite the stream failing mid-flight.
+    expect(outcome.verdict).toBe("inconclusive");
+    expect(outcome.rationale).toBe("resolved via complete() fallback");
+  });
+
+  it("golden rule #1 (defense in depth): a code-like narration chunk is neutralized before it ever reaches emitProgress", async () => {
+    const codeLikeNarration = [
+      "async function handler(req, res) {",
+      "  const order = await prisma.order.findUnique({ where: { id } });",
+      "  return res.json(order);",
+      "}",
+    ].join("\n");
+
+    const gateway = new StreamingScriptedGateway([
+      { text: codeLikeNarration, toolCalls: [{ id: "c1", name: "list_routes", input: {} }] },
+      {
+        toolCalls: [
+          {
+            id: "c2",
+            name: SUBMIT_CONCLUSION_TOOL,
+            input: { verdict: "inconclusive", rationale: "x" },
+          },
+        ],
+      },
+    ]);
+    const narration: Array<string | undefined> = [];
+    const input = baseInput();
+    const deps: ConfirmDeps = {
+      now: NOW,
+      llm: gateway,
+      investigation: { enabled: true },
+      emitProgress: (_phase, _pct, message) => narration.push(message),
+    };
+
+    await runInvestigation(idorProbableFinding(), input, deps);
+
+    // The raw code body never reaches emitProgress...
+    expect(narration.some((m) => m?.includes("prisma.order.findUnique"))).toBe(false);
+    // ...it was neutralized by the same scrubber primitive that certifies
+    // every log/audit sink (packages/security/src/scrubber.ts).
+    expect(narration.some((m) => m?.includes("[REDACTED]:code"))).toBe(true);
+  });
+});

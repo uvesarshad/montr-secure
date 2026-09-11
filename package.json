@@ -21,6 +21,7 @@
     "e2e": "node scripts/e2e-scan.mjs",
     "corpus:scan": "node scripts/corpus-scan.mjs",
     "blue-team:scan": "node scripts/blue-team-corpus-scan.mjs",
+    "detection-coverage:scan": "node scripts/detection-coverage-scan.mjs",
     "benchmark:owasp": "node scripts/benchmark-owasp.mjs",
     "benchmark:owasp:semgrep": "node scripts/benchmark-semgrep.mjs",
     "benchmark:owasp:codeql": "node scripts/benchmark-codeql.mjs",

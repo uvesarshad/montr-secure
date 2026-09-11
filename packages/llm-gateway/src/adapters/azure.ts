@@ -40,10 +40,20 @@ export interface OpenAiChatCompletionLike {
   usage?: OpenAiUsageLike | null;
 }
 
+/** A `delta.tool_calls[]` fragment (A14) — `arguments` arrives incrementally across chunks, keyed by `index`. */
+export interface OpenAiToolCallDeltaLike {
+  index: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 export interface OpenAiChatChunkLike {
   id?: string;
   model?: string;
-  choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
+  choices?: Array<{
+    delta?: { content?: string | null; tool_calls?: OpenAiToolCallDeltaLike[] | null };
+    finish_reason?: string | null;
+  }>;
   usage?: OpenAiUsageLike | null;
 }
 
@@ -125,6 +135,65 @@ export function openAiToolCalls(
   return mapped.length > 0 ? mapped : undefined;
 }
 
+/**
+ * Re-yield an OpenAI Chat-Completions SSE chunk stream as contract stream
+ * events + final usage (A14). Shared by {@link AzureAdapter.stream} and the
+ * generic {@link OpenAiCompatibleAdapter}'s stream (`./openai-compatible.js`)
+ * — both speak the identical wire shape, same precedent as {@link buildBody}/
+ * {@link openAiToolCalls} above. A tool call's `function.arguments` JSON
+ * string arrives fragmented across chunks, keyed by `index`; it is only
+ * complete once the chunk stream ends, so — unlike Anthropic's per-block
+ * `content_block_stop` — every accumulated tool call is emitted once, after
+ * the loop, right before `message_done`.
+ */
+export async function* mapOpenAiChunks(
+  chunks: AsyncIterable<OpenAiChatChunkLike>,
+): AsyncGenerator<LLMStreamEvent, void, unknown> {
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens: number | undefined;
+  let finishReason: string | null | undefined;
+  const toolCalls = new Map<number, { id: string; name: string; args: string }>();
+
+  for await (const chunk of chunks) {
+    const choice = chunk.choices?.[0];
+    const text = choice?.delta?.content;
+    if (typeof text === "string" && text.length > 0) yield { type: "text_delta", text };
+    for (const tc of choice?.delta?.tool_calls ?? []) {
+      const existing = toolCalls.get(tc.index);
+      const id = tc.id ?? existing?.id;
+      const name = tc.function?.name ?? existing?.name;
+      const args = (existing?.args ?? "") + (tc.function?.arguments ?? "");
+      if (id && name) toolCalls.set(tc.index, { id, name, args });
+    }
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
+    const u = chunk.usage;
+    if (u) {
+      promptTokens = u.prompt_tokens ?? promptTokens;
+      completionTokens = u.completion_tokens ?? completionTokens;
+      totalTokens = u.total_tokens ?? totalTokens;
+    }
+  }
+
+  for (const [, call] of [...toolCalls].sort(([a], [b]) => a - b)) {
+    let input: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = call.args.trim().length > 0 ? JSON.parse(call.args) : {};
+      if (parsed && typeof parsed === "object") input = parsed as Record<string, unknown>;
+    } catch {
+      // Malformed tool-call argument JSON — yield the call with empty input
+      // rather than dropping it silently (mirrors openAiToolCalls above).
+    }
+    yield { type: "tool_use", id: call.id, name: call.name, input };
+  }
+
+  yield {
+    type: "message_done",
+    usage: makeUsage(promptTokens, completionTokens, { totalTokens }),
+    stopReason: mapOpenAiFinishReason(finishReason),
+  };
+}
+
 export interface AzureAdapterOptions {
   config: MontrConfig;
   /** Injectable client (tests). Defaults to a real `AzureOpenAI` client. */
@@ -197,30 +266,7 @@ export class AzureAdapter implements ProviderAdapter {
       { ...buildBody(request, modelId), stream: true, stream_options: { include_usage: true } },
       signal ? { signal } : undefined,
     )) as AsyncIterable<OpenAiChatChunkLike>;
-
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let totalTokens: number | undefined;
-    let finishReason: string | null | undefined;
-
-    for await (const chunk of chunks) {
-      const choice = chunk.choices?.[0];
-      const text = choice?.delta?.content;
-      if (typeof text === "string" && text.length > 0) yield { type: "text_delta", text };
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-      const u = chunk.usage;
-      if (u) {
-        promptTokens = u.prompt_tokens ?? promptTokens;
-        completionTokens = u.completion_tokens ?? completionTokens;
-        totalTokens = u.total_tokens ?? totalTokens;
-      }
-    }
-
-    yield {
-      type: "message_done",
-      usage: makeUsage(promptTokens, completionTokens, { totalTokens }),
-      stopReason: mapOpenAiFinishReason(finishReason),
-    };
+    yield* mapOpenAiChunks(chunks);
   }
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { DetectionRule } from "@montr/contracts";
 import { api } from "./client.js";
 import { qk } from "./keys.js";
 import { useActor } from "../../components/role-context.js";
@@ -146,6 +147,38 @@ export function useMarkFalsePositive(scanId: string) {
       void qc.invalidateQueries({ queryKey: qk.report(scanId) });
       void qc.invalidateQueries({ queryKey: qk.audit() });
       void qc.invalidateQueries({ queryKey: qk.audit(scanId) });
+    },
+  });
+}
+
+/* ---- detection-rule push (suggested enhancement, 2026-09-12 audit) ---- */
+
+/** Whether — and where — this client has a detection-rule push target configured. Metadata only (never the secret). */
+export function useDetectionRulePushTarget() {
+  return useQuery({
+    queryKey: qk.detectionRulePushTarget,
+    queryFn: api.getDetectionRulePushTarget,
+  });
+}
+
+export function usePushDetectionRule() {
+  const actor = useActor();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rule: DetectionRule) => api.pushDetectionRule(rule, actor),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.audit() });
+    },
+  });
+}
+
+export function usePushDetectionRuleBundle() {
+  const actor = useActor();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rules: DetectionRule[]) => api.pushDetectionRuleBundle(rules, actor),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.audit() });
     },
   });
 }

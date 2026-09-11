@@ -385,6 +385,163 @@ function withLearnedFactsContext(gateway: LLMGateway, ctx: LayerContext, repo: s
   return wrapped;
 }
 
+/* --------------------- E8 extension: confirmed exploit shapes + sanitizer conventions --------------------- */
+
+/**
+ * Coarse per-repo structural signature — the finding's immediate directory,
+ * deliberately coarser than the literal file (a same-directory sibling with
+ * the SAME confirmed shape still counts as a structural match) but specific
+ * enough not to blur unrelated areas of a large repo together. Kept
+ * byte-identical to the matching logic in `packages/correlation/src/
+ * prior-shapes.ts` / `packages/confirm/src/prior-shapes.ts`'s consumers
+ * (mirrors the `FalsePositiveSignal` cross-package duplication convention).
+ */
+function filePatternOf(file: string): string {
+  const idx = file.lastIndexOf("/");
+  return idx === -1 ? "." : file.slice(0, idx);
+}
+
+/** Cap on how many DISTINCT (category, filePattern) `confirmed_exploit_shape`
+ * facts one scan may record — bounded so a scan confirming many findings in
+ * the same area of a repo can't blow up this client's learned-fact table
+ * (mirrors LEARNED_FACT_CONTEXT_LIMIT's bounding philosophy above). */
+const CONFIRMED_SHAPE_RECORD_LIMIT = 5;
+
+/**
+ * §15/E8 extension — repo-scoped confirmed-exploit-shape priors. Loads this
+ * client+repo's persisted `confirmed_exploit_shape` learned facts (recorded
+ * by {@link recordConfirmedExploitShapes} below on an EARLIER scan) and
+ * wraps them in the same `matches(...)` seam both `@montr/correlation`'s
+ * `CorrelateInput.priorConfirmedShapes` and `@montr/confirm`'s
+ * `ConfirmDeps.priorConfirmedShapes` accept (structurally-identical
+ * interfaces — mirrors {@link loadFpTuning}'s convention exactly). Fail-safe:
+ * a store hiccup degrades to "no priors", never blocks the layer. A repo
+ * scanned for the first time has nothing recorded, so this is a no-op —
+ * byte-identical to before this feature.
+ */
+async function loadPriorConfirmedShapes(
+  ctx: LayerContext,
+  repo: string,
+): Promise<{ matches(signal: { category: string; file: string }): boolean }> {
+  let facts: LearnedFact[] = [];
+  try {
+    facts = await ctx.store.learnedFacts.listByRepo(ctx.clientId, repo);
+  } catch (err) {
+    ctx.logger?.warn?.("worker.prior_confirmed_shapes.load_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const shapes = facts
+    .filter((f) => f.type === "confirmed_exploit_shape")
+    .map((f) => ({
+      category: typeof f.content.category === "string" ? f.content.category : undefined,
+      filePattern: typeof f.content.filePattern === "string" ? f.content.filePattern : undefined,
+    }))
+    .filter(
+      (s): s is { category: string; filePattern: string } =>
+        s.category !== undefined && s.filePattern !== undefined,
+    );
+  return {
+    matches(signal) {
+      const pattern = filePatternOf(signal.file);
+      return shapes.some((s) => s.category === signal.category && s.filePattern === pattern);
+    },
+  };
+}
+
+/**
+ * §15/E8 extension — this client+repo's operator-confirmed custom sanitizer
+ * names (`LearnedFactType` `"custom_sanitizer"`, `content.sanitizerName`),
+ * merged into Layer 3's static confirmation heuristics — see
+ * `ConfirmDeps.learnedSanitizers`'s doc comment (`packages/confirm/src/
+ * types.ts`) and `static.ts`'s `withLearnedSanitizers`. Fail-safe: a store
+ * hiccup degrades to "no learned sanitizers", never blocks the layer.
+ */
+async function loadLearnedSanitizerMarkers(ctx: LayerContext, repo: string): Promise<string[]> {
+  let facts: LearnedFact[] = [];
+  try {
+    facts = await ctx.store.learnedFacts.listByRepo(ctx.clientId, repo);
+  } catch (err) {
+    ctx.logger?.warn?.("worker.learned_sanitizers.load_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+  const markers = new Set<string>();
+  for (const f of facts) {
+    if (f.type !== "custom_sanitizer") continue;
+    const raw = f.content.sanitizerName;
+    if (typeof raw !== "string") continue;
+    const marker = raw.trim().toLowerCase();
+    if (marker.length >= 3) markers.add(marker);
+  }
+  return [...markers];
+}
+
+/**
+ * §15/E8 extension — best-effort, auto-derived `confirmed_exploit_shape`
+ * learned facts (see `packages/state-store/src/learned-facts.ts`'s
+ * `LearnedFactType` doc comment). Recorded ONLY for findings Layer 3
+ * actually confirmed on real proof (static data-flow, live DAST, or the
+ * fully-gated E1/E2/E4 investigation path) — never for a probable/
+ * unconfirmed finding — so a later scan's {@link loadPriorConfirmedShapes}
+ * above can only ever prioritize/widen eligibility, never invent a
+ * confirmation: this repository's own confirmed history is the entire basis
+ * for the signal, not a model's guess. Distinct (category, filePattern)
+ * pairs are deduped and capped at CONFIRMED_SHAPE_RECORD_LIMIT per scan.
+ * Best-effort: a store hiccup here must never fail Layer 3 itself (mirrors
+ * `persistDetectionCoverageForScan`'s fail-safe discipline below).
+ */
+async function recordConfirmedExploitShapes(
+  ctx: LayerContext<"layer3">,
+  opts: LayerRunnerOptions,
+  appMap: AppMap,
+  confirmed: readonly ConfirmedFinding[],
+): Promise<void> {
+  const repo = ctx.scan.repo;
+  const seen = new Set<string>();
+  let recorded = 0;
+  for (const finding of confirmed) {
+    if (recorded >= CONFIRMED_SHAPE_RECORD_LIMIT) break;
+    const filePattern = filePatternOf(finding.location.file);
+    const key = `${finding.category}:${filePattern}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const route = appMap.routes.find((r) => r.handler?.file === finding.location.file);
+    // Best-effort, cosmetic-only refinement (never used by the `matches()`
+    // matcher above, which keys solely on category+filePattern) — see
+    // buildInvestigationArgument in investigation-pipeline.ts for the
+    // argument-text prefix this sniffs.
+    const confirmedVia =
+      finding.proofArtifact.kind === "static" &&
+      finding.proofArtifact.argument.startsWith("Agentic investigation proof")
+        ? "investigation"
+        : finding.proofType;
+    const at = opts.now ? opts.now() : new Date().toISOString();
+    try {
+      await ctx.store.learnedFacts.record({
+        clientId: ctx.clientId,
+        repo,
+        type: "confirmed_exploit_shape",
+        content: {
+          category: finding.category,
+          filePattern,
+          proofType: finding.proofType,
+          confirmedVia,
+          ...(route ? { routeMethod: route.method, routePath: route.path } : {}),
+        },
+        provenance: { source: "scan_derived", scanId: ctx.scanId, at },
+      });
+      recorded++;
+    } catch (err) {
+      ctx.logger?.warn?.("worker.learned_facts.record_confirmed_shape_failed", {
+        category: finding.category,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
 /* --------------------- A8 purple-team verification loop --------------------- */
 
 /**
@@ -571,6 +728,10 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
       // §15 FP-feedback loop (A10): prior operator FP marks for this client
       // down-rank a repeat of the same finding-shape — see loadFpTuning.
       const fpTuning = await loadFpTuning(ctx);
+      // E8 extension: this client+repo's confirmed-exploit-shape priors —
+      // informational hypothesis text + rank-tie-break only, see correlate.ts's
+      // CorrelateInput.priorConfirmedShapes doc comment.
+      const priorConfirmedShapes = await loadPriorConfirmedShapes(ctx, ctx.scan.repo);
       // §15 cross-scan memory (E8): additive learned-fact context on top of
       // correlation's prompt (purpose "correlation") — see withLearnedFactsContext.
       return correlate({
@@ -582,6 +743,7 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         audit: ctx.store.audit,
         logger: ctx.logger,
         fpTuning,
+        priorConfirmedShapes,
         // A9 — best-effort semantic grounding (informational hypothesis text
         // only — see CorrelateInput.semanticSearch's doc comment). Absent
         // unless `opts.semanticIndex` was constructed (config-gated, off by
@@ -625,6 +787,12 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
       // §15 FP-feedback loop (A10): prior operator FP marks for this client
       // route a repeat of the same finding-shape to the appendix — see loadFpTuning.
       const fpTuning = await loadFpTuning(ctx);
+      // E8 extension: this client+repo's confirmed-exploit-shape priors (may
+      // widen investigation eligibility only — see confirm.ts's
+      // isEligibleForInvestigation) and learned custom-sanitizer markers
+      // (merged into static.ts's heuristics — see withLearnedSanitizers).
+      const priorConfirmedShapes = await loadPriorConfirmedShapes(ctx, ctx.scan.repo);
+      const learnedSanitizers = await loadLearnedSanitizerMarkers(ctx, ctx.scan.repo);
       // §15 cross-scan memory (E8): additive learned-fact context on top of
       // confirmation's prompt (purpose "confirmation") — see withLearnedFactsContext.
       const deps: ConfirmDeps = {
@@ -633,6 +801,8 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         audit: ctx.store.audit,
         logger: ctx.logger,
         fpTuning,
+        priorConfirmedShapes,
+        learnedSanitizers,
         // E10: threads the orchestrator's real progress-event sink (A5's
         // EventBus → GET /scans/:id/progress → the console's already-built
         // LayerProgress) into the E1 investigation loop's per-turn narrative,
@@ -677,6 +847,16 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         ...(opts.now ? { now: opts.now } : {}),
       };
       const result = await confirmFindings(input, deps);
+
+      // E8 extension — auto-derive confirmed_exploit_shape learned facts from
+      // this scan's REAL confirmed output (never a probable/unconfirmed
+      // finding) so a LATER scan of this repo can prioritize/widen
+      // investigation eligibility for a structurally similar candidate — see
+      // recordConfirmedExploitShapes's doc comment. Best-effort, mirrors A7's
+      // fail-safe discipline immediately below.
+      if (result.confirmed.length > 0) {
+        await recordConfirmedExploitShapes(ctx, opts, appMap, result.confirmed);
+      }
 
       // A7 — persist the tri-state detection-coverage gap-analysis verdict
       // (B6, packages/appmap/src/coverage-analysis.ts) for every confirmed

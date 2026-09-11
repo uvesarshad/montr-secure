@@ -3,8 +3,9 @@
 #
 # Pipeline: install → lint → typecheck → test → build, plus:
 #   - golden-corpus  : precision/recall/FP-rate regression gate (@montr/qa), non-zero on regression,
-#                      plus the A23 model-variance matrix (per-model accuracy-cliff check) and the
-#                      B12 blue-team detection-corpus gate (detection precision/recall, non-zero on regression).
+#                      plus the A23 model-variance matrix (per-model accuracy-cliff check), the
+#                      B12 blue-team detection-corpus gate (detection precision/recall, non-zero on regression),
+#                      and the detection-coverage gate (genuine telemetry-gap rate, non-zero on regression).
 #   - self-scan      : dogfood Semgrep SAST + Gitleaks secrets on our OWN source.
 #   - docker         : compose config validate + image build.
 #   - helm           : lint (strict) + template (permutations) + kubeconform.
@@ -223,6 +224,36 @@ jobs:
         with:
           name: blue-team-corpus-scan
           path: blue-team-scan.json
+          if-no-files-found: ignore
+
+      # ⛔ Detection-coverage regression gate (suggested enhancement,
+      # docs/plan/26-09-12-tasks-red-blue-agentic-posture.md — "fail a build
+      # when a newly confirmed finding lands on a route with no telemetry").
+      # Mirrors this job's golden-corpus scan above exactly: runs the REAL
+      # apps/worker L0-L3 pipeline over the same golden corpus, and — because
+      # A7 already persists a real, tri-state `DetectionCoverage.detected`
+      # verdict (true/false/"unknown") for every confirmed finding inside the
+      # Layer 3 runner (`persistDetectionCoverageForScan`) — reads those REAL
+      # persisted rows back out of the store rather than hand-computing
+      # anything. Scores the fraction of confirmed findings whose verdict is
+      # a GENUINE gap (`detected === false` — route resolved, telemetry
+      # analyzed, no covering rule) against corpus/detection-coverage-baseline.json's
+      # committed ceiling; `"unknown"` (ambiguous) is deliberately excluded
+      # from the gated metric and only reported informationally — see
+      # docs/infra/testing.md and packages/qa/src/detection-coverage-scorer.ts's
+      # header for why.
+      - name: Real detection-coverage scan of the golden corpus
+        run: node scripts/detection-coverage-scan.mjs --out detection-coverage-scan.json
+
+      - name: Detection-coverage gap-rate gate (non-zero on regression)
+        run: pnpm --filter @montr/qa qa:detection-coverage -- --findings ${{ github.workspace }}/detection-coverage-scan.json
+
+      - name: Upload real detection-coverage-scan.json (debugging a regression)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detection-coverage-scan
+          path: detection-coverage-scan.json
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------

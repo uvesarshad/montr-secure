@@ -33,6 +33,7 @@ import {
 } from "./phase4.js";
 import { PromptVersionRepositoryImpl } from "./prompt-version.js";
 import { LearnedFactRepositoryImpl } from "./learned-facts.js";
+import { DetectionRulePushTargetRepositoryImpl } from "./detection-rule-push-target.js";
 import {
   AttackPathRepositoryImpl,
   DetectionCoverageRepositoryImpl,
@@ -78,6 +79,9 @@ function buildStateStore(
     reports: new ReportRepositoryImpl(prisma),
     resume: new ResumeRepositoryImpl(prisma),
     credentials: new CredentialRepositoryImpl(prisma, cipher),
+    // Detection-rule push target config + encrypted credential (suggested
+    // enhancement) — same field cipher as `credentials` above.
+    detectionRulePushTargets: new DetectionRulePushTargetRepositoryImpl(prisma, cipher),
     audit: new PrismaAuditLogClient(prisma),
     retention: new RetentionEnforcer(prisma),
     // Phase-4 (Wave 5) — scale & intelligence. Scenario steps are encrypted at

@@ -26,6 +26,8 @@ Action run_red_team_scenario: Strictly restricted to Approver role.
 Action mark_false_positive: Permitted for Operator and Approver.
 Action manage_custom_rules: Permitted for Operator and Approver.
 Action view_reports_and_audit: Permitted for Viewer, Operator, and Approver.
+Action configure_detection_rule_push_target: Strictly restricted to Approver role (suggested enhancement, 2026-09-12 red/blue agentic-posture audit) — configuring or removing the client's Splunk HEC push destination stores/deletes a live, reversible outbound credential, the same sensitivity class as register_dast_target.
+Action push_detection_rule: Permitted for Operator and Approver — an operational action once an Approver has configured the push target, mirroring manage_custom_rules.
 
 Gate Enforcement and Security Guards
 Fix Gate Protection: Automated remediation pull request generation is guarded by the requireRole approver check on POST /api/v1/scans/:id/gate/fix. Even when auto-fix is globally enabled, pull requests are never opened without explicit Approver authorization.
@@ -34,6 +36,9 @@ Emergency Kill Switch Access: The kill switch endpoint POST /api/v1/scans/:id/ki
 
 Scenario Written Authorization (A1, 2026-09-12 red/blue agentic-posture audit)
 Running a red-team scenario for real (apps/worker/src/scenario-runs genuinely probing a customer staging target) requires more than the Approver role and the allowlist: POST /api/v1/scenarios/:id/authorize (approver-only, CSRF-protected, mirrors dast.ts's POST /dast/targets/:id/authorize pattern) records an explicit, auditable written authorization — a required, non-empty free-text authorizationReference (a ticket number or signed agreement reference) plus the approver's id and a timestamp, bound to the scenario's exact current version. This is additive on top of every existing DAST guardrail (production block, allowlist, kill switch, blast-radius caps, egress guard) — none of them are relaxed by it. POST /api/v1/scenarios/:id/run still requires the Approver role exactly as before, but now ALSO requires this written authorization to be present and current before it will enqueue real worker-side execution; a missing or stale (edited-since-authorized) authorization is refused with a 403 explaining exactly what is missing, never a silent no-op. Any edit to the scenario (PUT /api/v1/scenarios/:id) invalidates a prior authorization outright — the approver must re-authorize the edited version explicitly. packages/contracts/src/phase4.ts's hasLiveRunAuthorization is the one predicate the route, the worker consumer, and the console's status badge all evaluate, so authorization state can never read differently in one place than another.
+
+Detection-Rule Push Target Authorization (suggested enhancement, 2026-09-12 red/blue agentic-posture audit)
+POST/DELETE /api/v1/detection-rules/push-targets (apps/api/src/routes/detection-rules.ts) require the strict Approver role via requireApprover, mirroring register_dast_target's precedent — the endpoint is operator-entered and the token is a live, reversible outbound secret. GET (metadata only, never the token) and both push routes (POST /detection-rules/push, POST /detection-rules/push-bundle) require Operator or Approver via requireRole. A push additionally re-enforces the platform's default-deny egress policy (packages/security/src/egress-guard.ts) against the configured endpoint before any outbound call — an operator must add the target host to MONTR_ALLOWED_EGRESS_HOSTS before a push can succeed, regardless of RBAC.
 
 Update Triggers
 Update this file when roles are added or modified in packages/contracts/src/enums.ts, when role checking middleware changes in apps/api/src/plugins/auth-plugin.ts, or when gate permission boundaries are altered.

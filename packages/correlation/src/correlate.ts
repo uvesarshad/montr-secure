@@ -42,6 +42,7 @@ import {
   parseCorrelationResponse,
 } from "./llm.js";
 import type { FalsePositiveTuning } from "./tuning.js";
+import type { PriorConfirmedShapes } from "./prior-shapes.js";
 
 /** A9 — semantic-code-search callback (`@montr/semantic-index`'s `querySemanticIndex`), injected structurally — see `CorrelateInput.semanticSearch`'s doc comment. */
 export type SemanticSearchFn = (queryText: string, topK?: number) => Promise<SemanticMatch[]>;
@@ -99,6 +100,26 @@ export interface CorrelateInput {
    * never demotes/promotes a finding on its own.
    */
   semanticSearch?: SemanticSearchFn;
+  /**
+   * E8 extension — optional confirmed-exploit-shape priors (learned-facts
+   * mechanism, `packages/state-store/src/learned-facts.ts`'s
+   * `confirmed_exploit_shape` type, recorded automatically by
+   * `apps/worker/src/runners.ts`'s `recordConfirmedExploitShapes` whenever
+   * Layer 3 genuinely confirms a finding on real proof). When a promoted
+   * candidate's (category, location) structurally matches a shape this repo
+   * has confirmed exploitable before, a short, factual, PURELY INFORMATIONAL
+   * sentence is appended to the finding's reachability hypothesis, and the
+   * candidate is listed first among any findings otherwise perfectly tied on
+   * every corpus-calibrated score (see `comparePending`) — see
+   * `./prior-shapes.ts`'s header comment for the full, narrow contract.
+   * Deliberately never feeds `scoring.ts`'s numeric reachability/exposure/
+   * impact formula, mirroring `semanticSearch`'s identical precedent above
+   * and for the identical reason (golden-corpus calibration). Absent (every
+   * existing caller/test) ⇒ byte-identical to before this feature — a repo
+   * scanned for the first time has no learned facts yet, so this is a no-op
+   * the first time regardless.
+   */
+  priorConfirmedShapes?: PriorConfirmedShapes;
 }
 
 /** Cap on semantic-search matches surfaced per candidate — informational only, never a scoring input. */
@@ -151,6 +172,9 @@ interface PendingProbable {
   severity: number;
   category: string;
   rootCauseId: string;
+  /** E8 extension — see `comparePending`'s doc comment. Rank-tie-break only,
+   * never a component of `combined`/`impact`/`reach` above. */
+  priorShapeMatched: boolean;
 }
 
 /**
@@ -261,6 +285,20 @@ export async function correlate(input: CorrelateInput): Promise<Layer2Output> {
       if (note) reachHypo = `${reachHypo}${note}`;
     }
 
+    // E8 extension — informational-only confirmed-exploit-shape prior (see
+    // `CorrelateInput.priorConfirmedShapes`'s doc comment). Never touches
+    // reach/impact/exposureScore; only the hypothesis text and, below, the
+    // rank tie-break order.
+    const priorShapeMatched =
+      input.priorConfirmedShapes?.matches({ category: rep.category, file: rep.location.file }) ??
+      false;
+    if (priorShapeMatched) {
+      reachHypo =
+        `${reachHypo} A structurally similar ${rep.category} finding elsewhere in this ` +
+        "repository was confirmed exploitable in an earlier scan — treat this as a " +
+        "stronger-than-usual candidate worth prioritizing (informational prior; verify independently).";
+    }
+
     const rootCauseId = makeRootCauseId(scanId, rep.category, group.key);
     const id = makeProbableId(scanId, rootCauseId);
     const mergedCandidateIds = group.candidates.map((c) => c.id);
@@ -273,6 +311,7 @@ export async function correlate(input: CorrelateInput): Promise<Layer2Output> {
       severity: SEVERITY_WEIGHT[rep.rawSeverity],
       category: rep.category,
       rootCauseId,
+      priorShapeMatched,
       build: (rank: number): ProbableFinding =>
         ProbableFindingSchema.parse({
           id,
@@ -441,6 +480,11 @@ function comparePending(a: PendingProbable, b: PendingProbable): number {
   if (b.impact !== a.impact) return b.impact - a.impact;
   if (b.reach !== a.reach) return b.reach - a.reach;
   if (b.severity !== a.severity) return b.severity - a.severity;
+  // E8 extension: applied strictly AFTER every corpus-calibrated score above
+  // — only breaks a tie between findings otherwise perfectly equal on all
+  // four. Never changes reachabilityScore/exposureScore/impactScore, only
+  // which of two equally-scored findings is listed first.
+  if (a.priorShapeMatched !== b.priorShapeMatched) return a.priorShapeMatched ? -1 : 1;
   if (a.category !== b.category) return a.category < b.category ? -1 : 1;
   return a.rootCauseId < b.rootCauseId ? -1 : a.rootCauseId > b.rootCauseId ? 1 : 0;
 }

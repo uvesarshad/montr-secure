@@ -43,6 +43,8 @@ export interface LayerProgress {
   status: LayerStatus;
   pct: number;
   phase?: string;
+  /** A14 — the most recent progress message for this layer (e.g. Layer 3's live investigation narrative). */
+  message?: string;
 }
 
 /**
@@ -80,6 +82,7 @@ export function deriveLayerProgress(events: ProgressEvent[], scan?: Scan): Layer
       status,
       pct,
       phase: ev?.phase,
+      message: ev?.message,
     };
   });
 }
@@ -89,4 +92,23 @@ export function overallPct(layers: LayerProgress[]): number {
   if (layers.length === 0) return 0;
   const sum = layers.reduce((acc, l) => acc + l.pct, 0);
   return Math.round(sum / layers.length);
+}
+
+/**
+ * A14 — the ordered narrative trace of progress messages for one layer (e.g.
+ * Layer 3's live agentic-investigation narrative, streamed via
+ * `gateway.stream()` — see docs/modules/confirmation.md's Live Progress
+ * Narration entry), most recent last, trimmed to `limit` entries. Unlike
+ * `deriveLayerProgress` above (which collapses a layer down to its single
+ * LATEST event for the pipeline-overview rows), this keeps the full ordered
+ * history so a console view can render an honest, scrollable "agent trace"
+ * rather than only ever showing the newest line.
+ */
+export function layerNarrativeTrace(
+  events: ProgressEvent[],
+  layer: LayerId,
+  limit = 30,
+): ProgressEvent[] {
+  const withMessage = events.filter((e) => e.layer === layer && e.message);
+  return withMessage.length > limit ? withMessage.slice(withMessage.length - limit) : withMessage;
 }

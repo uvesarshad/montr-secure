@@ -78,6 +78,11 @@ export { PromptVersionRepositoryImpl } from "./prompt-version.js";
 // Cross-scan memory — durable per-repo learned facts (§15 loop, E8).
 export { LearnedFactRepositoryImpl } from "./learned-facts.js";
 
+// Detection-rule push target config + encrypted credential (suggested
+// enhancement, 2026-09-12 red/blue agentic-posture audit) — mirrors
+// CredentialRepositoryImpl's encrypt-on-write/decrypt-on-read shape.
+export { DetectionRulePushTargetRepositoryImpl } from "./detection-rule-push-target.js";
+
 // Blue-team / purple-team entities (B1) — DetectionRule, AttackPath,
 // DetectionCoverage repository implementations. Data model + CRUD only; B2-B5
 // build the generation/mapping/graph/verification logic on top.

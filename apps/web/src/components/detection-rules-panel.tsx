@@ -7,12 +7,19 @@ import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
 import { EmptyState } from "./ui/empty-state.js";
 import { StatusChip } from "./chips.js";
-import { DownloadIcon, ShieldAlertIcon } from "./icons.js";
+import { DownloadIcon, ShieldAlertIcon, UploadCloudIcon } from "./icons.js";
 import {
   downloadDetectionRule,
   downloadDetectionRuleBundle,
   detectionRuleFilename,
 } from "../lib/exports.js";
+import {
+  useDetectionRulePushTarget,
+  usePushDetectionRule,
+  usePushDetectionRuleBundle,
+} from "../lib/api/hooks.js";
+import { useCurrentUser } from "./role-context.js";
+import { canPushDetectionRule } from "../lib/rbac.js";
 
 const FORMAT_LABEL: Record<DetectionRule["format"], string> = {
   sigma: "Sigma",
@@ -55,19 +62,22 @@ export function DetectionRulesPanel({ report }: { report: Report }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           {rules.length} generated rule{rules.length === 1 ? "" : "s"} across{" "}
           {new Set(rules.map((r) => r.findingId)).size} confirmed finding
           {new Set(rules.map((r) => r.findingId)).size === 1 ? "" : "s"}.
         </p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => downloadDetectionRuleBundle(report.scanId, rules, findingTitleFor)}
-        >
-          <DownloadIcon className="h-4 w-4" /> Export all rules
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <PushAllToSplunkButton rules={rules} />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => downloadDetectionRuleBundle(report.scanId, rules, findingTitleFor)}
+          >
+            <DownloadIcon className="h-4 w-4" /> Export all rules
+          </Button>
+        </div>
       </div>
 
       {rules.map((rule) => {
@@ -110,9 +120,12 @@ export function DetectionRulesPanel({ report }: { report: Report }) {
                   <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     Rule content
                   </p>
-                  <Button variant="ghost" size="sm" onClick={() => downloadDetectionRule(rule)}>
-                    <DownloadIcon className="h-3.5 w-3.5" /> {detectionRuleFilename(rule)}
-                  </Button>
+                  <div className="flex items-center gap-1.5">
+                    <PushToSplunkButton rule={rule} />
+                    <Button variant="ghost" size="sm" onClick={() => downloadDetectionRule(rule)}>
+                      <DownloadIcon className="h-3.5 w-3.5" /> {detectionRuleFilename(rule)}
+                    </Button>
+                  </div>
                 </div>
                 <pre className="max-h-72 overflow-auto rounded-md border border-border bg-background/70 p-3 font-mono text-xs leading-relaxed">
                   {rule.content}
@@ -157,6 +170,84 @@ export function DetectionRulesPanel({ report }: { report: Report }) {
           </Card>
         );
       })}
+    </div>
+  );
+}
+
+const PUSH_TARGET_LABEL: Record<string, string> = { splunk_hec: "Splunk" };
+
+/**
+ * Suggested enhancement (2026-09-12 red/blue agentic-posture audit) — real
+ * push integration for a single generated rule, alongside the existing
+ * download (above). Renders nothing when the caller's role can't push
+ * (`canPushDetectionRule`) or when this client has no push target configured
+ * yet (`GET /detection-rules/push-targets` — apps/api/src/routes/
+ * detection-rules.ts) — a small, additive affordance, not a redesign.
+ */
+export function PushToSplunkButton({ rule }: { rule: DetectionRule }) {
+  const user = useCurrentUser();
+  const { data: target } = useDetectionRulePushTarget();
+  const mutation = usePushDetectionRule();
+
+  if (!canPushDetectionRule(user.role) || !target) return null;
+  const label = PUSH_TARGET_LABEL[target.type] ?? target.type;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={mutation.isPending}
+        onClick={() => mutation.mutate(rule)}
+      >
+        <UploadCloudIcon className="h-3.5 w-3.5" />
+        {mutation.isPending ? "Pushing…" : `Push to ${label}`}
+      </Button>
+      {mutation.isSuccess ? (
+        <span className="text-xs text-emerald-300">Pushed</span>
+      ) : mutation.isError ? (
+        <span className="text-xs text-red-300" title={(mutation.error as Error).message}>
+          Push failed
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Bundle equivalent of {@link PushToSplunkButton}, alongside "Export all
+ * rules". Exported so apps/web/src/app/blue-team/page.tsx's cross-scan rule
+ * inventory reuses the SAME push mechanism/components — no second
+ * implementation, mirroring this codebase's "no new export mechanism"
+ * precedent for the download buttons alongside it.
+ */
+export function PushAllToSplunkButton({ rules }: { rules: DetectionRule[] }) {
+  const user = useCurrentUser();
+  const { data: target } = useDetectionRulePushTarget();
+  const mutation = usePushDetectionRuleBundle();
+
+  if (!canPushDetectionRule(user.role) || !target) return null;
+  const label = PUSH_TARGET_LABEL[target.type] ?? target.type;
+  const successCount = mutation.data?.filter((r) => r.success).length;
+
+  return (
+    <div className="flex items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={mutation.isPending}
+        onClick={() => mutation.mutate(rules)}
+      >
+        <UploadCloudIcon className="h-4 w-4" />
+        {mutation.isPending ? "Pushing…" : `Push all to ${label}`}
+      </Button>
+      {mutation.isSuccess ? (
+        <span className="text-xs text-muted-foreground">
+          {successCount}/{mutation.data?.length} pushed
+        </span>
+      ) : mutation.isError ? (
+        <span className="text-xs text-red-300">Push failed</span>
+      ) : null}
     </div>
   );
 }

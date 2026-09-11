@@ -56,6 +56,9 @@ function resolveDeps(deps: ApiServerDeps): ResolvedDeps {
     regressionCorpus: deps.regressionCorpus ?? noopRegressionCorpus,
     scenarioRunProducer: deps.scenarioRunProducer ?? createInMemoryScenarioRunProducer(),
     ...(deps.webhook ? { webhook: deps.webhook } : {}),
+    ...(deps.detectionRulePushHttpClient
+      ? { detectionRulePushHttpClient: deps.detectionRulePushHttpClient }
+      : {}),
   };
 }
 
@@ -137,6 +140,8 @@ export interface InMemoryDepsOverrides {
   webhook?: ApiServerDeps["webhook"];
   /** A1 — override the scenario-run producer (tests assert on `.jobs`). */
   scenarioRunProducer?: ScenarioRunProducer;
+  /** Suggested enhancement — injectable HTTP client for the Splunk HEC push adapter (see ApiServerDeps). */
+  detectionRulePushHttpClient?: ApiServerDeps["detectionRulePushHttpClient"];
 }
 
 /**
@@ -166,6 +171,9 @@ export function createInMemoryDeps(overrides: InMemoryDepsOverrides = {}): ApiSe
     ...(overrides.webhook ? { webhook: overrides.webhook } : {}),
     ...(overrides.scenarioRunProducer
       ? { scenarioRunProducer: overrides.scenarioRunProducer }
+      : {}),
+    ...(overrides.detectionRulePushHttpClient
+      ? { detectionRulePushHttpClient: overrides.detectionRulePushHttpClient }
       : {}),
   };
 }

@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   BudgetPolicySchema,
   CustomRuleSchema,
+  DetectionRuleSchema,
   ExportFormatSchema,
   RedTeamScenarioSchema,
   RoleSchema,
@@ -82,6 +83,41 @@ export const DastTargetIdParamsSchema = z.object({ id: z.string().min(1) });
 export const AuthorizeScanDastBodySchema = z.object({ stagingUrl: z.string().url() });
 export type AuthorizeScanDastBody = z.infer<typeof AuthorizeScanDastBodySchema>;
 
+/* ------------------------- detection-rule push ----------------------- */
+
+/**
+ * Suggested enhancement (2026-09-12 red/blue agentic-posture audit) — real
+ * push integration for generated detection rules. `type` is deliberately a
+ * literal-only `"splunk_hec"` today (the only real adapter — see
+ * packages/report/src/detection-rules/push/types.ts's honest
+ * UNIMPLEMENTED_PUSH_TARGET_TYPES), so an attempt to configure an
+ * unimplemented target is refused at the validation boundary with a clear
+ * 400, before ever reaching the route handler.
+ */
+export const UpsertDetectionRulePushTargetBodySchema = z.object({
+  type: z.literal("splunk_hec").default("splunk_hec"),
+  endpointUrl: z.string().url(),
+  /** The Splunk HEC token (Data Inputs > HTTP Event Collector). Never logged. */
+  hecToken: z.string().min(1).max(2000),
+  index: z.string().min(1).max(200).optional(),
+  sourcetype: z.string().min(1).max(200).optional(),
+});
+export type UpsertDetectionRulePushTargetBody = z.infer<
+  typeof UpsertDetectionRulePushTargetBodySchema
+>;
+
+/** Push a single generated rule — the console sends the exact rule object it already loaded from the Report (no server-side lookup; see routes/detection-rules.ts's header for why). */
+export const PushDetectionRuleBodySchema = z.object({
+  rule: DetectionRuleSchema,
+});
+export type PushDetectionRuleBody = z.infer<typeof PushDetectionRuleBodySchema>;
+
+/** Push every rule in a bundle (e.g. "export all rules" equivalent for Splunk). Capped at 200 per request — mirrors this codebase's other bulk-request caps. */
+export const PushDetectionRuleBundleBodySchema = z.object({
+  rules: z.array(DetectionRuleSchema).min(1).max(200),
+});
+export type PushDetectionRuleBundleBody = z.infer<typeof PushDetectionRuleBundleBodySchema>;
+
 /* ------------------------------ findings ---------------------------- */
 
 export const FindingIdParamsSchema = z.object({ id: z.string().min(1) });
@@ -102,6 +138,13 @@ export type MarkFalsePositiveBody = z.infer<typeof MarkFalsePositiveBodySchema>;
  * body or secret; kept small (2000 chars serialized) so one operator input
  * can't itself blow the prompt-context budget the worker caps separately.
  */
+// NOTE: "confirmed_exploit_shape" (state-store's LearnedFactType) is
+// deliberately EXCLUDED from this operator-writable enum — it is a
+// system-recorded-only fact class (apps/worker/src/runners.ts's
+// recordConfirmedExploitShapes, written only for a finding Layer 3 actually
+// confirmed on real proof), mirroring confirmed_false_positive's own
+// exclusion above. Allowing an operator to submit one here would let an
+// unverified claim masquerade as real confirmed-exploit history.
 export const RecordLearnedFactBodySchema = z.object({
   repo: z.string().min(1).max(500),
   type: z.enum(["custom_sanitizer", "framework_idiom", "operator_decision"]),

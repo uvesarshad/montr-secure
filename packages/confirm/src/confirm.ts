@@ -54,7 +54,23 @@ import type { ConfirmDeps, ConfirmInput, EgressGuardLike } from "./types.js";
 function isEligibleForInvestigation(finding: ProbableFinding, deps: ConfirmDeps): boolean {
   const severities = deps.investigation?.severities;
   if (!severities || severities.length === 0) return true;
-  return severities.includes(baseSeverityForCategory(finding.category));
+  if (severities.includes(baseSeverityForCategory(finding.category))) return true;
+  // E8 extension (2026-09-12): a finding outside the configured severity
+  // scope still gets ONE shot at this SAME fully-gated loop when this exact
+  // repo has previously, genuinely confirmed a structurally similar finding
+  // (same category, same coarse directory) — see
+  // ConfirmDeps.priorConfirmedShapes's doc comment and ./prior-shapes.ts's
+  // header for the full contract. This can only WIDEN eligibility; E1's own
+  // verdict, E2's real executable-evidence gate, and E4's adversarial
+  // majority are all still required in full once it runs. Absent
+  // `priorConfirmedShapes` (every existing caller/test) this branch is
+  // simply never reached.
+  return (
+    deps.priorConfirmedShapes?.matches({
+      category: finding.category,
+      file: finding.location.file,
+    }) ?? false
+  );
 }
 
 function throwIfKilled(deps: ConfirmDeps): void {

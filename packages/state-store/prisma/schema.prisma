@@ -183,10 +183,20 @@ enum Category {
 /// duplicated into this table — see LearnedFactRepositoryImpl's doc comment
 /// (packages/state-store/src/learned-facts.ts) and apps/worker/src/runners.ts's
 /// loadLearnedFactsContext.
+/// `confirmed_exploit_shape` (added migration 13) is likewise SYSTEM-recorded
+/// only, never operator-writable via POST /learned-facts (apps/api/src/schemas.ts's
+/// RecordLearnedFactBodySchema deliberately omits it, mirroring
+/// confirmed_false_positive's own exclusion) — apps/worker/src/runners.ts's
+/// recordConfirmedExploitShapes writes one row per (category, coarse
+/// directory) a Layer 3 scan genuinely CONFIRMED (static/live/investigation
+/// proof, never a bare model opinion), so only real, gate-passed pipeline
+/// output — never an operator's or attacker's unverified claim — can ever
+/// seed this signal.
 enum LearnedFactType {
   custom_sanitizer
   framework_idiom
   operator_decision
+  confirmed_exploit_shape
 }
 
 // --------------------------------------------------------------------------- //
@@ -204,6 +214,7 @@ model Client {
   auditEvents   AuditEvent[]
   dastTargets   DastTarget[]
   llmCredential LlmCredential?
+  detectionRulePushTarget DetectionRulePushTarget?
 
   // Phase-4 (Wave 5) — scale & intelligence (appended; per-client isolated).
   customRules      CustomRule[]
@@ -253,6 +264,33 @@ model LlmCredential {
   keyTier      String   @default("unknown")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// Detection-rule PUSH integrations (suggested enhancement, 2026-09-12 red/blue
+// agentic-posture audit — "ship detection rules as a real push integration
+// rather than only a download"). One target per client today (mirrors
+// LlmCredential's clientId @unique 1:1-per-client precedent) — an operator
+// configures a single Splunk HEC destination for this client's generated
+// detection rules. `type` is a plain String, not a Prisma enum, mirroring
+// `DetectionRule.format`/`RedTeamScenario.category`'s existing precedent, so
+// a genuinely new target type (Elastic, Sentinel — see
+// packages/report/src/detection-rules/push/types.ts) needs no migration once
+// its adapter is implemented; only "splunk_hec" is a real, working adapter
+// today. `hecToken` is field-encrypted for the same reason LlmCredential.apiKey
+// is: it is a live, reversible bearer secret granting write access to the
+// client's own SOC tooling.
+model DetectionRulePushTarget {
+  id          String   @id @default(cuid())
+  clientId    String   @unique
+  client      Client   @relation(fields: [clientId], references: [id])
+  type        String   @default("splunk_hec")
+  endpointUrl String
+  /// @encrypted — AES-256-GCM (KMS/Vault key). Never egressed except to this endpoint.
+  hecToken    String
+  index       String?
+  sourcetype  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // --------------------------------------------------------------------------- //

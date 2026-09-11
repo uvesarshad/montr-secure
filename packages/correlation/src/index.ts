@@ -18,6 +18,10 @@ export { correlate, type CorrelateInput } from "./correlate.js";
 // to down-rank/demote known false positives. Additive + fail-safe.
 export type { FalsePositiveTuning, FalsePositiveSignal } from "./tuning.js";
 
+// E8 extension — confirmed-exploit-shape priors (learned-facts mechanism).
+// Informational + rank-tie-break only; never touches the persisted scores.
+export type { PriorConfirmedShapes, ConfirmedShapeSignal } from "./prior-shapes.js";
+
 // Pure building blocks — exported for the orchestrator, tests, and future stacks
 // (the engine is stack-agnostic by design, build-plan §7).
 export { AppMapIndex, groundCandidate, extractPackageName, type Grounding } from "./grounding.js";

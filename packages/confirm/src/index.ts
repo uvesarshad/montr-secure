@@ -34,6 +34,10 @@ export type {
 // to skip/suppress known false positives to the appendix. Additive + fail-safe.
 export type { FalsePositiveTuning, FalsePositiveSignal } from "./tuning.js";
 
+// E8 extension — confirmed-exploit-shape priors (learned-facts mechanism).
+// May only WIDEN investigation eligibility; never bypasses E2/E4's proof gates.
+export type { PriorConfirmedShapes, ConfirmedShapeSignal } from "./prior-shapes.js";
+
 // Static confirmation (3a) internals — reusable by the fix/report layers + tests.
 export { confirmStatic, assembleConfirmed, toUnconfirmed } from "./static.js";
 
@@ -48,6 +52,19 @@ export {
   type ScopeGuardOptions,
   type LiveAuthzInput,
 } from "./guard.js";
+
+// A16 — deterministic safety predicate gating model-COMPOSED live-DAST
+// payloads (sql_injection/xss/ssrf/path_traversal/command_injection only —
+// see payload-safety.ts's header for the full composable-vs-pre-written-only
+// rationale). Exported so callers/tests can assert the predicate directly,
+// independent of the adaptive loop that consumes it.
+export {
+  COMPOSABLE_LIVE_CATEGORIES,
+  isComposableLiveCategory,
+  evaluateComposedPayloadSafety,
+  type PayloadSafetyVerdict,
+  type EvaluateComposedPayloadOptions,
+} from "./payload-safety.js";
 
 // Live DAST (3b) recon/exploit surface + defaults.
 export {

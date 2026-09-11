@@ -137,4 +137,61 @@ describe("gateway streaming — real end-to-end through a real adapter (A10)", (
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("error");
   });
+
+  /**
+   * A14 — gateway.stream()'s first real production consumer is
+   * packages/confirm/src/investigate.ts's agentic investigation loop (E1),
+   * whose tool-calling turns depend on seeing a fully-resolved tool_use event
+   * mid-stream (see mapAnthropicStream's content_block_start/
+   * input_json_delta/content_block_stop accumulation in adapters/anthropic.ts).
+   * This proves that accumulation against the REAL adapter, not just a fake.
+   */
+  it("accumulates a real tool_use content block (fragmented input_json_delta) into one tool_use stream event, interleaved with text", async () => {
+    const config = parseConfig({
+      clientId: "client_a",
+      llm: { apiKey: "sk-test", provider: "anthropic" },
+    });
+    const { client } = fakeStreamingClient([
+      { type: "message_start", message: { id: "msg_1", usage: { input_tokens: 40 } } },
+      { type: "content_block_start", index: 0 },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Checking the handler..." },
+      },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "call_1", name: "grep" },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: '{"patt' },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: 'ern":"eval("}' },
+      },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 15 } },
+      { type: "message_stop" },
+    ]);
+    const adapter = new AnthropicAdapter({ config, client });
+    const gateway = new MontrLlmGateway({ config, adapter });
+
+    const events: LLMStreamEvent[] = [];
+    for await (const event of gateway.stream(req())) events.push(event);
+
+    expect(events.filter((e) => e.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "Checking the handler..." },
+    ]);
+    expect(events.filter((e) => e.type === "tool_use")).toEqual([
+      { type: "tool_use", id: "call_1", name: "grep", input: { pattern: "eval(" } },
+    ]);
+    const done = events.find((e) => e.type === "message_done");
+    expect(done).toMatchObject({ type: "message_done", stopReason: "tool_use" });
+  });
 });

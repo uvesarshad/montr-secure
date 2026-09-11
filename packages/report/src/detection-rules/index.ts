@@ -23,3 +23,9 @@ export { buildSiemQuery } from "./siem.js";
 export { buildLogSignature } from "./narrative.js";
 export { resolveRoute } from "./route.js";
 export { deterministicUuid } from "./id.js";
+
+// Suggested-enhancement follow-up (2026-09-12 red/blue agentic-posture
+// audit): pushing generated rules to a real SOC tool, not just downloading
+// them. See push/types.ts for the full design rationale (one real adapter —
+// Splunk HEC — plus honest NotImplementedError stubs for Elastic/Sentinel).
+export * from "./push/index.js";

@@ -10,6 +10,7 @@ import { makeUsage, type AdapterCompletion, type ProviderAdapter } from "./types
 import { resolveOutboundTarget, type AdapterEgress } from "./egress.js";
 import {
   buildBody,
+  mapOpenAiChunks,
   openAiToolCalls,
   type OpenAiChatChunkLike,
   type OpenAiChatCompletionLike,
@@ -114,30 +115,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
       { ...buildBody(request, modelId), stream: true, stream_options: { include_usage: true } },
       signal ? { signal } : undefined,
     )) as AsyncIterable<OpenAiChatChunkLike>;
-
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let totalTokens: number | undefined;
-    let finishReason: string | null | undefined;
-
-    for await (const chunk of chunks) {
-      const choice = chunk.choices?.[0];
-      const text = choice?.delta?.content;
-      if (typeof text === "string" && text.length > 0) yield { type: "text_delta", text };
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-      const u = chunk.usage;
-      if (u) {
-        promptTokens = u.prompt_tokens ?? promptTokens;
-        completionTokens = u.completion_tokens ?? completionTokens;
-        totalTokens = u.total_tokens ?? totalTokens;
-      }
-    }
-
-    yield {
-      type: "message_done",
-      usage: makeUsage(promptTokens, completionTokens, { totalTokens }),
-      stopReason: mapOpenAiFinishReason(finishReason),
-    };
+    yield* mapOpenAiChunks(chunks);
   }
 }
 

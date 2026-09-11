@@ -1,8 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { LLMRequestSchema, type LLMRequest, type LLMToolDefinition } from "@montr/contracts";
+import {
+  LLMRequestSchema,
+  type LLMRequest,
+  type LLMStreamEvent,
+  type LLMToolDefinition,
+} from "@montr/contracts";
 import { parseConfig, type MontrConfig } from "@montr/config";
 import { createEgressGuard } from "@montr/security";
-import { OpenAiCompatibleAdapter, type OpenAiClientLike, type AdapterEgress } from "./index.js";
+import {
+  OpenAiCompatibleAdapter,
+  type OpenAiChatChunkLike,
+  type OpenAiClientLike,
+  type AdapterEgress,
+} from "./index.js";
 
 /**
  * A3: the generic OpenAI-compatible adapter (openai/google/xai/moonshot/
@@ -228,6 +238,102 @@ describe("OpenAiCompatibleAdapter (A3) — tool calling (A8)", () => {
 
     const withoutSchema = bodies[1]?.response_format as { type: string };
     expect(withoutSchema.type).toBe("json_object");
+  });
+});
+
+/**
+ * A14 — `stream()` accumulates `delta.tool_calls[]` fragments (keyed by
+ * `index`) into a complete `tool_use` event, shared with AzureAdapter via
+ * `mapOpenAiChunks` (./azure.js). This is what lets `packages/confirm`'s
+ * agentic investigation loop (E1) drive its tool-calling turns off `stream()`
+ * for this provider family without losing which tool the model called.
+ */
+describe("OpenAiCompatibleAdapter (A3/A14) — streaming tool calls", () => {
+  function streamingClient(chunks: OpenAiChatChunkLike[]): OpenAiClientLike {
+    return {
+      chat: {
+        completions: {
+          create: async () => {
+            return (async function* (): AsyncGenerator<OpenAiChatChunkLike> {
+              for (const c of chunks) yield c;
+            })();
+          },
+        },
+      },
+    };
+  }
+
+  it("accumulates fragmented tool_calls deltas into one tool_use event, alongside any text", async () => {
+    const client = streamingClient([
+      { choices: [{ delta: { content: "Let me check that." } }] },
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ index: 0, id: "call_1", function: { name: "grep", arguments: "" } }],
+            },
+          },
+        ],
+      },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"patt' } }] } }] },
+      {
+        choices: [
+          { delta: { tool_calls: [{ index: 0, function: { arguments: 'ern":"eval("}' } }] } },
+        ],
+      },
+      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+      { choices: [], usage: { prompt_tokens: 30, completion_tokens: 10, total_tokens: 40 } },
+    ]);
+    const adapter = new OpenAiCompatibleAdapter({
+      provider: "openai",
+      defaultBaseUrl: "https://api.openai.com/v1",
+      defaultHost: "api.openai.com",
+      config: cfg("openai"),
+      client,
+    });
+
+    const events: LLMStreamEvent[] = [];
+    for await (const ev of adapter.stream(req({ tools: [GREP_TOOL] }), "gpt-4o-mini")) {
+      events.push(ev);
+    }
+
+    expect(events.filter((e) => e.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "Let me check that." },
+    ]);
+    expect(events.filter((e) => e.type === "tool_use")).toEqual([
+      { type: "tool_use", id: "call_1", name: "grep", input: { pattern: "eval(" } },
+    ]);
+    const done = events.find((e) => e.type === "message_done");
+    expect(done).toMatchObject({
+      type: "message_done",
+      stopReason: "tool_use",
+      usage: { inputTokens: 30, outputTokens: 10, totalTokens: 40 },
+    });
+  });
+
+  it("a turn with no tool_calls deltas streams text only, no tool_use event", async () => {
+    const client = streamingClient([
+      { choices: [{ delta: { content: "Hel" } }] },
+      { choices: [{ delta: { content: "lo!" }, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } },
+    ]);
+    const adapter = new OpenAiCompatibleAdapter({
+      provider: "openai",
+      defaultBaseUrl: "https://api.openai.com/v1",
+      defaultHost: "api.openai.com",
+      config: cfg("openai"),
+      client,
+    });
+
+    const events: LLMStreamEvent[] = [];
+    for await (const ev of adapter.stream(req(), "gpt-4o-mini")) events.push(ev);
+
+    expect(events.some((e) => e.type === "tool_use")).toBe(false);
+    const text = events
+      .filter((e): e is Extract<LLMStreamEvent, { type: "text_delta" }> => e.type === "text_delta")
+      .map((e) => e.text)
+      .join("");
+    expect(text).toBe("Hello!");
   });
 });
 

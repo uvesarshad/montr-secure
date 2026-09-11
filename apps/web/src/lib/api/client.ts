@@ -9,6 +9,7 @@ import type {
   ProgressEvent,
   ExportArtifact,
   ExportFormat,
+  DetectionRule,
 } from "@montr/contracts";
 import { endpoints } from "./config.js";
 import { csrfHeaders, mockActorHeaders } from "./auth-headers.js";
@@ -18,6 +19,9 @@ import type {
   Actor,
   ScanMutationResult,
   FalsePositiveResult,
+  PushTargetMetadata,
+  DetectionRulePushResult,
+  DetectionRulePushBundleResult,
 } from "./types.js";
 import type { CurrentUser } from "../rbac.js";
 
@@ -168,4 +172,24 @@ export const api = {
     mutate(endpoints.markFalsePositive(findingId), actor, { reason }),
   requestExport: (scanId: string, format: ExportFormat, actor: Actor): Promise<ExportArtifact> =>
     mutate(`${endpoints.export(scanId)}?format=${format}`, actor),
+
+  /* ---- detection-rule push (suggested enhancement, 2026-09-12 audit) ---- */
+
+  getDetectionRulePushTarget: (): Promise<PushTargetMetadata | null> =>
+    request<{ target: PushTargetMetadata | null }>(endpoints.detectionRulePushTarget()).then(
+      (r) => r.target,
+    ),
+  pushDetectionRule: (rule: DetectionRule, actor: Actor): Promise<DetectionRulePushResult> =>
+    mutate<{ result: DetectionRulePushResult }>(endpoints.pushDetectionRule(), actor, {
+      rule,
+    }).then((r) => r.result),
+  pushDetectionRuleBundle: (
+    rules: DetectionRule[],
+    actor: Actor,
+  ): Promise<DetectionRulePushBundleResult[]> =>
+    mutate<{ results: DetectionRulePushBundleResult[] }>(
+      endpoints.pushDetectionRuleBundle(),
+      actor,
+      { rules },
+    ).then((r) => r.results),
 } as const;

@@ -92,6 +92,14 @@ export const endpoints = {
   // loaded Report (see lib/exports.ts) so this is currently unused dead
   // surface; kept only for API-shape parity.
   export: (scanId: string) => `${v1}/scans/${scanId}/export`,
+
+  // ---- detection-rule push (apps/api/src/routes/detection-rules.ts) ----
+  // Suggested enhancement, 2026-09-12 red/blue agentic-posture audit — real
+  // push integration (Splunk HEC) for generated detection rules, alongside
+  // the existing client-side download (lib/exports.ts, B11/A5).
+  detectionRulePushTarget: () => `${v1}/detection-rules/push-targets`,
+  pushDetectionRule: () => `${v1}/detection-rules/push`,
+  pushDetectionRuleBundle: () => `${v1}/detection-rules/push-bundle`,
 } as const;
 
 /** MSW handler patterns (path only, prefixed with API_BASE). Mirrors `endpoints`

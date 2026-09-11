@@ -78,4 +78,34 @@ export interface ScanDetailBundle {
   progress: ProgressEvent[];
 }
 
+/**
+ * Suggested enhancement (2026-09-12 red/blue agentic-posture audit) — real
+ * push integration for generated detection rules. `PushTargetMetadata` never
+ * carries the secret token (`GET /detection-rules/push-targets` doesn't
+ * return one — see apps/api/src/routes/detection-rules.ts).
+ */
+export interface PushTargetMetadata {
+  type: string;
+  endpointUrl: string;
+  index?: string;
+  sourcetype?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DetectionRulePushResult {
+  success: boolean;
+  targetType: string;
+  ruleId: string;
+  statusCode?: number;
+  message: string;
+  pushedAt: string;
+}
+
+export interface DetectionRulePushBundleResult {
+  ruleId: string;
+  success: boolean;
+  message: string;
+}
+
 export type { Scan, AuditEvent, Report, AppMap, CostEstimate, Fix, PullRequest, ProgressEvent };

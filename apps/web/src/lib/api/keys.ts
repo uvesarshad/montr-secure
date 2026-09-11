@@ -12,4 +12,5 @@ export const qk = {
   scanPullRequests: (id: string) => ["scanPullRequests", id] as const,
   pullRequests: ["pullRequests"] as const,
   audit: (id?: string) => ["audit", id ?? "all"] as const,
+  detectionRulePushTarget: ["detectionRulePushTarget"] as const,
 };

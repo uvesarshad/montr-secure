@@ -28,9 +28,10 @@ import {
   KillSwitchActivatedError,
   type LLMMessage,
   type LLMRequest,
-  type LLMResponse,
+  type LLMToolCall,
   type ProbableFinding,
 } from "@montr/contracts";
+import { redactSensitive } from "@montr/security";
 import {
   INVESTIGATION_TOOL_DEFINITIONS,
   SUBMIT_CONCLUSION_TOOL,
@@ -264,6 +265,98 @@ function throwIfKilled(deps: ConfirmDeps): void {
   }
 }
 
+/** Flush the narration buffer once it reaches roughly this many characters. */
+const NARRATION_FLUSH_CHARS = 160;
+
+/** Minimal shape a turn needs from either `stream()` or `complete()` — see `runStreamedTurn`. */
+interface TurnResult {
+  content: string;
+  toolCalls: LLMToolCall[];
+}
+
+/**
+ * A14 — run one investigation turn via `gateway.stream()`, giving
+ * `ConfirmDeps.emitProgress` a genuine, live, per-token narrative of the
+ * model's reasoning as it happens — turning a multi-minute opaque wait into a
+ * visible agent trace (docs/modules/llm-gateway.md's Streaming entry) —
+ * instead of only learning what happened once the whole turn completes.
+ *
+ * Falls back to the authoritative `complete()` call whenever streaming didn't
+ * produce a usable result: a thrown/streamed error, OR a stream that finished
+ * with ZERO `tool_use` events. The second case deliberately covers two
+ * situations identically, because they are indistinguishable from here: a
+ * turn where the model genuinely chose not to call a tool (rare — the system
+ * prompt drives it toward `submit_conclusion`), and a provider/adapter whose
+ * streaming path doesn't yet accumulate tool calls (Vertex today — see
+ * docs/modules/llm-gateway.md). Re-resolving via `complete()` in both cases
+ * means a turn's *decision* — which tool, if any, gets called — is always
+ * taken from the SAME fully-supported code path this loop always used before
+ * this change; streaming can only ADD live narration on top, never change
+ * what a turn concludes. Worst case this doubles one turn's LLM calls (stream
+ * + fallback), never more — bounded by the same per-turn/per-loop budget
+ * guards as before.
+ */
+async function runStreamedTurn(
+  llm: NonNullable<ConfirmDeps["llm"]>,
+  request: LLMRequest,
+  deps: ConfirmDeps,
+  turn: number,
+  turnsCap: number,
+): Promise<TurnResult> {
+  let content = "";
+  const toolCalls: LLMToolCall[] = [];
+  let narrationBuffer = "";
+  let sawError = false;
+
+  const flush = (force: boolean): void => {
+    if (narrationBuffer.trim().length === 0) return;
+    if (!force && narrationBuffer.length < NARRATION_FLUSH_CHARS) return;
+    // ⛔ golden rule #1, defense in depth: the model's own narration text is
+    // genuinely free-form (unlike the tool-call-derived messages below, which
+    // only ever echo a path/pattern/symbol) and could in principle quote a
+    // code fragment it just read. Run it through the SAME scrubber primitive
+    // that certifies every log/audit sink (packages/security/src/scrubber.ts)
+    // before it ever reaches emitProgress, so a code-like or secret-shaped
+    // chunk is neutralized here rather than relying solely on a downstream
+    // consumer (packages/orchestrator/src/controller.ts's emitProgress
+    // already logs `message` through telemetry's own mandatory scrubber —
+    // this is an additional, independent check at the source).
+    const safe = redactSensitive(narrationBuffer.trim());
+    safeEmitProgress(
+      deps,
+      "investigating",
+      progressPct(turn, turnsCap),
+      typeof safe === "string" ? safe : narrationBuffer.trim(),
+    );
+    narrationBuffer = "";
+  };
+
+  try {
+    for await (const event of llm.stream(request)) {
+      if (event.type === "text_delta") {
+        content += event.text;
+        narrationBuffer += event.text;
+        flush(false);
+      } else if (event.type === "tool_use") {
+        toolCalls.push({ id: event.id, name: event.name, input: event.input });
+      } else if (event.type === "error") {
+        sawError = true;
+      }
+      // "message_done" only carries usage/stopReason, already accounted for
+      // by the gateway's own stream() — nothing further to do with it here.
+    }
+  } catch {
+    sawError = true;
+  }
+  flush(true); // always surface any trailing narration, even on a fallback path below
+
+  if (sawError || toolCalls.length === 0) {
+    const resp = await llm.complete(request);
+    return { content: resp.content, toolCalls: resp.toolCalls ?? [] };
+  }
+  return { content, toolCalls };
+}
+
 /**
  * Run the multi-turn tool-using investigation for one probable finding.
  * Requires `deps.llm` — callers gate this behind `deps.investigation?.enabled`
@@ -320,7 +413,7 @@ export async function runInvestigation(
       tools: INVESTIGATION_TOOL_DEFINITIONS,
       effort: deps.investigation?.effort ?? "high",
       responseFormat: "text",
-      stream: false,
+      stream: true,
       metadata: {
         scanId: input.scanId,
         clientId: input.clientId,
@@ -329,9 +422,9 @@ export async function runInvestigation(
       },
     };
 
-    let resp: LLMResponse;
+    let resp: TurnResult;
     try {
-      resp = await llm.complete(request);
+      resp = await runStreamedTurn(llm, request, deps, turn, turnsCap);
     } catch (err) {
       turns.push({ turn, toolCalls: [] });
       return {

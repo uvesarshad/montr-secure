@@ -10,6 +10,7 @@ import type { Role } from "@montr/contracts";
 import type { ApiStore, Clock, IdGen } from "./store.js";
 import type { RegressionCorpusRecorder } from "./fp-corpus.js";
 import type { ScenarioRunProducer } from "./scenario-run-producer.js";
+import type { HecHttpClient } from "@montr/report";
 
 /** How the current request authenticated. Drives CSRF enforcement. */
 export type AuthMethod = "cookie" | "bearer";
@@ -88,6 +89,15 @@ export interface ApiServerDeps {
    * Production injects `createBullMqScenarioRunProducer` (production-deps.ts).
    */
   scenarioRunProducer?: ScenarioRunProducer;
+  /**
+   * Suggested enhancement (2026-09-12 red/blue agentic-posture audit) —
+   * injectable HTTP client for the Splunk HEC detection-rule push adapter
+   * (`POST /detection-rules/push`). Optional; production leaves it unset, so
+   * `createDetectionRulePusher` falls back to its real lazy `undici` import
+   * (see packages/report/src/detection-rules/push/splunk-hec.ts). Tests
+   * inject a fake here instead of mocking the `undici` module directly.
+   */
+  detectionRulePushHttpClient?: HecHttpClient;
 }
 
 /** Deps after defaults are applied. */
@@ -110,6 +120,8 @@ export interface ResolvedDeps {
   webhook?: ApiServerDeps["webhook"];
   /** A1 — real worker-side scenario-execution enqueue (see ApiServerDeps). */
   scenarioRunProducer: ScenarioRunProducer;
+  /** Suggested enhancement — injectable HTTP client for the Splunk HEC push adapter (see ApiServerDeps). Undefined in production = the adapter's real lazy `undici` import. */
+  detectionRulePushHttpClient?: HecHttpClient;
 }
 
 declare module "fastify" {

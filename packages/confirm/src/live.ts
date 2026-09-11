@@ -39,6 +39,7 @@ import {
 import { extractParam } from "./taxonomy.js";
 import { assembleConfirmed } from "./static.js";
 import { agentAudit, msg, safeAppend } from "./audit.js";
+import { evaluateComposedPayloadSafety, isComposableLiveCategory } from "./payload-safety.js";
 import type {
   AuthenticatedSession,
   ConfirmDeps,
@@ -1263,6 +1264,206 @@ async function chooseNextVariant(
   return typeof rec.variantId === "string" ? rec.variantId : undefined;
 }
 
+/* ============ A16: model-COMPOSED payloads within guardrails ============ */
+
+/** Per-category guidance embedded in the composition prompt. Advisory only —
+ * `evaluateComposedPayloadSafety` (payload-safety.ts) is what actually
+ * enforces every one of these rules deterministically; a model that ignores
+ * this guidance simply gets its proposal rejected and falls back to a
+ * pre-written variant, never sent unvalidated. */
+function composeGuidanceFor(category: Category, marker: string): string {
+  switch (category) {
+    case "sql_injection":
+      return (
+        "For sql_injection: composedPayload must be a read-only boolean/UNION/" +
+        "time-based proof — never DROP/DELETE/UPDATE/INSERT/TRUNCATE/ALTER/EXEC " +
+        "and never a semicolon (no stacked queries); any SLEEP()/WAITFOR delay " +
+        "must be 5 seconds or less."
+      );
+    case "xss":
+      return (
+        `For xss: composedPayload must use only <script>, <img>, or <svg> based ` +
+        `reflection, must literally embed the exact marker text "${marker}", and ` +
+        "must never reference an external URL, document.cookie, fetch(), or eval()."
+      );
+    case "ssrf":
+      return "For ssrf: composedPayload must be a single absolute http(s) URL with no embedded credentials.";
+    case "path_traversal":
+      return (
+        "For path_traversal: composedPayload must contain a directory-traversal " +
+        "sequence targeting a plain informational file (never credential/private-" +
+        "key material) and must contain no shell metacharacters."
+      );
+    case "command_injection":
+      return (
+        "For command_injection: composedPayload may only run a read-only command " +
+        "from this exact set — id, whoami, pwd, hostname, uname, echo <token>, or " +
+        `sleep 0-5 — joined by ;, |, \`, $(), or &&, must literally embed the exact ` +
+        `marker text "${marker}", and must never use redirection (>, <) or any other command.`
+      );
+    default:
+      return "";
+  }
+}
+
+/** Build the actual query-param probe from a model-composed, already-VALIDATED
+ * payload string. Every composable category (sql_injection/xss/ssrf/
+ * path_traversal/command_injection) is delivered the SAME way the fixed and
+ * pre-written-adaptive probes for it already are — a GET query-param
+ * substitution — so it flows through the identical `oracle`/`isAmbiguous`
+ * detection logic with no special-casing. */
+function buildComposedProbe(category: Category, ctx: VariantBuildCtx, value: string): Probe {
+  const needsMarker = category === "xss" || category === "command_injection";
+  return {
+    request: {
+      method: "GET",
+      url: variantUrl(ctx, `${enc(ctx.param)}=${enc(value)}`),
+      headers: ctx.headers,
+    },
+    role: "adaptive_payload",
+    ...(needsMarker ? { marker: ctx.marker } : {}),
+    note: `adaptive composed ${category} payload (model-authored, safety-validated)`,
+  };
+}
+
+interface AdaptiveAction {
+  probe: Probe;
+  /** The pre-written variant id used (fallback path), for `tried` bookkeeping. */
+  variantId?: string;
+  /** True when this round used a genuinely model-composed payload. */
+  composed?: boolean;
+}
+
+/**
+ * A16 (2026-09-12 red/blue agentic-posture audit) — for the SUBSET of
+ * live-confirmable categories with a safe, checkable "prove without harming"
+ * shape ({@link isComposableLiveCategory}), the adaptive loop asks the model
+ * for EITHER a pre-vetted variant id (the identical fallback contract
+ * `chooseNextVariant` above already offers) OR a freely COMPOSED payload
+ * string. A composed proposal is passed through
+ * `evaluateComposedPayloadSafety` — a deterministic, category-aware safety
+ * predicate (`payload-safety.ts`) — BEFORE it is ever used. A proposal that
+ * fails that check (or that the model never made) falls back to the model's
+ * own supplied `variantId`, so a round is NEVER silently dropped and an
+ * unvalidated payload is NEVER sent. Every resulting probe — composed or
+ * pre-written — still passes through the SAME `ScopeGuard.assertProbeAllowed`
+ * gate as every other probe in this file (defense in depth: the safety
+ * predicate constrains payload CONTENT, `guard.ts` independently constrains
+ * the REQUEST regardless of where the payload came from).
+ *
+ * This function is used ONLY for composable categories; `chooseNextVariant`
+ * above is completely UNMODIFIED and remains the sole selection path for
+ * every other live-confirmable category (nosql_injection, open_redirect,
+ * idor, broken_access_control, xxe, insecure_deserialization) — its existing
+ * contract, callers, and tests are unaffected by this addition.
+ */
+async function chooseAdaptiveActionWithComposition(
+  input: ConfirmInput,
+  finding: ProbableFinding,
+  collected: Collected[],
+  candidates: readonly PayloadVariant[],
+  ctx: VariantBuildCtx,
+  deps: ConfirmDeps,
+): Promise<AdaptiveAction | undefined> {
+  const llm = deps.llm;
+  if (!llm) return undefined;
+
+  const history = collected.map((c) => ({
+    method: c.probe.request.method,
+    role: c.probe.role,
+    note: c.probe.note,
+    status: c.response.status,
+    bodySnippet: truncate(c.response.body ?? "", 300),
+  }));
+
+  const payload = {
+    task:
+      "A live probe against this finding returned an AMBIGUOUS response — not a " +
+      "clean miss, not a clean confirmation. You have TWO options: (1) choose ONE " +
+      "variant id from allowedVariants, or (2) additionally PROPOSE composedPayload " +
+      "— the raw text to substitute into the vulnerable parameter — if you can " +
+      "construct a more targeted, still non-destructive proof than any offered " +
+      "variant. " +
+      composeGuidanceFor(finding.category, ctx.marker) +
+      " composedPayload will be independently validated by a deterministic safety " +
+      "filter before it is ever used; if it fails validation your variantId is used " +
+      "instead — so ALWAYS also supply a valid variantId even when proposing " +
+      'composedPayload. Respond ONLY as JSON {"variantId": "<one of the allowed ' +
+      'ids>", "composedPayload": "<optional proposed raw payload, or omit>", ' +
+      '"reasoning": "<one short sentence>"}. If nothing in the history points to a ' +
+      "specific choice, pick the first listed variant — every listed variant is a " +
+      "safe, non-destructive probe already vetted for this category.",
+    category: finding.category,
+    history,
+    allowedVariants: candidates.map((v) => ({ id: v.id, technique: v.technique })),
+  };
+
+  const systemFallback =
+    "You are a live-DAST exploit-confirmation agent. You may select a pre-vetted " +
+    "variant id, or propose a composed, non-destructive proof payload — but ANY " +
+    "composed payload is independently checked by a deterministic safety filter " +
+    "before use and rejected outright if it looks destructive, oversized, wrong-" +
+    "shaped for the category, or outside a strict character-class bound. Never " +
+    "propose anything that mutates, deletes, or modifies data or state — only a " +
+    "read-only, verifiable proof of exploitability.";
+
+  const request: LLMRequest = {
+    tier: "confirmation",
+    system:
+      (await llm.resolvePrompt?.("confirm.live_adaptive_compose.system", systemFallback, {
+        clientId: input.clientId,
+      })) ?? systemFallback,
+    messages: [{ role: "user", content: JSON.stringify(payload) }],
+    maxTokens: 640,
+    temperature: 0,
+    responseFormat: "json",
+    responseSchema: {
+      type: "object",
+      properties: {
+        variantId: { type: "string", enum: candidates.map((v) => v.id) },
+        composedPayload: { type: "string", maxLength: 300 },
+        reasoning: { type: "string" },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+    effort: "low",
+    stream: false,
+    metadata: {
+      scanId: input.scanId,
+      clientId: input.clientId,
+      layer: "layer3",
+      purpose: "confirmation",
+    },
+  };
+
+  const resp = await llm.complete(request);
+  const parsed = safeJsonParse(resp.content);
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const rec = parsed as Record<string, unknown>;
+  const composedRaw = typeof rec.composedPayload === "string" ? rec.composedPayload : undefined;
+  const variantIdRaw = typeof rec.variantId === "string" ? rec.variantId : undefined;
+
+  if (composedRaw) {
+    const verdict = evaluateComposedPayloadSafety(finding.category, composedRaw, {
+      marker: ctx.marker,
+    });
+    if (verdict.safe) {
+      return { probe: buildComposedProbe(finding.category, ctx, composedRaw), composed: true };
+    }
+    deps.logger?.warn?.(
+      "layer3: composed adaptive payload rejected by safety predicate; falling back to a pre-written variant",
+      { probableId: finding.id, category: finding.category, reason: verdict.reason },
+    );
+  }
+
+  if (variantIdRaw) {
+    const variant = candidates.find((v) => v.id === variantIdRaw);
+    if (variant) return { probe: variant.build(ctx), variantId: variant.id };
+  }
+  return undefined;
+}
+
 /**
  * Run the bounded adaptive loop for one finding whose FIXED probe attempt was
  * ambiguous. Mutates `collected`/`exchanges` in place (every probe — fixed or
@@ -1288,16 +1489,43 @@ async function runAdaptiveLoop(
 
   const tried = new Set<string>();
   let verdict = fixedVerdict;
+  // A16: only the composable-category subset ever offers the model a chance
+  // to author a payload; every other category uses ONLY `chooseNextVariant`
+  // above, completely unchanged, exactly as before this addition.
+  const composable = isComposableLiveCategory(finding.category);
 
   for (let round = 0; round < MAX_ADAPTIVE_ROUNDS; round++) {
     guard.assertNotKilled(); // ⛔ per-round check — not just once at the start
 
     const remaining = variants.filter((v) => !tried.has(v.id));
-    if (remaining.length === 0) break; // exhausted the pre-vetted catalog
+    if (!composable && remaining.length === 0) break; // exhausted the pre-vetted catalog
 
-    let choice: string | undefined;
+    let action: AdaptiveAction | undefined;
     try {
-      choice = await chooseNextVariant(input, finding, collected, remaining, deps);
+      if (composable) {
+        action = await chooseAdaptiveActionWithComposition(
+          input,
+          finding,
+          collected,
+          remaining,
+          ctx,
+          deps,
+        );
+      } else {
+        const choice = await chooseNextVariant(input, finding, collected, remaining, deps);
+        if (choice) {
+          const variant = remaining.find((v) => v.id === choice);
+          if (variant) {
+            action = { probe: variant.build(ctx), variantId: variant.id };
+          } else {
+            deps.logger?.warn?.(
+              "layer3: adaptive DAST chose a variant outside the allowed set; stopping adaptive loop",
+              { probableId: finding.id, category: finding.category, choice },
+            );
+            break;
+          }
+        }
+      }
     } catch (err) {
       if (isAbort(err)) throw asKill(err);
       // Budget refusal, provider error, parse failure — fail-safe: stop the
@@ -1311,18 +1539,10 @@ async function runAdaptiveLoop(
 
     guard.assertNotKilled(); // ⛔ kill switch may have fired WHILE the LLM call was in flight
 
-    if (!choice) break;
-    const variant = remaining.find((v) => v.id === choice);
-    if (!variant) {
-      deps.logger?.warn?.(
-        "layer3: adaptive DAST chose a variant outside the allowed set; stopping adaptive loop",
-        { probableId: finding.id, category: finding.category, choice },
-      );
-      break;
-    }
-    tried.add(variant.id);
+    if (!action) break;
+    if (action.variantId) tried.add(action.variantId);
 
-    const probe = variant.build(ctx);
+    const probe = action.probe;
 
     try {
       guard.assertProbeAllowed(probe.request.url, probe.request.method);
@@ -1379,20 +1599,22 @@ async function runAdaptiveLoop(
       continue;
     }
 
+    const actionLabel = action.variantId ?? (action.composed ? "composed" : "unknown");
     guard.record(probe.request.method);
     await safeAppend(
       deps,
       agentAudit(
         input,
         "dast.probe",
-        `adaptive probe ${probe.request.method} → ${variant.id}`,
+        `adaptive probe ${probe.request.method} → ${actionLabel}`,
         {
           method: probe.request.method,
           host: new URL(probe.request.url).host,
           path: new URL(probe.request.url).pathname,
           status: response.status,
           role: probe.role,
-          variantId: variant.id,
+          variantId: actionLabel,
+          composed: Boolean(action.composed),
           round: round + 1,
         },
         finding.id,

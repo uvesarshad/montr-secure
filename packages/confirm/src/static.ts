@@ -37,6 +37,32 @@ import { resolveHeuristics } from "./heuristics/registry.js";
 import type { ResolvedHeuristics } from "./heuristics/types.js";
 import type { ConfirmDeps, ConfirmInput, StaticConfirmOutcome } from "./types.js";
 
+/** Minimum learned-sanitizer marker length honored — guards against an
+ * accidentally empty/near-empty string matching every sink description. */
+const MIN_LEARNED_SANITIZER_MARKER_LENGTH = 3;
+
+/**
+ * E8 extension — merge this client+repo's operator-confirmed custom
+ * sanitizer names (`ConfirmDeps.learnedSanitizers`, sourced from
+ * `LearnedFactType` `"custom_sanitizer"`) into the resolved per-language
+ * heuristics' `safeMarkers`, BEFORE `buildDataFlow`/`assessSink` ever run.
+ * This is the exact same additive-only extension seam every per-language
+ * `ConfirmationHeuristics` plugin already uses (`heuristics/registry.ts`) —
+ * it can only make a sink assessment MORE likely to read as sanitized, never
+ * less. Absent/empty `learnedSanitizers` (every existing caller/test) ⇒
+ * returns `base` unchanged — byte-identical to before this feature.
+ */
+function withLearnedSanitizers(
+  base: ResolvedHeuristics,
+  learnedSanitizers: readonly string[] | undefined,
+): ResolvedHeuristics {
+  const markers = (learnedSanitizers ?? [])
+    .map((m) => m.trim().toLowerCase())
+    .filter((m) => m.length >= MIN_LEARNED_SANITIZER_MARKER_LENGTH);
+  if (markers.length === 0) return base;
+  return { ...base, safeMarkers: [...base.safeMarkers, ...markers] };
+}
+
 const defaultNow = (): string => new Date().toISOString();
 const defaultConfirmedId = (p: ProbableFinding, proofType: "static" | "live"): string =>
   `cf_${proofType}_${p.id}`;
@@ -421,7 +447,9 @@ export async function confirmStatic(
 ): Promise<StaticConfirmOutcome> {
   // Per-language confirmation heuristics (extras appended to the stack-agnostic
   // base). Empty for Phase-1 TS/JS, so the assessment is unchanged there.
-  const heuristics = resolveHeuristics(input.appMap);
+  // E8 extension: this client+repo's learned custom-sanitizer markers (if
+  // any) are ADDITIONALLY merged in — see withLearnedSanitizers above.
+  const heuristics = withLearnedSanitizers(resolveHeuristics(input.appMap), deps.learnedSanitizers);
   const df = buildDataFlow(input.appMap, finding, heuristics);
   if (!df.reachable) {
     return { kind: "unconfirmed", reason: df.reason, dataFlow: df.hops };
