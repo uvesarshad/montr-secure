@@ -20,6 +20,18 @@
           "description": "jdbc_sqli_vul string-concatenates the untrusted `username` request parameter into a raw SQL string and runs it via `Statement.executeQuery()` (classic JDBC SQL injection)."
         },
         {
+          "id": "gt_javaseccode_sqli2",
+          "category": "sql_injection",
+          "cwe": ["CWE-89"],
+          "owasp": "A03:2021",
+          "file": "src/main/java/org/joychou/controller/SQLI.java",
+          "line": 149,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "jdbc_ps_vuln (the file's own doc comment: 'Incorrect use of prepareStatement') string-concatenates the untrusted `username` request parameter into the SQL text BEFORE handing it to `PreparedStatement` — the `?` placeholder is never used, so parameterization buys nothing (classic JDBC SQL injection, same class as `gt_javaseccode_sqli` but a distinct method/line). A real pipeline scan surfaced this as an apparent false positive; re-reading confirmed it is a genuine, independently-exploitable vulnerability the initial hand-verification pass simply hadn't catalogued (same precedent as PyGoat's `mitre_lab_17_api`/`views.py:560` additions — corpus/README.md's sampling method, point 4)."
+        },
+        {
           "id": "gt_javaseccode_ssrf",
           "category": "ssrf",
           "cwe": ["CWE-918"],
@@ -54,6 +66,18 @@
           "expectedRiskClass": "auto-eligible",
           "exploitable": true,
           "description": "codeInject concatenates the untrusted `filepath` request parameter into a `sh -c` command line run via `ProcessBuilder` (OS command injection)."
+        },
+        {
+          "id": "gt_javaseccode_cmdi2",
+          "category": "command_injection",
+          "cwe": ["CWE-78"],
+          "owasp": "A03:2021",
+          "file": "src/main/java/org/joychou/controller/CommandInject.java",
+          "line": 45,
+          "severity": "critical",
+          "expectedRiskClass": "auto-eligible",
+          "exploitable": true,
+          "description": "codeInjectHost (the file's own doc comment: 'Host Injection', with a working `Host: hacked by joychou;cat /etc/passwd` payload example) concatenates the untrusted `Host` request header into a `sh -c curl <host>` command line run via `ProcessBuilder` — same class as `gt_javaseccode_cmdi` but a distinct method/sink/taint-source (header, not a query parameter). A real pipeline scan surfaced this as an apparent false positive; re-reading confirmed it is a genuine, independently-exploitable vulnerability the initial hand-verification pass simply hadn't catalogued (same precedent as PyGoat's additions — corpus/README.md's sampling method, point 4)."
         },
         {
           "id": "gt_javaseccode_secret",
