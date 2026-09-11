@@ -54,6 +54,16 @@ export const LLMPurposeSchema = z.enum([
   "confirmation",
   "fix_generation",
   "report_synthesis",
+  /**
+   * A18 — Layer 5's optional, injected executive-narrative generator
+   * (`packages/report/src/executive-summary.ts`). Deliberately a DISTINCT
+   * purpose from `report_synthesis` (which remains unmapped/unused — see
+   * `packages/llm-gateway/src/structured-output.ts`'s header comment): this
+   * purpose is narrowly scoped to one call site producing one small
+   * `{narrative, topPriorities}` shape, not a general "synthesize the
+   * report" placeholder.
+   */
+  "executive_summary",
   "other",
 ]);
 export type LLMPurpose = z.infer<typeof LLMPurposeSchema>;

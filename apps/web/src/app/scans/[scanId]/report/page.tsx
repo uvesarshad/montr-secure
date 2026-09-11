@@ -8,6 +8,7 @@ import { ApiError } from "../../../../lib/api/client.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../../components/ui/card.js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../../../components/ui/tabs.js";
 import { ExecSummary } from "../../../../components/exec-summary.js";
+import { GeneratedExecutiveSummaryPanel } from "../../../../components/generated-executive-summary.js";
 import { FindingCard } from "../../../../components/finding-card.js";
 import { UnconfirmedAppendix } from "../../../../components/unconfirmed-appendix.js";
 import { ComplianceTable } from "../../../../components/compliance-table.js";
@@ -70,6 +71,10 @@ export default function ScanReportPage() {
         summary={report.executiveSummary}
         unconfirmedCount={report.unconfirmedAppendix.length}
       />
+
+      {report.generatedExecutiveSummary ? (
+        <GeneratedExecutiveSummaryPanel summary={report.generatedExecutiveSummary} />
+      ) : null}
 
       <Tabs defaultValue="findings">
         <TabsList>

@@ -13,7 +13,7 @@ Scan Management Console: apps/web/src/app/page.tsx renders the primary dashboard
 Scan Detail and Sub-Views: apps/web/src/app/scans/[scanId] contains dedicated sub-tabs:
 Overview Tab: Renders the 6-stage LayerProgress stepper and AppMapSummary.
 Estimate Tab: Renders the EstimatePanel displaying pre-scan token projections and the approve estimate button.
-Report Tab: Renders the FindingCard collection, vulnerability severity filters, proof viewers, and compliance tables.
+Report Tab: Renders the FindingCard collection, vulnerability severity filters, proof viewers, and compliance tables. AI-Generated Summary (A18): apps/web/src/components/generated-executive-summary.tsx's `GeneratedExecutiveSummaryPanel` renders directly below the (deterministic) ExecSummary card, ONLY when `Report.generatedExecutiveSummary` is present (`reporting.executiveSummary.enabled` was on for that scan AND generation succeeded — off by default, see docs/infra/environment.md) — a dashed-border, "AI-GENERATED"-badged card carrying the schema's own fixed disclaimer, the generated narrative, optional "Suggested focus areas" bullets, and model/provider/timestamp provenance. Deliberately visually distinct from ExecSummary and never restructures the existing tab.
 Blue Team Tab: apps/web/src/app/scans/[scanId]/blue-team/page.tsx (B11). Six nested sub-tabs over `Report.blueTeam` (B10): Detection Rules (DetectionRulesPanel — generated Sigma/OTel/SIEM rules per confirmed finding, MITRE tags, log-signature narrative, per-rule and export-all download), ATT&CK Matrix (AttackHeatMap — a real tactics-as-columns/techniques-as-cells MITRE heat map, cell intensity reusing the severity color scale), Attack Paths (AttackPathsPanel — ordered kill-chain step cards with feasibility score), Purple Team (PurpleTeamPanel — detected/undetected scenario verification results with "why not" reasoning), Threat Model (ThreatModelPanel — B7's rendered markdown artifact), and Hardening (HardeningPanel — B9's advisory-only config/infra recommendations). Viewer-visible like the Report tab (read-only report data, no mutations).
 Fixes Tab: Renders FixDetails cards, the DiffViewer component, proof-of-fix test code, and the approve fix gate button.
 DAST Tab: Renders the DastPanel for staging target selection, scope contract configuration, and live probe logs.
@@ -34,7 +34,7 @@ Role Context and Simulation
 Role Switcher: apps/web/src/components/role-context.tsx and the navigation header allow operators to switch the active simulated actor role (Viewer, Operator, Approver) to verify UI permission states and gate constraints.
 
 Update Triggers
-Update this file when new page routes are added to apps/web/src/app, when interactive gate operations change in apps/web/src/components, or when dashboard visualizers are updated in apps/web/src/app/dashboards.
+Update this file when new page routes are added to apps/web/src/app, when interactive gate operations change in apps/web/src/components, when dashboard visualizers are updated in apps/web/src/app/dashboards, or when the Report tab's generated-summary rendering changes in apps/web/src/components/generated-executive-summary.tsx.
 
 Related Docs
 docs/architecture/rendering-strategy.md — Client rendering and App Router architecture.

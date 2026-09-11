@@ -33,6 +33,20 @@ import { createCostMeter, type BudgetRegistry, type CostMeter } from "@montr/cos
 import type { StateStore } from "@montr/state-store";
 
 import { createLayerRunners, type LayerRunnerOptions } from "./runners.js";
+// A1 (2026-09-12) — real worker-side red-team scenario execution, gated
+// behind written authorization (see ./scenario-runs/service.ts's header).
+import { startScenarioRunWorker, type ScenarioRunWorker } from "./scenario-runs/index.js";
+export {
+  processScenarioRunJob,
+  createScenarioRunWorker,
+  startScenarioRunWorker,
+  type ScenarioRunOutcome,
+  type ScenarioRunStore,
+  type ScenarioRunServiceDeps,
+  type ScenarioRunConsumerTransport,
+  type ScenarioRunWorker,
+  type StartScenarioRunWorkerDeps,
+} from "./scenario-runs/index.js";
 
 export { createLayerRunners, type LayerRunnerOptions } from "./runners.js";
 // A3 (§8.1) — boot-time reconciliation for scans a crashed worker parked as
@@ -124,6 +138,7 @@ export function startWorker(config: MontrConfig, deps: WorkerRuntimeDeps): Worke
 
   let scheduler: BullMqJobScheduler | undefined;
   let orchestrator: Orchestrator | undefined;
+  let scenarioRunWorker: ScenarioRunWorker | undefined;
   let started = false;
 
   return {
@@ -163,6 +178,18 @@ export function startWorker(config: MontrConfig, deps: WorkerRuntimeDeps): Worke
       });
       // Bring the per-layer BullMQ workers online — the processing loop begins here.
       await scheduler.start();
+      // A1 — the dedicated, non-pipeline scenario-run consumer (separate
+      // queue from the per-layer scheduler above; see packages/contracts/src/
+      // queue.ts's SCENARIO_RUN_QUEUE_NAME doc comment for why). Real
+      // execution stays gated behind written authorization regardless of
+      // whether this consumer is running — starting it does not, by itself,
+      // loosen any safety gate.
+      scenarioRunWorker = await startScenarioRunWorker({
+        store: deps.store,
+        config,
+        redis: deps.redis,
+        logger,
+      });
       started = true;
       const queues = tenantOptions.tenantIsolation ? 6 * (tenantOptions.tenantIds?.length ?? 0) : 6;
       logger.info("worker.started", { queues, tenantIsolation: tenantOptions.tenantIsolation });
@@ -172,6 +199,7 @@ export function startWorker(config: MontrConfig, deps: WorkerRuntimeDeps): Worke
       if (!started) return;
       // Orchestrator.close() tears down the scheduler (workers + queues + kill channel).
       await orchestrator?.close();
+      await scenarioRunWorker?.stop();
       started = false;
       logger.info("worker.stopped");
     },

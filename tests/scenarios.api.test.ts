@@ -113,6 +113,14 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
   it("runs against an allowlisted staging target (200) and audits scenario.run — API never probes", async () => {
     const { app, store } = await setup(cfg({ enabled: true, allowlist: [STAGING] }));
     await seed(store, { enabled: true, targetAllowlistRef: STAGING });
+    // A1 — running now additionally requires explicit written authorization
+    // (beyond RBAC + allowlist), even for this gate-only, no-transport preview.
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/scenarios/scn_seed/authorize",
+      headers: { authorization: `Bearer ${token(app, "approver")}` },
+      payload: { authorizationReference: "TICKET-1234" },
+    });
 
     const res = await app.inject({
       method: "POST",
@@ -136,6 +144,14 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
   it("⛔ refuses a scenario bound to a NON-allowlisted target → 403, no scenario.run audit", async () => {
     const { app, store } = await setup(cfg({ enabled: true, allowlist: [STAGING] }));
     await seed(store, { enabled: true, targetAllowlistRef: "https://evil.attacker.test" });
+    // A1 — authorize first so this test genuinely exercises the ALLOWLIST
+    // rejection specifically, not the (checked-first) written-authorization gate.
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/scenarios/scn_seed/authorize",
+      headers: { authorization: `Bearer ${token(app, "approver")}` },
+      payload: { authorizationReference: "TICKET-1234" },
+    });
 
     const res = await app.inject({
       method: "POST",
@@ -206,6 +222,13 @@ describe("POST /scenarios/:id/run — ⛔ allowlist-gated, approver-only, audite
       enabled: true,
       targetAllowlistRef: STAGING,
       steps: [{ order: 0, action: "delete users", method: "DELETE", path: "/api/users/1" }],
+    });
+    // A1 — running now additionally requires explicit written authorization.
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/scenarios/scn_seed/authorize",
+      headers: { authorization: `Bearer ${token(app, "approver")}` },
+      payload: { authorizationReference: "TICKET-1234" },
     });
 
     const res = await app.inject({

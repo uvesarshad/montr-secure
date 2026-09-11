@@ -306,3 +306,37 @@ export const PartialFailureSchema = z.object({
   at: IsoDateTimeSchema,
 });
 export type PartialFailure = z.infer<typeof PartialFailureSchema>;
+
+/* ------------------------- scenario live-run queue ------------------------- */
+
+/**
+ * A1 (2026-09-12 red/blue agentic-posture audit) — a dedicated, non-pipeline
+ * BullMQ queue for real worker-side red-team scenario execution. Deliberately
+ * SEPARATE from `QUEUE_NAMES`/`LayerJobDataSchema` above: a scenario run is a
+ * standalone, on-demand action (approver-triggered from
+ * `POST /scenarios/:id/run`, apps/api/src/routes/scenarios.ts), not a step in
+ * the 6-layer FSM pipeline — it has no `scanId`/`layer`, and Layer 3's OWN
+ * live-DAST/purple-team probing (packages/confirm/src/purple-loop.ts,
+ * apps/worker/src/runners.ts) is unaffected and unchanged by this queue.
+ * Mirrors `apps/worker/src/scheduling/bullmq-transport.ts`'s dedicated-queue
+ * shape (`montr:scan-schedules`) rather than the per-layer scheme.
+ *
+ * ⛔ The job payload alone is NEVER sufficient authorization to probe
+ * anything — apps/worker's consumer re-loads the scenario record and
+ * re-checks `hasLiveRunAuthorization` (phase4.ts) plus every existing
+ * `guard.ts`/`ScopeGuard` gate before ever constructing a transport. This
+ * queue only decouples "an authorized run was requested" from "a worker
+ * process picked it up and ran it."
+ */
+export const SCENARIO_RUN_QUEUE_NAME = "montr:scenario-runs" as const;
+/** BullMQ job name every scenario-run job carries. */
+export const SCENARIO_RUN_JOB_NAME = "scenario-run" as const;
+
+export const ScenarioRunJobSchema = z.object({
+  scenarioId: IdSchema,
+  clientId: IdSchema,
+  /** The approver who authorized the enqueue (audit attribution only). */
+  requestedById: IdSchema,
+  requestedAt: IsoDateTimeSchema,
+});
+export type ScenarioRunJob = z.infer<typeof ScenarioRunJobSchema>;

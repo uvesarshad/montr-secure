@@ -501,7 +501,7 @@ describe("layer runner adapters — Layer 3 (confirmation)", () => {
     expect(out.unconfirmed.some((u) => u.category === "idor")).toBe(true);
   });
 
-  it("severity scoping (owner decision): an authenticated-only IDOR (derives to 'medium', below the default high/critical scope) never reaches the loop even though investigation is enabled", async () => {
+  it("severity scoping (owner decision): an authenticated-only IDOR still reaches the loop — eligibility is gated on the CATEGORY's base severity ('high' for idor), not the exposure-discounted derived severity, so the common authenticated-only case stays in scope", async () => {
     const { store } = makeInMemoryStore();
     const spy = spyGateway(createFakeLlmGateway());
     const runners = createLayerRunners({ gateway: spy.gateway });
@@ -514,8 +514,38 @@ describe("layer runner adapters — Layer 3 (confirmation)", () => {
       // hardenedConfig() default again — proves the scoping, not just the toggle.
       priorOutputs: {
         layer0: mockLayer0Output,
-        // exposure "authed" downgrades idor's "high" base severity to "medium".
+        // exposure "authed" would downgrade a CONFIRMED idor finding's final
+        // severity to "medium" via deriveSeverity, but isEligibleForInvestigation
+        // uses baseSeverityForCategory("idor") === "high" instead, so this stays
+        // in the default ["high", "critical"] scope.
         layer2: { probable: [idorFinding({ exposure: "authed" })], demoted: [] },
+      },
+    });
+
+    await runners.layer3(ctx);
+
+    expect(investigationToolCalls(spy.requests).length).toBeGreaterThan(0);
+  });
+
+  it("severity scoping (owner decision): a low-base-severity category (rate_limit_missing) never reaches the loop even though investigation is enabled", async () => {
+    const { store } = makeInMemoryStore();
+    const spy = spyGateway(createFakeLlmGateway());
+    const runners = createLayerRunners({ gateway: spy.gateway });
+    const ctx = makeLayerContext<"layer3">({
+      scanId: SCAN_ID,
+      clientId: CLIENT_ID,
+      scan: clone(mockScan),
+      job: baseJob("layer3", { allowLive: false }) as never,
+      store,
+      // hardenedConfig() default again — proves the scoping, not just the toggle.
+      priorOutputs: {
+        layer0: mockLayer0Output,
+        // rate_limit_missing's base severity is "low", outside ["high", "critical"]
+        // regardless of exposure — a genuine cost-gate rejection, not a false one.
+        layer2: {
+          probable: [idorFinding({ category: "rate_limit_missing", exposure: "public" })],
+          demoted: [],
+        },
       },
     });
 

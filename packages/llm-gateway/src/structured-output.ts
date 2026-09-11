@@ -34,8 +34,16 @@ import type { LLMPurpose, LLMRequest } from "@montr/contracts";
  *                        rationale}` shape, NOT a whole-file `fixedSource` —
  *                        see edits.ts's `LlmEdit` / `parseLlmEdits`)
  *
- * `report_synthesis` and `other` have no real caller today (A10) and are left
- * unmapped — those requests fall back to prose-JSON + `JSON.parse`, unchanged.
+ *   - executive_summary → report/src/executive-summary.ts's parsed
+ *                        `{narrative, topPriorities}` content (A18 — the
+ *                        FIRST real @montr/llm-gateway call from
+ *                        packages/report; the disclaimer/provenance fields
+ *                        on `GeneratedExecutiveSummarySchema` are added by
+ *                        that module itself, never asked of the model)
+ *
+ * `report_synthesis` and `other` have no real caller today (A10/A18) and are
+ * left unmapped — those requests fall back to prose-JSON + `JSON.parse`,
+ * unchanged.
  */
 
 const AUTH_STATE_ENUM = ["public", "authenticated", "role_gated", "unknown"] as const;
@@ -161,6 +169,19 @@ const PURPOSE_JSON_SCHEMAS: Partial<Record<LLMPurpose, Record<string, unknown>>>
       rationale: { type: "string" },
     },
     required: [],
+    additionalProperties: false,
+  },
+  executive_summary: {
+    // A18: a short prose narrative plus advisory focus-area bullets. Never
+    // asks the model for counts/severities/ids — those are already in the
+    // deterministic report and are assembled onto the result by
+    // packages/report/src/executive-summary.ts, not parsed from this reply.
+    type: "object",
+    properties: {
+      narrative: { type: "string" },
+      topPriorities: { type: "array", items: { type: "string" } },
+    },
+    required: ["narrative"],
     additionalProperties: false,
   },
 };

@@ -41,3 +41,10 @@ export * from "./exports/index.js";
 // report-builder.ts's buildBlueTeamReport — see detection-rules/generate.ts's
 // header.
 export * from "./detection-rules/index.js";
+
+// A18 — optional, injected AI-generated executive narrative. NOT called by
+// buildReport (which stays pure/offline) — apps/worker/src/runners.ts's
+// Layer 5 runner calls this separately, after buildReport, when
+// reporting.executiveSummary.enabled AND a gateway are both available. See
+// executive-summary.ts's header for the full dependency-injection contract.
+export * from "./executive-summary.js";

@@ -158,6 +158,12 @@ export class RedTeamScenarioRepositoryImpl implements RedTeamScenarioRepository 
       enabled: s.enabled,
       createdBy: s.createdBy,
       createdAt: toDate(s.createdAt),
+      // A1 — a scenario is never created pre-authorized; a fresh scenario has
+      // none of these set (an approver must authorize it explicitly afterward).
+      liveAuthorizedById: s.liveAuthorizedById ?? null,
+      liveAuthorizationReference: s.liveAuthorizationReference ?? null,
+      liveAuthorizedAt: toDateOpt(s.liveAuthorizedAt) ?? null,
+      liveAuthorizedForVersion: s.liveAuthorizedForVersion ?? null,
     };
   }
 
@@ -174,6 +180,15 @@ export class RedTeamScenarioRepositoryImpl implements RedTeamScenarioRepository 
       enabled: row.enabled,
       createdBy: row.createdBy,
       createdAt: toIso(row.createdAt),
+      // A1 — written live-run authorization (see phase4.ts's hasLiveRunAuthorization).
+      ...(row.liveAuthorizedById ? { liveAuthorizedById: row.liveAuthorizedById } : {}),
+      ...(row.liveAuthorizationReference
+        ? { liveAuthorizationReference: row.liveAuthorizationReference }
+        : {}),
+      ...(row.liveAuthorizedAt ? { liveAuthorizedAt: toIso(row.liveAuthorizedAt) } : {}),
+      ...(row.liveAuthorizedForVersion != null
+        ? { liveAuthorizedForVersion: row.liveAuthorizedForVersion }
+        : {}),
     };
   }
 
@@ -209,6 +224,16 @@ export class RedTeamScenarioRepositoryImpl implements RedTeamScenarioRepository 
           targetAllowlistRef: scenario.targetAllowlistRef,
           version: scenario.version,
           enabled: scenario.enabled,
+          // A1 — written live-run authorization is written EXPLICITLY on every
+          // update (never merged/preserved implicitly): the two callers are
+          // `PUT /scenarios/:id` (an edit — omits these fields on the object it
+          // builds, which clears them here, invalidating any prior grant) and
+          // `POST /scenarios/:id/authorize` (sets them for real). This is a
+          // deliberate `?? null`, not an accidental omission.
+          liveAuthorizedById: scenario.liveAuthorizedById ?? null,
+          liveAuthorizationReference: scenario.liveAuthorizationReference ?? null,
+          liveAuthorizedAt: toDateOpt(scenario.liveAuthorizedAt) ?? null,
+          liveAuthorizedForVersion: scenario.liveAuthorizedForVersion ?? null,
         },
       });
       if (res.count === 0) {

@@ -1,7 +1,12 @@
 "use client";
 
 import * as React from "react";
-import type { RedTeamCategory, RedTeamScenario, RedTeamStep } from "@montr/contracts";
+import {
+  hasLiveRunAuthorization,
+  type RedTeamCategory,
+  type RedTeamScenario,
+  type RedTeamStep,
+} from "@montr/contracts";
 import { useCurrentUser } from "../../components/role-context.js";
 import { PageHeader } from "../../components/page-header.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card.js";
@@ -24,9 +29,10 @@ import {
   useUpdateScenario,
   useDeleteScenario,
   useRunScenario,
+  useAuthorizeScenario,
   ScenarioApiError,
   type ScenarioDraft,
-  type ScenarioRun,
+  type ScenarioRunResponse,
 } from "./hooks.js";
 
 /**
@@ -107,7 +113,9 @@ export default function RedTeamScenariosPage() {
           A scenario only parameterizes the gated live-DAST engine — it adds no new egress path.
           Every run re-enforces the allowlist, blocks production, honors the kill switch and
           rate/blast-radius caps, and routes through the egress guard. Runs are approver-only and
-          audited.
+          audited. Real probing happens in apps/worker, and ONLY after a written authorization (a
+          ticket or agreement reference) has been recorded for the scenario's exact current version
+          — enabling a scenario alone is not enough.
         </span>
       </div>
 
@@ -286,6 +294,9 @@ function ScenarioRow({
   const update = useUpdateScenario();
   const del = useDeleteScenario();
   const run = useRunScenario();
+  const authorize = useAuthorizeScenario();
+  const [authRef, setAuthRef] = React.useState("");
+  const [showAuthorizeForm, setShowAuthorizeForm] = React.useState(false);
 
   const draftOf = (enabled: boolean): ScenarioDraft => ({
     name: scenario.name,
@@ -296,6 +307,16 @@ function ScenarioRow({
   });
 
   const runErr = run.error instanceof ScenarioApiError ? run.error : undefined;
+  const authorizeErr = authorize.error instanceof ScenarioApiError ? authorize.error : undefined;
+
+  // ⛔ A1 — proactive status, computed from the SAME `hasLiveRunAuthorization`
+  // predicate the server gates on (packages/contracts/src/phase4.ts), so the
+  // console never drifts from what a run will actually do.
+  const authorized = hasLiveRunAuthorization(scenario);
+  const authorizedButStale =
+    !authorized &&
+    !!scenario.liveAuthorizedAt &&
+    scenario.liveAuthorizedForVersion !== scenario.version;
 
   return (
     <div className="rounded-lg border border-border p-3">
@@ -316,6 +337,23 @@ function ScenarioRow({
             ) : (
               <Badge className="border-border text-muted-foreground">
                 <XIcon className="h-3 w-3" /> Disabled
+              </Badge>
+            )}
+            {authorized ? (
+              <Badge
+                className="border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                title={`Authorized by ${scenario.liveAuthorizedById} on ${scenario.liveAuthorizedAt} — reference: ${scenario.liveAuthorizationReference}`}
+              >
+                <CheckIcon className="h-3 w-3" /> Live-run authorized
+              </Badge>
+            ) : authorizedButStale ? (
+              <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-200">
+                <AlertTriangleIcon className="h-3 w-3" /> Authorization stale (edited since v
+                {scenario.liveAuthorizedForVersion})
+              </Badge>
+            ) : (
+              <Badge className="border-border text-muted-foreground">
+                <XIcon className="h-3 w-3" /> Not authorized for live execution
               </Badge>
             )}
           </div>
@@ -343,22 +381,75 @@ function ScenarioRow({
               </Button>
             </>
           ) : null}
+          {canRun && !authorized ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowAuthorizeForm((v) => !v)}
+              title="Record a written authorization reference before this scenario can run for real"
+            >
+              <ShieldAlertIcon className="h-3.5 w-3.5" /> Authorize live execution
+            </Button>
+          ) : null}
           {canRun ? (
             <Button
               size="sm"
               onClick={() => run.mutate(scenario.id)}
               disabled={!scenario.enabled || run.isPending}
               title={
-                scenario.enabled
-                  ? "Run against the allowlisted target"
-                  : "Enable the scenario first"
+                !scenario.enabled
+                  ? "Enable the scenario first"
+                  : !authorized
+                    ? "Written authorization required first — see 'Authorize live execution' above"
+                    : "Run for real against the allowlisted target (apps/worker will probe it)"
               }
             >
-              <RadarIcon className="h-3.5 w-3.5" /> {run.isPending ? "Authorizing…" : "Run"}
+              <RadarIcon className="h-3.5 w-3.5" /> {run.isPending ? "Running…" : "Run"}
             </Button>
           ) : null}
         </div>
       </div>
+
+      {canRun && showAuthorizeForm && !authorized ? (
+        <form
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 p-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (authRef.trim().length === 0) return;
+            authorize.mutate(
+              { id: scenario.id, authorizationReference: authRef.trim() },
+              { onSuccess: () => setShowAuthorizeForm(false) },
+            );
+          }}
+        >
+          <label className="flex-1 space-y-1">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Authorization reference (ticket / signed agreement — required)
+            </span>
+            <input
+              value={authRef}
+              onChange={(e) => setAuthRef(e.target.value)}
+              placeholder="e.g. SEC-4821 pentest authorization, signed 2026-09-12"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          </label>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={authRef.trim().length === 0 || authorize.isPending}
+          >
+            {authorize.isPending ? "Recording…" : "Record authorization"}
+          </Button>
+        </form>
+      ) : null}
+      {authorizeErr ? (
+        <div className="mt-2 flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-200">
+          <ShieldAlertIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            Refused ({authorizeErr.code ?? authorizeErr.status}): {authorizeErr.message}
+          </span>
+        </div>
+      ) : null}
 
       {runErr ? (
         <div className="mt-2 flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-200">
@@ -368,20 +459,21 @@ function ScenarioRow({
           </span>
         </div>
       ) : null}
-      {run.data ? <RunOutcome run={run.data} /> : null}
+      {run.data ? <RunOutcome response={run.data} /> : null}
     </div>
   );
 }
 
-function RunOutcome({ run }: { run: ScenarioRun }) {
+function RunOutcome({ response }: { response: ScenarioRunResponse }) {
+  const { run, liveExecution } = response;
   return (
     <div className="mt-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-xs text-emerald-100">
       <p className="font-medium">
         Authorized against <code className="font-mono">{hostOf(run.target)}</code>.{" "}
-        {run.probed
-          ? `${run.requestsSent} probe(s) sent.`
-          : "Gate-checked; probing executes in the worker (the console never probes)."}
-        {run.blocked ? " A step was blocked by the blast-radius caps." : ""}
+        {liveExecution.enqueued
+          ? `Real execution queued for apps/worker (job ${liveExecution.jobId}) — it will probe the target for real, gated on the written authorization already recorded.`
+          : "Gate-checked only; no real execution was queued."}
+        {run.blocked ? " A preview step was blocked by the blast-radius caps." : ""}
       </p>
       <ul className="mt-1 space-y-0.5">
         {run.steps.map((s) => (
@@ -392,9 +484,7 @@ function RunOutcome({ run }: { run: ScenarioRun }) {
             —{" "}
             {s.blocked
               ? `blocked: ${s.reason ?? "guardrail"}`
-              : s.probed
-                ? `status ${s.status}`
-                : "gate-passed"}
+              : "gate-passed (preview only — see the note above for real execution status)"}
           </li>
         ))}
       </ul>

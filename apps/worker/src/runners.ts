@@ -60,7 +60,12 @@ import {
   type SourceReader,
 } from "@montr/fix";
 import { generateHardeningRecommendations } from "@montr/hardening";
-import { buildReport, generateDetectionRules, type PullRequestOpener } from "@montr/report";
+import {
+  buildReport,
+  generateDetectionRules,
+  generateExecutiveSummary,
+  type PullRequestOpener,
+} from "@montr/report";
 import type { EmbeddingProviderAdapter } from "@montr/llm-gateway";
 import type { CodeChunkRepository } from "@montr/state-store";
 import { buildSemanticIndex, querySemanticIndex } from "@montr/semantic-index";
@@ -828,7 +833,7 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         confirmed.length,
       );
 
-      return buildReport({
+      const layer5Output = await buildReport({
         scan: ctx.scan,
         confirmed,
         unconfirmed,
@@ -847,6 +852,35 @@ export function createLayerRunners(opts: LayerRunnerOptions): LayerRunners {
         ...(opts.baseBranch ? { baseBranch: opts.baseBranch } : {}),
         ...(opts.now ? { generatedAt: opts.now() } : {}),
       });
+
+      // A18 — optional AI-generated executive narrative, layered on top of
+      // the just-built deterministic report. OFF by default
+      // (`ctx.config.reporting.executiveSummary.enabled`, see
+      // ExecutiveSummaryConfigSchema's doc comment); `buildReport` above
+      // stays pure/offline regardless — this is a deliberate SECOND step
+      // using the SAME real `opts.gateway` instance the rest of the scan
+      // uses (so the existing pre-call budget hard-halt applies
+      // automatically), never a separately constructed gateway. Any failure
+      // degrades to the field simply staying absent (see
+      // generateExecutiveSummary's own fail-safe contract).
+      if (ctx.config.reporting.executiveSummary.enabled) {
+        const generatedExecutiveSummary = await generateExecutiveSummary(layer5Output.report, {
+          gateway: opts.gateway,
+          scanId: ctx.scanId,
+          clientId: ctx.clientId,
+          logger: ctx.logger,
+          maxTokens: ctx.config.reporting.executiveSummary.maxTokens,
+          ...(opts.now ? { now: opts.now } : {}),
+        });
+        if (generatedExecutiveSummary) {
+          return {
+            ...layer5Output,
+            report: { ...layer5Output.report, generatedExecutiveSummary },
+          };
+        }
+      }
+
+      return layer5Output;
     },
   };
 }

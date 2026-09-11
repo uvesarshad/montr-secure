@@ -152,6 +152,20 @@ function envOverlay(env: NodeJS.ProcessEnv): Obj {
     ["confirmation", "investigation", "severities"],
     parseList,
   );
+  // A18 (2026-09-12) — Layer 5's optional AI-generated executive narrative.
+  // OFF by default — see ExecutiveSummaryConfigSchema's doc comment
+  // (schema.ts) and packages/report/src/executive-summary.ts /
+  // apps/worker/src/runners.ts's Layer 5 wiring.
+  set(
+    "MONTR_REPORTING_EXECUTIVE_SUMMARY_ENABLED",
+    ["reporting", "executiveSummary", "enabled"],
+    parseBool,
+  );
+  set(
+    "MONTR_REPORTING_EXECUTIVE_SUMMARY_MAX_TOKENS",
+    ["reporting", "executiveSummary", "maxTokens"],
+    parseNum,
+  );
   // HashiCorp Vault connection (only consulted when MONTR_KEY_SOURCE=vault).
   set("VAULT_ADDR", ["security", "vault", "addr"]);
   set("VAULT_TOKEN", ["security", "vault", "token"]);

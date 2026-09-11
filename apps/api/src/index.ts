@@ -78,5 +78,12 @@ export { createStubOrchestrator, type StubOrchestratorDeps } from "./stub-orches
 // DAST allowlist helper (also enforced at the route layer)
 export { isAllowlisted } from "./routes/dast.js";
 
+// A1 (2026-09-12) — real worker-side scenario-execution enqueue.
+export {
+  createBullMqScenarioRunProducer,
+  createInMemoryScenarioRunProducer,
+  type ScenarioRunProducer,
+} from "./scenario-run-producer.js";
+
 // Errors
 export { HttpError, montrErrorStatus } from "./errors.js";

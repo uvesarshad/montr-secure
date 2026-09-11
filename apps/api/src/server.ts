@@ -19,6 +19,10 @@ import { registerErrorHandler } from "./errors.js";
 import { createInMemoryApiStore, type ApiStore, type Clock, type IdGen } from "./store.js";
 import { createStubOrchestrator } from "./stub-orchestrator.js";
 import { noopRegressionCorpus, type RegressionCorpusRecorder } from "./fp-corpus.js";
+import {
+  createInMemoryScenarioRunProducer,
+  type ScenarioRunProducer,
+} from "./scenario-run-producer.js";
 import type { ApiServerDeps, ResolvedDeps } from "./types.js";
 
 const DEFAULT_GLOBAL_RATE = { max: 300, timeWindow: "1 minute" } as const;
@@ -50,6 +54,7 @@ function resolveDeps(deps: ApiServerDeps): ResolvedDeps {
     sessionTtlMinutes: deps.config.rbac.sessionTtlMinutes,
     authRate: deps.rateLimits?.auth ?? DEFAULT_AUTH_RATE,
     regressionCorpus: deps.regressionCorpus ?? noopRegressionCorpus,
+    scenarioRunProducer: deps.scenarioRunProducer ?? createInMemoryScenarioRunProducer(),
     ...(deps.webhook ? { webhook: deps.webhook } : {}),
   };
 }
@@ -130,6 +135,8 @@ export interface InMemoryDepsOverrides {
   regressionCorpus?: RegressionCorpusRecorder;
   /** Webhook scan-trigger config (A15). Omit to leave the route disabled. */
   webhook?: ApiServerDeps["webhook"];
+  /** A1 — override the scenario-run producer (tests assert on `.jobs`). */
+  scenarioRunProducer?: ScenarioRunProducer;
 }
 
 /**
@@ -157,5 +164,8 @@ export function createInMemoryDeps(overrides: InMemoryDepsOverrides = {}): ApiSe
     ...(overrides.rateLimits ? { rateLimits: overrides.rateLimits } : {}),
     ...(overrides.regressionCorpus ? { regressionCorpus: overrides.regressionCorpus } : {}),
     ...(overrides.webhook ? { webhook: overrides.webhook } : {}),
+    ...(overrides.scenarioRunProducer
+      ? { scenarioRunProducer: overrides.scenarioRunProducer }
+      : {}),
   };
 }

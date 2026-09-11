@@ -314,6 +314,34 @@ export const ConfirmationConfigSchema = z.object({
 export type ConfirmationConfig = z.infer<typeof ConfirmationConfigSchema>;
 
 /**
+ * A18 (2026-09-12 red/blue agentic-posture audit) — Layer 5's optional
+ * AI-generated executive narrative (`packages/report/src/
+ * executive-summary.ts`'s `generateExecutiveSummary`, called from
+ * `apps/worker/src/runners.ts`'s Layer 5 runner AFTER `buildReport`
+ * completes). ⛔ OFF by default, mirroring `FixAgentLoopConfigSchema`'s /
+ * `SemanticIndexConfigSchema`'s constructor-opt-in convention (NOT A3's
+ * `ConfirmationInvestigationConfigSchema` default-ON deviation) — this same
+ * session already shipped one real behavior/cost change defaulting ON in
+ * production (A3); stacking a second is unnecessary risk. An operator who
+ * wants the generated narrative opts in explicitly. Disabled (default): the
+ * report's `generatedExecutiveSummary` field is simply absent, zero behavior
+ * change — the deterministic `executiveSummary` is unaffected either way.
+ */
+export const ExecutiveSummaryConfigSchema = z.object({
+  /** ⛔ OFF by default (A18). */
+  enabled: z.boolean().default(false),
+  /** Max output tokens for the one generation call. */
+  maxTokens: z.number().int().positive().max(4096).default(1024),
+});
+export type ExecutiveSummaryConfig = z.infer<typeof ExecutiveSummaryConfigSchema>;
+
+/** Layer 5 (reporting) configuration. */
+export const ReportingConfigSchema = z.object({
+  executiveSummary: ExecutiveSummaryConfigSchema.default({}),
+});
+export type ReportingConfig = z.infer<typeof ReportingConfigSchema>;
+
+/**
  * Per-tenant BullMQ queue isolation (A27). `perTenantIsolation` is OFF by
  * default: today's six shared per-layer queues (`montr.layer0`…`montr.layer5`,
  * packages/contracts/src/queue.ts's QUEUE_NAMES) are unchanged — correct for
@@ -373,6 +401,7 @@ export const MontrConfigSchema = z.object({
   fixGeneration: FixGenerationConfigSchema.default({}),
   semanticIndex: SemanticIndexConfigSchema.default({}),
   confirmation: ConfirmationConfigSchema.default({}),
+  reporting: ReportingConfigSchema.default({}),
 });
 export type MontrConfig = z.infer<typeof MontrConfigSchema>;
 

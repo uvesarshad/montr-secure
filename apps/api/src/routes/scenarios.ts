@@ -9,27 +9,81 @@
  *   - Running a scenario is a LIVE-DAST action: approver-authorized (RBAC), routed
  *     through the SAME Layer-3 guardrails as live DAST (@montr/confirm's
  *     `assertScenarioAuthorized` + `runScenario` → allowlist + production block +
- *     kill switch + rate/blast-radius caps + @montr/security egress guard). It
- *     adds NO new egress path, and this route NEVER probes from the API process
- *     (no transport is supplied — probing belongs to the worker).
+ *     kill switch + rate/blast-radius caps + @montr/security egress guard).
  *   - `enabled` defaults OFF; a disabled scenario cannot be run.
  *   - Every mutation/run is bound to an audit event.
  *
+ * A1 (2026-09-12 red/blue agentic-posture audit): this route used to call
+ * `runScenario` with NO transport, so a "run" only ever authorized + gate-
+ * checked every step in-process — nothing was ever probed, anywhere, despite
+ * the operator-facing UI implying otherwise. Real worker-side execution is
+ * now wired (apps/worker/src/scenario-runs), but it is gated behind an
+ * ADDITIONAL, explicit WRITTEN authorization beyond RBAC + the allowlist: an
+ * approver must first record a free-text authorization reference via
+ * `POST /scenarios/:id/authorize` (ticket/agreement reference), bound to the
+ * scenario's exact current version (`RedTeamScenarioSchema.liveAuthorized*`,
+ * packages/contracts/src/phase4.ts's `hasLiveRunAuthorization`). This route
+ * still NEVER probes from the API process itself (no transport is
+ * constructed here) — it authorizes + gate-checks + previews every step
+ * exactly as before, then, ONLY when written authorization is present,
+ * enqueues a real execution job for apps/worker to pick up
+ * (apps/api/src/scenario-run-producer.ts). Missing/stale authorization is a
+ * hard, honest rejection (403) — never a silent no-op.
+ *
  * RBAC: scenario definitions are sensitive — reads require operator or approver
- * (hidden from viewers); running requires the approver role (hard guard).
+ * (hidden from viewers); running and authorizing both require the approver role
+ * (hard guard).
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { RedTeamScenarioSchema, type RedTeamScenario } from "@montr/contracts";
+import {
+  hasLiveRunAuthorization,
+  RedTeamScenarioSchema,
+  type RedTeamScenario,
+  type ScenarioRunJob,
+} from "@montr/contracts";
 import { hostOf, runScenario, validateScenario } from "@montr/confirm";
 import { badRequest, forbidden, notFound, unauthorized } from "../errors.js";
 import { parseBody, parseParams } from "../validation.js";
 import { actorFromUser, recordAudit } from "../audit.js";
-import { CreateRedTeamScenarioBodySchema, EntityIdParamsSchema } from "../schemas.js";
+import {
+  AuthorizeScenarioBodySchema,
+  CreateRedTeamScenarioBodySchema,
+  EntityIdParamsSchema,
+} from "../schemas.js";
 import type { ResolvedDeps } from "../types.js";
 
 /** Optional run body — an allowlisted target OVERRIDE (still allowlist-validated). */
 const RunScenarioBodySchema = z.object({ target: z.string().min(1).optional() }).optional();
+
+/**
+ * ⛔ A1 — why `POST /scenarios/:id/run` refused to enqueue real execution.
+ * Distinguishes "never authorized" from "authorized for a stale version" so
+ * the operator/console gets a concrete, actionable reason rather than a
+ * generic 403 (never silent, never vague — see route header comment).
+ */
+function writtenAuthorizationGapReason(scenario: RedTeamScenario): string {
+  if (!scenario.liveAuthorizedById || !scenario.liveAuthorizedAt) {
+    return (
+      "This scenario has never been authorized for live execution. An approver must call " +
+      "POST /scenarios/:id/authorize with a written authorizationReference " +
+      "(a ticket number or signed agreement reference) before it can run for real."
+    );
+  }
+  if (scenario.liveAuthorizedForVersion !== scenario.version) {
+    return (
+      `This scenario was authorized for version ${scenario.liveAuthorizedForVersion ?? "?"}, ` +
+      `but it is now version ${scenario.version} (edited since authorization). An approver ` +
+      "must re-authorize this exact version via POST /scenarios/:id/authorize before it can " +
+      "run for real."
+    );
+  }
+  return (
+    "This scenario's written authorization is incomplete (missing an authorization " +
+    "reference). An approver must authorize it via POST /scenarios/:id/authorize before it " +
+    "can run for real."
+  );
+}
 
 export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps): void {
   const { store, config } = deps;
@@ -170,8 +224,18 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps)
         });
       }
 
+      // ⛔ A1 — deliberately NOT spreading `...existing`'s liveAuthorized*
+      // fields forward: ANY edit invalidates a prior written authorization
+      // outright (never left merely stale/mismatched-version — explicitly
+      // cleared), since the authorized steps/target may themselves have just
+      // changed. A fresh POST /scenarios/:id/authorize is required after
+      // every edit, no exceptions.
+      const wasAuthorized = hasLiveRunAuthorization(existing);
       const updated: RedTeamScenario = RedTeamScenarioSchema.parse({
-        ...existing,
+        id: existing.id,
+        clientId: existing.clientId,
+        createdBy: existing.createdBy,
+        createdAt: existing.createdAt,
         name: body.name,
         category: body.category,
         steps: body.steps,
@@ -187,7 +251,7 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps)
         action: "scenario.updated",
         targetType: "red_team_scenario",
         targetId: saved.id,
-        summary: `Red-team scenario updated: ${saved.name} (v${existing.version}→v${saved.version}, enabled=${saved.enabled})`,
+        summary: `Red-team scenario updated: ${saved.name} (v${existing.version}→v${saved.version}, enabled=${saved.enabled})${wasAuthorized ? " — prior live-run authorization invalidated by this edit" : ""}`,
         metadata: {
           category: saved.category,
           stepCount: saved.steps.length,
@@ -195,6 +259,7 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps)
           enabled: saved.enabled,
           fromVersion: existing.version,
           toVersion: saved.version,
+          liveAuthorizationInvalidated: wasAuthorized,
         },
       });
 
@@ -235,6 +300,58 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps)
     },
   );
 
+  // ⛔ A1 — WRITTEN authorization for real worker-side live execution.
+  // Approver-only (hard guard); mirrors dast.ts's POST /dast/targets/:id/
+  // authorize pattern but REQUIRES a free-text authorizationReference (that
+  // flow never captured one) and binds the grant to the scenario's exact
+  // CURRENT version — any subsequent edit (PUT) invalidates it outright.
+  // This does NOT itself run anything; it only makes the scenario eligible
+  // for POST /scenarios/:id/run to enqueue real worker-side execution.
+  app.post(
+    "/scenarios/:id/authorize",
+    {
+      preHandler: [app.authenticate, app.verifyCsrf, app.requireApprover],
+      schema: {
+        tags: ["scenarios"],
+        summary: "Record written authorization for real live-run execution (approver only)",
+        security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+      },
+    },
+    async (req) => {
+      const user = req.authUser;
+      if (!user) throw unauthorized();
+      const { id } = parseParams(EntityIdParamsSchema, req);
+      const existing = await store.redTeamScenarios.get(user.clientId, id);
+      if (!existing) throw notFound("Scenario not found");
+      const body = parseBody(AuthorizeScenarioBodySchema, req);
+
+      const authorized: RedTeamScenario = RedTeamScenarioSchema.parse({
+        ...existing,
+        liveAuthorizedById: user.id,
+        liveAuthorizationReference: body.authorizationReference,
+        liveAuthorizedAt: deps.clock.now().toISOString(),
+        liveAuthorizedForVersion: existing.version,
+      });
+      const saved = await store.redTeamScenarios.update(user.clientId, authorized);
+
+      await recordAudit(store, {
+        clientId: user.clientId,
+        actor: actorFromUser(user),
+        action: "scenario.authorized",
+        targetType: "red_team_scenario",
+        targetId: saved.id,
+        summary: `Written live-run authorization recorded for scenario "${saved.name}" (v${saved.version}) by approver ${user.id}`,
+        metadata: {
+          targetHost: hostOf(saved.targetAllowlistRef),
+          version: saved.version,
+          authorizationReference: saved.liveAuthorizationReference,
+        },
+      });
+
+      return { scenario: saved };
+    },
+  );
+
   // ⛔ Live-DAST run — approver-only (hard guard). Enforces the allowlist
   // (`targetAllowlistRef` ∈ DAST allowlist, production blocked), routes through the
   // @montr/security egress guard, and honors the kill switch + rate/blast caps by
@@ -269,13 +386,40 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps)
         throw forbidden("DAST kill switch must be enabled by policy");
       }
 
+      // ⛔ A1 — THE WRITTEN-AUTHORIZATION GATE. Additive on top of every gate
+      // above (never a replacement for RBAC/allowlist/production-block) and
+      // checked BEFORE anything else runs: a scenario missing a complete,
+      // CURRENT-version authorization is refused outright — a clear, honest
+      // 403, never a silent no-op and never a fallback to gate-only mode.
+      if (!hasLiveRunAuthorization(scenario)) {
+        const reason = writtenAuthorizationGapReason(scenario);
+        await recordAudit(store, {
+          clientId: user.clientId,
+          actor: actorFromUser(user),
+          action: "scenario.live_run_rejected",
+          targetType: "red_team_scenario",
+          targetId: scenario.id,
+          summary: `Red-team scenario run refused (no valid written authorization): ${scenario.name}`,
+          metadata: {
+            category: scenario.category,
+            targetHost: hostOf(scenario.targetAllowlistRef),
+            version: scenario.version,
+            liveAuthorizedForVersion: scenario.liveAuthorizedForVersion ?? null,
+            reason,
+          },
+        });
+        throw forbidden(reason);
+      }
+
       const body = parseBody(RunScenarioBodySchema, req);
 
-      // ⛔ THE GATE. `requireApprover` already enforced the approver role at the
-      // HTTP layer ⇒ allowLive=true; the Layer-3 gate still independently checks
-      // dast.enabled + allowlist + production. A non-allowlisted / production
-      // target throws DastTargetNotAllowlistedError (→ 403) before any probe.
-      // No transport ⇒ authorize + gate-check every step, send nothing.
+      // Gate-only preview (unchanged from before A1): `requireApprover`
+      // already enforced the approver role at the HTTP layer ⇒ allowLive=true;
+      // the Layer-3 gate still independently checks dast.enabled + allowlist +
+      // production. A non-allowlisted / production target throws
+      // DastTargetNotAllowlistedError (→ 403) before any probe. No transport
+      // ⇒ authorize + gate-check every step, send nothing — this route still
+      // NEVER probes from the API process itself.
       const result = await runScenario(
         {
           scenario,
@@ -286,7 +430,7 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps)
         {},
       );
 
-      // ⛔ Audit the authorized run (golden rule #7). Never store the steps.
+      // ⛔ Audit the authorized preview (golden rule #7). Never store the steps.
       await recordAudit(store, {
         clientId: user.clientId,
         actor: actorFromUser(user),
@@ -305,7 +449,41 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: ResolvedDeps)
         },
       });
 
-      return { run: result };
+      // ⛔ A1 — NOW enqueue REAL worker-side execution (apps/worker/src/
+      // scenario-runs), reached ONLY after every gate above (RBAC, disabled
+      // check, config invariants, AND the new written-authorization gate)
+      // passed. No target override — real execution always runs against the
+      // scenario's authorized `targetAllowlistRef`, never an ad hoc override
+      // (the override above is a gate-only preview convenience only).
+      const requestedAt = deps.clock.now().toISOString();
+      const job: ScenarioRunJob = {
+        scenarioId: scenario.id,
+        clientId: user.clientId,
+        requestedById: user.id,
+        requestedAt,
+      };
+      const jobId = await deps.scenarioRunProducer.enqueue(job);
+
+      await recordAudit(store, {
+        clientId: user.clientId,
+        actor: actorFromUser(user),
+        action: "scenario.live_run_enqueued",
+        targetType: "red_team_scenario",
+        targetId: scenario.id,
+        summary: `Real worker-side execution enqueued for scenario "${scenario.name}" (job ${jobId})`,
+        metadata: {
+          jobId,
+          targetHost: hostOf(scenario.targetAllowlistRef),
+          version: scenario.version,
+          authorizedById: scenario.liveAuthorizedById,
+          authorizationReference: scenario.liveAuthorizationReference,
+        },
+      });
+
+      return {
+        run: result,
+        liveExecution: { enqueued: true, jobId },
+      };
     },
   );
 }

@@ -30,6 +30,7 @@ import {
 import type { ApiServerDeps } from "./types.js";
 import { apiStoreFromStateStore } from "./store.js";
 import { createEnqueueOnlyScheduler } from "./enqueue-scheduler.js";
+import { createBullMqScenarioRunProducer } from "./scenario-run-producer.js";
 import { PrismaDastTargetStore, PrismaUserStore, ReportRepositoryAdapter } from "./prisma-store.js";
 
 function requireEnv(name: string): string {
@@ -139,6 +140,11 @@ export async function createProductionDeps(): Promise<ProductionDeps> {
     redisUrl,
     deriveTenantSchedulerOptions(config),
   );
+  // A1 (2026-09-12) — real worker-side scenario execution enqueue. A separate
+  // dedicated queue from the per-layer FSM scheduler above (see
+  // packages/contracts/src/queue.ts's SCENARIO_RUN_QUEUE_NAME doc comment for
+  // why a scenario run is not a pipeline layer job).
+  const scenarioRunProducer = await createBullMqScenarioRunProducer(redisUrl);
   const orchestrator: Orchestrator = createOrchestrator({
     config,
     store: state,
@@ -187,12 +193,14 @@ export async function createProductionDeps(): Promise<ProductionDeps> {
     // the absence of an override, which is the production-safe behavior.
     ...(corsOrigins.length ? { corsOrigins } : {}),
     ...(webhook ? { webhook } : {}),
+    scenarioRunProducer,
   };
 
   return {
     deps,
     async close(): Promise<void> {
       await scheduler.close();
+      await scenarioRunProducer.close();
       await state.disconnect();
     },
   };

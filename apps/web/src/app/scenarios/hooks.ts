@@ -46,6 +46,21 @@ export interface ScenarioRun {
   }[];
 }
 
+/**
+ * A1 (2026-09-12) — real worker-side execution status. `run` above is still
+ * only ever a gate-only PREVIEW (never probes from the API process); this is
+ * the honest signal for whether apps/worker will actually probe the target.
+ */
+export interface ScenarioLiveExecution {
+  enqueued: boolean;
+  jobId?: string;
+}
+
+export interface ScenarioRunResponse {
+  run: ScenarioRun;
+  liveExecution: ScenarioLiveExecution;
+}
+
 export class ScenarioApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -152,20 +167,53 @@ export function useDeleteScenario() {
   });
 }
 
-/** ⛔ Approver-only, allowlist-gated live-DAST run. Server enforces every guardrail. */
+/**
+ * ⛔ Approver-only, allowlist-gated live-DAST run. Server enforces every
+ * guardrail, INCLUDING (A1, 2026-09-12) written-authorization: a scenario
+ * missing a complete, current-version `POST /scenarios/:id/authorize` grant
+ * is refused with a 403 (`ScenarioApiError`) rather than a silent no-op —
+ * `run.mutate` throws that error into `run.error`.
+ */
 export function useRunScenario() {
   const actor = useActor();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      req<{ run: ScenarioRun }>(`${base}/${id}/run`, {
+      req<ScenarioRunResponse>(`${base}/${id}/run`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...mockActorHeaders(actor),
           ...csrfHeaders(),
         },
-      }).then((r) => r.run),
+      }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["audit", "all"] }),
+  });
+}
+
+/**
+ * ⛔ A1 — approver-only. Records a REQUIRED free-text authorization reference
+ * (a ticket number, a signed agreement reference, etc.) binding written
+ * authorization to run this scenario for real to its EXACT current version —
+ * any subsequent edit invalidates it and requires a fresh call.
+ */
+export function useAuthorizeScenario() {
+  const actor = useActor();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; authorizationReference: string }) =>
+      req<{ scenario: RedTeamScenario }>(`${base}/${vars.id}/authorize`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...mockActorHeaders(actor),
+          ...csrfHeaders(),
+        },
+        body: JSON.stringify({ authorizationReference: vars.authorizationReference }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: SCN_KEY });
+      void qc.invalidateQueries({ queryKey: ["audit", "all"] });
+    },
   });
 }

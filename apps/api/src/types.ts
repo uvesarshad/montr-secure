@@ -9,6 +9,7 @@ import type { Orchestrator } from "@montr/orchestrator";
 import type { Role } from "@montr/contracts";
 import type { ApiStore, Clock, IdGen } from "./store.js";
 import type { RegressionCorpusRecorder } from "./fp-corpus.js";
+import type { ScenarioRunProducer } from "./scenario-run-producer.js";
 
 /** How the current request authenticated. Drives CSRF enforcement. */
 export type AuthMethod = "cookie" | "bearer";
@@ -80,6 +81,13 @@ export interface ApiServerDeps {
     /** Optional: post a PR summary comment when the payload carries PR info. */
     githubToken?: string;
   };
+  /**
+   * A1 (2026-09-12) — produce-only enqueue for real worker-side red-team
+   * scenario execution (`POST /scenarios/:id/run`). Optional; defaults to a
+   * fail-safe in-memory producer (dev/tests — see `createInMemoryDeps`).
+   * Production injects `createBullMqScenarioRunProducer` (production-deps.ts).
+   */
+  scenarioRunProducer?: ScenarioRunProducer;
 }
 
 /** Deps after defaults are applied. */
@@ -100,6 +108,8 @@ export interface ResolvedDeps {
   regressionCorpus: RegressionCorpusRecorder;
   /** Webhook scan-trigger config (A15). Undefined = route disabled. */
   webhook?: ApiServerDeps["webhook"];
+  /** A1 — real worker-side scenario-execution enqueue (see ApiServerDeps). */
+  scenarioRunProducer: ScenarioRunProducer;
 }
 
 declare module "fastify" {

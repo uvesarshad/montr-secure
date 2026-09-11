@@ -60,6 +60,17 @@ vi.mock("./enqueue-scheduler.js", () => ({
   createEnqueueOnlyScheduler: vi.fn(async () => ({ close: vi.fn(async () => {}) })),
 }));
 
+// A1 (2026-09-12) — real worker-side scenario execution enqueue. Mocked the
+// same way as enqueue-scheduler.js above: production-deps.ts now also builds
+// this producer at boot, and the real implementation lazily imports bullmq
+// (a runtime-only dependency this offline test suite never installs).
+vi.mock("./scenario-run-producer.js", () => ({
+  createBullMqScenarioRunProducer: vi.fn(async () => ({
+    enqueue: vi.fn(async () => "job_1"),
+    close: vi.fn(async () => {}),
+  })),
+}));
+
 vi.mock("./store.js", () => ({
   apiStoreFromStateStore: vi.fn(() => ({})),
 }));

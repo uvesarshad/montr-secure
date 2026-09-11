@@ -230,9 +230,10 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  operatedScans       Scan[]       @relation("ScanOperator")
-  approvedScans       Scan[]       @relation("ScanApprover")
-  approvedDastTargets DastTarget[] @relation("DastApprover")
+  operatedScans           Scan[]            @relation("ScanOperator")
+  approvedScans           Scan[]            @relation("ScanApprover")
+  approvedDastTargets     DastTarget[]      @relation("DastApprover")
+  liveAuthorizedScenarios RedTeamScenario[] @relation("ScenarioLiveAuthorizer")
 
   @@unique([clientId, email])
   @@index([clientId])
@@ -694,6 +695,14 @@ model CustomRule {
 ///    running one is approver-authorized + routed via the @montr/security egress
 ///    guard + kill switch (§11). `steps` is field-encrypted at rest (attack
 ///    playbooks are sensitive) — AES-256-GCM, key from KMS/Vault/k8s secret.
+/// A1 (2026-09-12 red/blue agentic-posture audit) — `liveAuthorized*` fields
+/// capture EXPLICIT WRITTEN authorization for real worker-side live execution,
+/// beyond RBAC + the allowlist: `liveAuthorizationReference` is a required
+/// free-text record (ticket/agreement reference) an approver supplies via
+/// `POST /scenarios/:id/authorize`, and `liveAuthorizedForVersion` binds the
+/// grant to one exact `version` — any edit bumps `version` and the app layer
+/// clears these fields, so a stale authorization can never cover a changed
+/// scenario. See packages/contracts/src/phase4.ts's `hasLiveRunAuthorization`.
 model RedTeamScenario {
   id                 String   @id @default(cuid())
   clientId           String
@@ -707,6 +716,12 @@ model RedTeamScenario {
   enabled            Boolean  @default(false)
   createdBy          String
   createdAt          DateTime @default(now())
+
+  liveAuthorizedById         String?
+  liveAuthorizedBy           User?     @relation("ScenarioLiveAuthorizer", fields: [liveAuthorizedById], references: [id])
+  liveAuthorizationReference String?
+  liveAuthorizedAt           DateTime?
+  liveAuthorizedForVersion   Int?
 
   @@unique([clientId, name, version])
   @@index([clientId])

@@ -29,9 +29,11 @@ import {
   mockLayer1Output,
 } from "@montr/fixtures";
 import {
+  CandidateFindingSchema,
   ConfirmedFindingSchema,
   ReportSchema,
   complianceForCategory,
+  type CandidateFinding,
   type Category,
   type ConfirmedFinding,
   type Layer2Output,
@@ -476,6 +478,185 @@ describe("E2E scan — golden-corpus gate scores the real scan (FP-rate < 5%)", 
     expect(score.truePositives).toBeGreaterThanOrEqual(2); // sqli + xss
     expect(score.overConfirmed).toBe(0);
   });
+});
+
+/* ------------------------------------------------------------------------- *
+ * ⛔ A6 — Blue Team report sections (B10) are genuinely non-empty from a REAL
+ * pipeline run through Layer 5. Regression guard for A2's `resolveAppMap(ctx)`
+ * wiring in apps/worker/src/runners.ts's Layer 5 handler: before A2, Layer 5
+ * never resolved the App Map, so `buildReport`'s `appMap` input was always
+ * `undefined` and `buildBlueTeamReport`'s detection-coverage/attack-path/
+ * threat-model sections rendered permanently empty in production. A prior
+ * mock-backed visual check of the console's Blue Team tab (apps/web/src/mocks/
+ * data.ts) could not catch that gap — the mock populated exactly the fields
+ * production left empty. This block is the real assertion the A6 audit
+ * finding (docs/plan/26-09-12-audit-red-blue-agentic-posture.md) called for.
+ *
+ * Deliberately its OWN dedicated pipeline run (own beforeAll), not a reuse of
+ * the shared `run` above, for two reasons:
+ *
+ *  1. `run`'s discovery mode is environment-dependent (`DISCOVERY_MODE`) and,
+ *     whenever semgrep+gitleaks are on PATH, takes the SAME "live-scanners"
+ *     path that carries this file's two known pre-existing, unrelated
+ *     failures (a real SQL-injection candidate not reaching Layer 2's
+ *     probable output — an environmental dependency on the hosted Semgrep
+ *     registry, not something this task caused or fixes). This block instead
+ *     always seeds Layer 1 directly, mirroring `buildRunners`'s own
+ *     seeded-candidates fallback above, so it is fully deterministic
+ *     regardless of the host environment or Semgrep registry reachability.
+ *  2. `vulnerable-nextjs`'s two confirmed categories (sql_injection, xss)
+ *     never satisfy any `packages/correlation/src/attack-paths/conditions.ts`
+ *     chain condition (see that file's header) — B8 attack paths would be
+ *     structurally empty on that fixture REGARDLESS of whether A2's wiring is
+ *     present, making an `attackPaths.length > 0` assertion worthless as a
+ *     regression guard there. `attack-chain-nextjs` (packages/fixtures/
+ *     sample-repos/attack-chain-nextjs — see its README) is a small, dedicated
+ *     fixture pairing an RCE-class finding (command_injection) with a second
+ *     finding on a different route, which unconditionally forms the
+ *     `rce-post-exploitation` chain condition — so a real attack path is
+ *     genuinely producible here. It is NOT part of the golden corpus and never
+ *     affects corpus/baseline.json or the shared `run`'s false-positive
+ *     grading above.
+ * ------------------------------------------------------------------------- */
+describe("E2E scan — ⛔ Blue Team report sections are non-empty (A6, A2 regression guard)", () => {
+  const ATTACK_CHAIN_REPO = fileURLToPath(
+    new URL("../../../packages/fixtures/sample-repos/attack-chain-nextjs", import.meta.url),
+  );
+  const BLUE_TEAM_SCAN_ID = "scan_fixture_blueteam_0001";
+
+  /**
+   * Deterministic Layer-1 seed for `attack-chain-nextjs`, hand-built in the
+   * same shape/convention as `@montr/fixtures`' `mockCandidateFindings` —
+   * never the live semgrep/gitleaks scanners (see header: this must not
+   * depend on the same flaky discovery path as the two known failures above).
+   */
+  function seededAttackChainCandidates(): CandidateFinding[] {
+    return [
+      CandidateFindingSchema.parse({
+        id: "cand_ac_sqli_0001",
+        scanId: BLUE_TEAM_SCAN_ID,
+        clientId: CLIENT_ID,
+        source: "semgrep",
+        ruleId: "typescript.prisma.raw-query-unsafe",
+        category: "sql_injection",
+        cwe: ["CWE-89"],
+        location: { file: "app/api/users/route.ts", line: 9 },
+        rawSeverity: "high",
+        evidenceSnippet: "prisma.$queryRawUnsafe(`SELECT * FROM \"User\" WHERE name = '${q}'`)",
+        title: "Unsafe raw SQL query via string interpolation",
+        createdAt: FIXED_NOW,
+      }),
+      CandidateFindingSchema.parse({
+        id: "cand_ac_cmdi_0001",
+        scanId: BLUE_TEAM_SCAN_ID,
+        clientId: CLIENT_ID,
+        source: "semgrep",
+        ruleId: "nodejs.child-process.exec-unsanitized",
+        category: "command_injection",
+        cwe: ["CWE-78"],
+        location: { file: "app/api/run/route.ts", line: 7 },
+        rawSeverity: "critical",
+        evidenceSnippet: "execSync(cmd)",
+        title: "OS command injection via unsanitized child_process.execSync",
+        createdAt: FIXED_NOW,
+      }),
+    ];
+  }
+
+  let btReport: Report;
+
+  beforeAll(async () => {
+    const { store } = makeInMemoryStore();
+    const { gateway } = recordingGateway();
+    const real = createLayerRunners({ gateway });
+    const { runners, outputs } = instrument({
+      ...real,
+      layer1: () => Promise.resolve({ candidates: seededAttackChainCandidates() }),
+    });
+
+    await runScanInProcess(
+      {
+        config: hardenedConfig(),
+        store,
+        gateway,
+        logger: silentLogger,
+        layerRunners: runners,
+        ids: () => BLUE_TEAM_SCAN_ID,
+        sleep: () => Promise.resolve(),
+      },
+      {
+        clientId: CLIENT_ID,
+        repo: ATTACK_CHAIN_REPO, // LOCAL path ⇒ real Layer 0 App Map, exactly like the main run.
+        branch: "main",
+        mode: "full" as const,
+        scope: { mode: "full" as const, includePaths: [] as string[] },
+        operator: "user_operator_0001",
+      },
+      { approveEstimate: "user_approver_0001", timeoutMs: 60_000 },
+    );
+
+    btReport = (outputs.layer5 as Layer5Output).report;
+  }, 60_000);
+
+  it("confirms both fixture vulnerabilities (sanity: the chain below has real findings to work with)", () => {
+    expect(btReport.confirmedFindings.length).toBeGreaterThanOrEqual(2);
+    const categories = btReport.confirmedFindings.map((rf) => rf.finding.category);
+    expect(categories).toContain("sql_injection");
+    expect(categories).toContain("command_injection");
+  });
+
+  it("⛔ detectionEngineering.coverage (B6) is non-empty — requires the A2-resolved App Map", () => {
+    expect(btReport.blueTeam.detectionEngineering.coverage.length).toBeGreaterThan(0);
+    // Every confirmed finding gets a tri-state coverage verdict (B6) grounded
+    // in a real generated rule (see buildBlueTeamReport) — never a guess.
+    for (const c of btReport.blueTeam.detectionEngineering.coverage) {
+      expect([true, false, "unknown"]).toContain(c.detected);
+      expect(c.reasoning.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("⛔ attackPaths (B8) is non-empty — the RCE-class finding chains to the other confirmed finding", () => {
+    expect(btReport.blueTeam.attackPaths.length).toBeGreaterThan(0);
+    const path = btReport.blueTeam.attackPaths[0]!;
+    expect(path.steps.length).toBeGreaterThanOrEqual(2);
+    // End-to-end severity is force-bumped to "critical" whenever an RCE hop
+    // participates (packages/correlation/src/attack-paths/graph.ts).
+    expect(path.severity).toBe("critical");
+  });
+
+  it("⛔ threatModel.present (B7) is true — the App Map's baseline threat model reached the report", () => {
+    expect(btReport.blueTeam.threatModel.present).toBe(true);
+    expect(btReport.blueTeam.threatModel.summary?.length ?? 0).toBeGreaterThan(0);
+    expect(btReport.blueTeam.threatModel.markdown?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("hardening (B9) degrades to an honest advisory-only shape (real repo checkout, no crash)", () => {
+    // Not asserted non-empty: whether this specific fixture trips any
+    // particular hardening heuristic is incidental to the A2 regression this
+    // block guards against — the section's SHAPE (never a guess, always
+    // advisory-only) is what buildBlueTeamReport guarantees unconditionally.
+    expect(btReport.blueTeam.hardening.advisoryOnly).toBe(true);
+    expect(Array.isArray(btReport.blueTeam.hardening.recommendations)).toBe(true);
+  });
+
+  it("mitreAttack (B2) maps both confirmed findings to ATT&CK techniques", () => {
+    // Unlike coverage/attackPaths/threatModel, this section does not depend on
+    // `appMap` (buildMitreAttackSection works off `confirmedFindings` alone) —
+    // included for completeness, not as an A2 regression signal.
+    expect(btReport.blueTeam.mitreAttack.findings.length).toBeGreaterThanOrEqual(2);
+    expect(btReport.blueTeam.mitreAttack.coverage.length).toBeGreaterThan(0);
+  });
+
+  // NOT covered here, by design: `purpleTeam` (B5) entries require a real,
+  // approver-gated live-DAST run against a staging target (job.allowLive +
+  // stagingUrl — apps/worker/src/runners.ts's Layer 3 wiring, A8) — real
+  // network access this deterministic, offline e2e suite does not have. That
+  // path already has its own real end-to-end coverage in
+  // apps/worker/src/runners.test.ts (A2/A7/A8/A13's "an actual scenario
+  // against a real local HTTP server" test cited in docs/overview.md's
+  // 2026-09-12 A2/A7/A8/A13 entry) — duplicating a live HTTP server here would
+  // test the same wiring twice for no added regression-guard value on the A2
+  // App Map question this block exists to answer.
 });
 
 /* ------------------------------------------------------------------------- *

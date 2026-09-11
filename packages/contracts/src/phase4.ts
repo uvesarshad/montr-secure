@@ -101,6 +101,21 @@ export type RedTeamStep = z.infer<typeof RedTeamStepSchema>;
  * ⛔ `targetAllowlistRef` binds the scenario to an allowlisted DAST target/scope
  * — a scenario can NEVER be run against a target that is not on the allowlist,
  * and running is approver-authorized (§11). `enabled` defaults OFF.
+ *
+ * A1 (2026-09-12 red/blue agentic-posture audit): `enabled` + the approver
+ * RBAC role are necessary but NOT sufficient to let apps/worker actually probe
+ * this scenario's target for real — a genuine, auditable WRITTEN authorization
+ * beyond "an approver clicked a button" is required first. The four
+ * `liveAuthorized*` fields below capture that: `liveAuthorizationReference` is
+ * a REQUIRED free-text record (a ticket number, a signed agreement reference,
+ * etc.) an approver supplies via `POST /scenarios/:id/authorize`;
+ * `liveAuthorizedForVersion` binds the authorization to the EXACT scenario
+ * version it was granted for — any edit (`PUT /scenarios/:id`) bumps
+ * `version` and clears these fields, so a stale authorization can never cover
+ * a changed scenario (different steps/target). All four are optional/absent
+ * on an unauthorized (or edited-since-authorized) scenario — see
+ * docs/modules/confirmation.md's "Scenario Runner — Written Authorization"
+ * section and docs/auth/authorization.md.
  */
 export const RedTeamScenarioSchema = z.object({
   id: IdSchema,
@@ -114,8 +129,45 @@ export const RedTeamScenarioSchema = z.object({
   enabled: z.boolean().default(false),
   createdBy: IdSchema,
   createdAt: IsoDateTimeSchema,
+  /** ⛔ A1 — the approver (user id) who granted written live-run authorization. */
+  liveAuthorizedById: IdSchema.optional(),
+  /** ⛔ A1 — REQUIRED free-text authorization record (ticket/agreement ref). */
+  liveAuthorizationReference: z.string().min(1).max(2000).optional(),
+  /** ⛔ A1 — when written authorization was granted. */
+  liveAuthorizedAt: IsoDateTimeSchema.optional(),
+  /** ⛔ A1 — the exact `version` the authorization covers (invalidated by any edit). */
+  liveAuthorizedForVersion: z.number().int().positive().optional(),
 });
 export type RedTeamScenario = z.infer<typeof RedTeamScenarioSchema>;
+
+/**
+ * ⛔ A1 — true iff `scenario` carries a complete, current written
+ * authorization for real worker-side live execution: all four
+ * `liveAuthorized*` fields present, a non-empty reference, and the
+ * authorization bound to the scenario's CURRENT `version` (an edit since
+ * authorization bumps `version` and silently invalidates a prior grant).
+ * Pure and total — never throws — so both apps/api (the gate) and apps/web
+ * (the console's proactive status badge) can share one definition rather than
+ * two hand-rolled checks drifting apart.
+ */
+export function hasLiveRunAuthorization(
+  scenario: Pick<
+    RedTeamScenario,
+    | "version"
+    | "liveAuthorizedById"
+    | "liveAuthorizationReference"
+    | "liveAuthorizedAt"
+    | "liveAuthorizedForVersion"
+  >,
+): boolean {
+  return (
+    !!scenario.liveAuthorizedById &&
+    !!scenario.liveAuthorizedAt &&
+    !!scenario.liveAuthorizationReference &&
+    scenario.liveAuthorizationReference.trim().length > 0 &&
+    scenario.liveAuthorizedForVersion === scenario.version
+  );
+}
 
 /* ============================ Scan schedules ============================ */
 

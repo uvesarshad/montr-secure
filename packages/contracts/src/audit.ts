@@ -64,6 +64,12 @@ export const AuditActionSchema = z.enum([
   "scenario.updated",
   "scenario.deleted",
   "scenario.run", // ⛔ approver-authorized, allowlist-gated live-DAST run
+  // A1 (2026-09-12 red/blue agentic-posture audit) — genuine worker-side live
+  // execution, gated behind explicit written authorization (beyond RBAC).
+  "scenario.authorized", // ⛔ an approver recorded a written authorization reference
+  "scenario.live_run_enqueued", // ⛔ a real worker execution job was queued
+  "scenario.live_run_rejected", // ⛔ execution refused (missing/stale authorization, etc.)
+  "scenario.live_run_executed", // ⛔ apps/worker actually probed the target
   "schedule.created",
   "schedule.updated",
   "schedule.deleted",

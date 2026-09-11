@@ -149,8 +149,29 @@ export const CreateRedTeamScenarioBodySchema = RedTeamScenarioSchema.omit({
   clientId: true,
   createdBy: true,
   createdAt: true,
+  // ⛔ A1 — written live-run authorization is granted ONLY through the
+  // dedicated approver-only POST /scenarios/:id/authorize route (schemas.ts's
+  // AuthorizeScenarioBodySchema below), never smuggled through an author/edit
+  // body. Omitted here so an author/edit request can never set or influence
+  // these fields even incidentally.
+  liveAuthorizedById: true,
+  liveAuthorizationReference: true,
+  liveAuthorizedAt: true,
+  liveAuthorizedForVersion: true,
 });
 export type CreateRedTeamScenarioBody = z.infer<typeof CreateRedTeamScenarioBodySchema>;
+
+/**
+ * POST /scenarios/:id/authorize (A1, 2026-09-12) — approver-only WRITTEN
+ * authorization for real worker-side live execution. `authorizationReference`
+ * is REQUIRED free text: a ticket number, a signed agreement reference, or
+ * equivalent — a real security team's record of who authorized attacking
+ * this specific target and why, beyond just the approver's RBAC role.
+ */
+export const AuthorizeScenarioBodySchema = z.object({
+  authorizationReference: z.string().trim().min(1).max(2000),
+});
+export type AuthorizeScenarioBody = z.infer<typeof AuthorizeScenarioBodySchema>;
 
 /** POST /schedules — a cron-scheduled scan (budget ceiling + human gate). */
 export const CreateScanScheduleBodySchema = ScanScheduleSchema.omit({
